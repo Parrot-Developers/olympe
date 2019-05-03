@@ -1,0 +1,8 @@
+# For more information about the properties used in
+# this file, please see the EditorConfig documentation:
+# http://editorconfig.org/
+
+[*]
+indent_style = space
+indent_size =4
+max_line_length = 100
