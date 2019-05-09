@@ -621,7 +621,7 @@ class Pdraw(object):
     def _write_h264_header(self, fobj, media_info):
 
         start = bytearray([0, 0, 0, 1])
-        info = media_info.video.union.h264
+        info = media_info._2.video._2.h264
 
         self.logging.logD("sps: %s, pps: %s" % (info.spslen, info.ppslen))
         if info.spslen > 0:
