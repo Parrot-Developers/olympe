@@ -23,7 +23,7 @@ a simulated drone and then connect to it using Olympe before sending our first c
 
 If you haven't installed (sphinx_) yet, now is a good time to install it.
 
-.. _sphinx: http://woody.parrot.biz:8080/view/sphinx-doc/job/sphinx-release-doc/PARAM_PACKAGE_VERSION=release,PARAM_SPHINX_DOC_VERSION=internal,label=slave-ubuntu-xenial/HTML_Report/
+.. _sphinx: {{ sphinx_doc_url }}
 
 .. code-block:: console
 
@@ -537,17 +537,7 @@ leverage the autocompletion and the help functions to browse the ARSDK messages.
      |  Ardrone3.Piloting.TakeOff
      |
      |
-     |
-     |  Ask the drone to take off. On the fixed wings (such as Disco): not
-     |  used except to cancel a land.
-     |
-     |  **Supported by**:
-     |
-     |      :Bebop: since an unspecified version
-     |      :Bebop 2: since an unspecified version
-     |      :Disco: since an unspecified version
-     |
-     |
+     |  Ask the drone to take off.
      |
      |  Result: On the quadcopters: the drone takes off if its :py:func:`~olympe.messages.ardrone3.PilotingState.FlyingStateChanged`
      |  was landed. On the fixed wings, the landing process is aborted if the

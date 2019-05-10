@@ -225,7 +225,9 @@ custom_html_context = {
     "olympe_product": "olympe-linux",
     "olympe_scripts_path": "./products/olympe/linux/env",
     "repo_dl_url": "https://source.android.com/setup/build/downloading",
-    "sdk_repo_init_args": "-u https://github.com/Parrot-Developers/groundsdk-manifest.git"
+    "sdk_repo_init_args": "-u https://github.com/Parrot-Developers/groundsdk-manifest.git",
+    "sphinx_doc_url": "https://developer.parrot.com/docs/sphinx",
+
 }
 
 # Add any extra paths that contain custom files (such as robots.txt or
