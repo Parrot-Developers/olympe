@@ -250,7 +250,7 @@ speed.
 
 The maximum tilt setting itself must be within a minimum and a maximum value. A drone with a max
 tilt value of 0° is not particularly useful while a maximum tilt of 180° might only be useful for
-a racer drone. For ANAFI the maximum tilt setting must be within 5° and 40°.
+a racer drone. For ANAFI the maximum tilt setting must be within 1° and 40°.
 
 You might be wondering:
 
@@ -271,7 +271,7 @@ Create the following python ``maxtilt.py`` script somewhere in your home directo
 This time, the script starts by importing the
 :py:func:`~olympe.messages.ardrone3.PilotingSettings.MaxTilt` command from the ``ardrone3`` feature.
 Then, it connects to the drone and sends two MaxTilt commands. The first one with a 10° tilt value,
-the second with a 1° tilt value.
+the second with a 0° tilt value.
 
 
 Note that this time, we are assigning into the ``maxTiltAction`` variable the object returned by the
@@ -293,10 +293,10 @@ If all goes well, you should see the following output in your console:
 .. code-block:: console
 
     MaxTilt(10) success
-    MaxTilt(1) timedout
+    MaxTilt(0) timedout
 
 Obviously, the 10° maximum tilt value is correct so the first command succeeded while the second
-command failed to set an incorrect 1° maximum tilt value.
+command failed to set an incorrect 0° maximum tilt value.
 
 It is important to understand how Olympe knows if a particular command succeeded or not. When
 olympe sends a **command message**, it usually implicitly expects an **event message** in return.
@@ -315,11 +315,11 @@ fine: ``maxTiltAction.success() is True and maxTiltAction.timedout() is False``.
 True``).
 
 The :ref:`following sequence diagram<max-tilt-diag>` illustrates what is happening here.
-For the second maximum tilt command, when Olympe sends the ``MaxTilt(1)`` **command message** it
-receives a ``MaxTiltChanged(5)`` **event message** because 1° is an invalid setting value so the
-drone just informs the controller that it has set the minimum setting value instead (5°). Olympe
+For the second maximum tilt command, when Olympe sends the ``MaxTilt(0)`` **command message** it
+receives a ``MaxTiltChanged(1)`` **event message** because 0° is an invalid setting value so the
+drone just informs the controller that it has set the minimum setting value instead (1°). Olympe
 **does not assume** that this response means "No, I won't do what you are asking". Instead, it still
-waits for a ``MaxTiltChanged(1)`` event that will never come and the command message times out:
+waits for a ``MaxTiltChanged(0)`` event that will never come and the command message times out:
 (``maxTiltAction.success() is False and maxTiltAction.timedout() is True``). This behavior is
 identical for every command message: **when Olympe sends a command message to a drone, it either
 result in a success or a timeout**.
@@ -337,9 +337,9 @@ result in a success or a timeout**.
 
       Olympe => Drone [label = "connect", return = "connected"]
       Olympe ->> Drone  [label = "MaxTilt(10)", leftnote="maxTiltAction pending"]
-      Olympe <<-- Drone [label = "MaxTiltChanged(current=10., min=5., max=40.)", leftnote="maxTiltAction successful"];
-      Olympe ->> Drone  [label = "MaxTilt(1)", leftnote="maxTiltAction pending"]
-      Olympe <<-- Drone [label = "MaxTiltChanged(current=5., min=5., max=40.)", leftnote="maxTiltAction still pending"];
+      Olympe <<-- Drone [label = "MaxTiltChanged(current=10., min=1., max=40.)", leftnote="maxTiltAction successful"];
+      Olympe ->> Drone  [label = "MaxTilt(0)", leftnote="maxTiltAction pending"]
+      Olympe <<-- Drone [label = "MaxTiltChanged(current=1., min=1., max=40.)", leftnote="maxTiltAction still pending"];
       Olympe -> Olympe [leftnote = "maxTiltAction timedout"]
       Olympe => Drone [label = "disconnect", return = "disconnected"]
    }

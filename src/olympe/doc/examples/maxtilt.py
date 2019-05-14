@@ -14,12 +14,12 @@ elif maxTiltAction.timedout():
 else:
     # If ".wait()" is called on the ``maxTiltAction`` this shouldn't happen
     print("MaxTilt(10) is still in progress")
-maxTiltAction = drone(MaxTilt(1)).wait()
+maxTiltAction = drone(MaxTilt(0)).wait()
 if maxTiltAction.success():
-    print("MaxTilt(1) success")
+    print("MaxTilt(0) success")
 elif maxTiltAction.timedout():
-    print("MaxTilt(1) timedout")
+    print("MaxTilt(0) timedout")
 else:
     # If ".wait()" is called on the ``maxTiltAction`` this shouldn't happen
-    print("MaxTilt(1) is still in progress")
+    print("MaxTilt(0) is still in progress")
 drone.disconnection()
