@@ -20,6 +20,14 @@ Olympe API Reference Documentation
     .. automethod:: piloting_pcmd(roll, pitch, yaw, gaz, piloting_time)
     .. automethod:: stop_piloting
 
+.. autoclass:: olympe.VideoFrame()
+
+    .. automethod:: ref
+    .. automethod:: unref
+    .. automethod:: metadata
+    .. automethod:: as_ctypes_pointer
+    .. automethod:: as_ndarray
+
 .. autoclass:: olympe.ReturnTuple()
 
 .. autoclass:: olympe.Expectation

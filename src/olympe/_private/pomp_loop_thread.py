@@ -268,12 +268,11 @@ class PompLoopThread(threading.Thread):
             raise RuntimeError('Cannot add eventfd to pomp loop')
 
     def remove_fd_from_loop(self, fd):
-        del self.pomp_fd_callbacks[fd]
-        del self.userdata[fd]
-        del self.c_userdata[fd]
-        res = od.pomp_loop_remove(self.pomp_loop, fd)
-        if res != 0:
-            self.logging.logE('Cannot remove eventfd "%s" from pomp loop' % fd)
+        self.userdata.pop(fd, None)
+        self.c_userdata.pop(fd, None)
+        if self.pomp_fd_callbacks.pop(fd, None) is not None:
+            if od.pomp_loop_remove(self.pomp_loop, fd) != 0:
+                self.logging.logE('Cannot remove eventfd "%s" from pomp loop' % fd)
 
     def _destroy_pomp_loop_fds(self):
         fds = list(self.pomp_fd_callbacks.keys())[:]
@@ -289,7 +288,6 @@ class PompLoopThread(threading.Thread):
             raise RuntimeError('Cannot create pomp loop')
 
     def _destroy_pomp_loop(self):
-
         if self.pomp_loop is not None:
             res = od.pomp_loop_destroy(self.pomp_loop)
 
@@ -298,9 +296,8 @@ class PompLoopThread(threading.Thread):
                     "Error while destroying pomp loop: {}".format(res))
                 return False
             else:
-                self.pomp_loop = None
                 self.logging.logI("Pomp loop has been destroyed")
-
+        self.pomp_loop = None
         return True
 
     def create_timer(self, callback):

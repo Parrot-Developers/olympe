@@ -125,7 +125,8 @@ class Drone(object):
                  dcport=44444,
                  mpp=False,
                  loglevel=TraceLogger.level.info,
-                 logfile=sys.stdout):
+                 logfile=sys.stdout,
+                 video_buffer_queue_size=2):
         """
         :param ip_addr: the drone IP address
         :type ip_addr: str
@@ -167,6 +168,7 @@ class Drone(object):
                 'serialnb': b'000000000',
             }
         self.mpp = mpp
+        self.video_buffer_queue_size = video_buffer_queue_size
 
         # Extract arsdk-xml infos
         self.enums = enums.ArsdkEnums.get()
@@ -306,9 +308,9 @@ class Drone(object):
             self.logging.logE(
                 'json contents cannot be parsed: {}'.format(json_info))
 
-        self._controller_state.device_conn_status.connected = True
         self._create_command_interface()
         self._create_pdraw_interface()
+        self._controller_state.device_conn_status.connected = True
 
     def _disconnected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         """
@@ -757,7 +759,13 @@ class Drone(object):
 
     def _create_pdraw_interface(self):
         legacy_streaming = self.drone_type not in (None, od.ARSDK_DEVICE_TYPE_ANAFI4K)
-        self.pdraw = Pdraw(self.logging, self.thread_loop, self.addr, legacy=legacy_streaming)
+        self.pdraw = Pdraw(
+            self.logging,
+            self.thread_loop,
+            self.addr,
+            legacy=legacy_streaming,
+            buffer_queue_size=self.video_buffer_queue_size,
+        )
 
     def _enable_legacy_video_streaming_impl(self):
         """
@@ -1534,6 +1542,10 @@ class Drone(object):
 
         :rtype: ReturnTuple
         """
+        if self.pdraw is None:
+            msg = "Cannot start streaming while the drone is not connected"
+            self.logging.logE(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if self.pdraw.is_legacy():
             f = self.thread_loop.run_async(self._enable_legacy_video_streaming_impl)
@@ -1560,6 +1572,11 @@ class Drone(object):
 
         :rtype: ReturnTuple
         """
+        if self.pdraw is None:
+            msg = "Cannot start streaming while the drone is not connected"
+            self.logging.logE(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+
         if self.pdraw.is_legacy():
             f = self.thread_loop.run_async(self._disable_legacy_video_streaming_impl)
             try:
@@ -1602,32 +1619,36 @@ class Drone(object):
         Setting a file parameter to `None` disables the recording for the related stream part.
         """
 
+        if self.pdraw is None:
+            msg = "Cannot set streaming output file while the drone is not connected"
+            self.logging.logE(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         self.pdraw.set_output_files(h264_data_file,
                                     h264_meta_file,
                                     raw_data_file,
                                     raw_meta_file)
 
     def set_streaming_callbacks(self,
-                                h264_data_cb=None,
-                                h264_meta_cb=None,
-                                raw_data_cb=None,
-                                raw_meta_cb=None):
+                                h264_cb=None,
+                                raw_cb=None):
         """
         Set the callbacks that will be called when a new video stream frame is available.
 
         The callbacks return values are ignored.
 
-        - xxx_meta_cb are called with a dict containing the metadata of the received frame
-        - xxx_data_cb are called with a bytearray containing the data of the received frame
-        - h264_***_cb are associated to the H264 encoded video stream
-        - raw_***_cb are associated to the decoded video stream
+        - h264_cb is associated to the H264 encoded video stream
+        - raw_cb is associated to the decoded video stream
+
+        Each callback function takes an :py:func:`~olympe.VideoFrame` parameter
 
         If a callback is not desired, just set it to `None`.
         """
-        self.pdraw.set_callbacks(h264_data_cb,
-                                 h264_meta_cb,
-                                 raw_data_cb,
-                                 raw_meta_cb)
+        if self.pdraw is None:
+            msg = "Cannot set streaming callbacks while the drone is not connected"
+            self.logging.logE(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+        self.pdraw.set_callbacks(h264_cb,
+                                 raw_cb)
 
     @ensure_connected
     def get_last_available_states(self):

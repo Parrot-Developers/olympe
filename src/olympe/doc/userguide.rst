@@ -15,6 +15,10 @@ At the end of each example, remember to reset the simulation before getting into
 because each example assume that the drone is landed with a fully charged battery. Just hit
 Ctrl+R inside the Sphinx GUI to reset the simulation.
 
+The full code of each example can be found in the
+`src/olympe/doc/examples/ <https://github.com/Parrot-Developers/olympe/tree/master/src/olympe/doc/examples>`_
+folder.
+
 Create a simulated drone
 ------------------------
 
@@ -450,6 +454,7 @@ and event messages themselves.
 .. literalinclude:: examples/moveby2.py
     :language: python
     :linenos:
+    :lineno-start: 9
     :lines: 9-12
 
 In this new example after the drone connection, the above code tells Olympe to:
@@ -708,6 +713,77 @@ Before you start the video streaming, you can specify some output files that wil
 to record the video stream and its metadata.
 :py:func:`~olympe.Drone.set_streaming_output_files`.
 
+Video streaming example
+"""""""""""""""""""""""
+
+The following example shows how to get the video stream from the drone using
+Olympe. Internally, Olympe leverages Parrot libpdraw to:
+
+    - initialize the video streaming from the drone
+    - decode the H.264 video stream
+    - register user provided callback functions that are called for
+      each (encoded or decoded) frame with its associated metadata
+    - record the live video stream from the drone to the disk
+
+When using Olympe to access the video stream you can't use the
+`PDrAW <https://developer.parrot.com/docs/pdraw/overview.html>`_ standalone
+executable to view the video stream (the drone only supports one video client
+at a time).
+
+For this example, we first create a fixture class that will hold our
+olympe.Drone object and some H.264 statistics.
+
+.. literalinclude:: examples/streaming.py
+    :language: python
+    :linenos:
+    :lineno-start: 22
+    :lines: 22-37
+
+Our objective is to start the video stream, fly the drone around, perform some
+live video processing, stop the video stream and finally perform some video
+postprocessing.
+
+.. literalinclude:: examples/streaming.py
+    :language: python
+    :linenos:
+    :lineno-start: 170
+    :lines: 170-179
+
+Before we start the video streaming, we must connect to the drone and optionally
+register our callback functions and output files for the recorded video stream.
+
+.. literalinclude:: examples/streaming.py
+    :language: python
+    :linenos:
+    :lineno-start: 39
+    :lines: 39-59
+
+The :py:func:`StreamingExample.yuv_frame_cb` and
+:py:func:`StreamingExample.h264_frame_cb` receives an
+:py:func:`~olympe.VideoFrame` object in parameter that you can use to access a
+video frame data (see :py:func:`~olympe.VideoFrame.as_ndarray`,
+:py:func:`~olympe.VideoFrame.as_ctypes_pointer`) and its metadata
+:py:func:`~olympe.VideoFrame.metadata`.
+
+.. literalinclude:: examples/streaming.py
+    :language: python
+    :linenos:
+    :lineno-start: 67
+    :lines: 67-92
+
+The `.264` file recorded by Olympe contains raw H.264 frames. In order to
+view this file with your favorite media player, you might need to convert it
+into an `.mp4` file. Here as our postprocessing step, we are merly copying the
+H.264 video frames into an MP4 container.
+
+.. literalinclude:: examples/streaming.py
+    :language: python
+    :linenos:
+    :lineno-start: 153
+    :lines: 153-161
+
+The full code of this example can be found in
+`src/olympe/doc/examples/streaming.py <https://github.com/Parrot-Developers/olympe/blob/master/src/olympe/doc/examples/streaming.py>`_.
 
 Connect to a physical drone or to a SkyController
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -740,6 +816,8 @@ box to a drone wifi access point. once you are connected to your drone over wifi
 you just need to specify the drone ip address on its WiFi interface ("192.168.42.1").
 
 .. literalinclude:: examples/physical_drone.py
+    :language: python
+    :linenos:
 
 
 Connect to a SkyController
@@ -759,6 +837,3 @@ TODO
 
 .. todo::
     Document the expectation "explain" method. Maybe insert it into a "How to debug" section.
-
-.. todo::
-    How to connect to a physical drone with or without a SkyController.
