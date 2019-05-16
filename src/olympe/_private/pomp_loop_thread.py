@@ -36,19 +36,18 @@ from future.builtins import str
 
 import concurrent.futures
 import ctypes
-import linuxfd
 import logging
 import olympe_deps as od
 import select
 import threading
 import traceback
 
+
 try:
     from itertools import ifilter as filter
 except ImportError:
     # python3
     pass
-
 
 
 logger = logging.getLogger("concurrent.futures")
@@ -130,7 +129,7 @@ class PompLoopThread(threading.Thread):
         self.pomptimeout_ms = 100
         self.async_pomp_task = list()
         self.deferred_pomp_task = list()
-        self.wakeupfd = linuxfd.eventfd(initval=0, nonBlocking=True)
+        self.wakeup_evt = od.pomp_evt_new()
         self.pomp_fd_callbacks = dict()
         self.pomp_loop = None
         self.pomp_timers = {}
@@ -214,7 +213,8 @@ class PompLoopThread(threading.Thread):
         """
         Thread's main loop
         """
-        self.add_fd_to_loop(self.wakeupfd.fileno(), lambda *args: self._wake_up_event_cb(*args))
+        self.add_fd_to_loop(
+            od.pomp_evt_get_fd(self.wakeup_evt), lambda *args: self._wake_up_event_cb(*args))
 
         # We have to monitor the main thread exit. This is the simplest way to
         # let the main thread handle the signals while still being able to
@@ -242,11 +242,11 @@ class PompLoopThread(threading.Thread):
         od.pomp_loop_wait_and_process(self.pomp_loop, self.pomptimeout_ms)
 
     def _acknowledge_wake_up(self):
-        self.wakeupfd.read()
+        od.pomp_evt_clear(self.wakeup_evt)
 
     def _wake_up(self):
-        if self.wakeupfd.fileno() is not None:
-            self.wakeupfd.write(1)
+        if self.wakeup_evt:
+            od.pomp_evt_signal(self.wakeup_evt)
 
     def add_fd_to_loop(self, fd, cb, userdata=None):
         """

@@ -6,7 +6,6 @@ future
 futures; python_version <= '2.7'
 geopy
 ipython
-linuxfd
 opencv-python
 PyYAML
 six
