@@ -746,10 +746,12 @@ Connect to a SkyController
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To connect Olympe to a physical SkyController, you first need to connect to your Linux
-box to the SkyController 3 USB-C port. The you should be able to connect to your SkyController
+box to the SkyController 3 USB-C port. Then you should be able to connect to your SkyController
 with its RNDIS IP address ("192.168.53.1").
 
 .. literalinclude:: examples/physical_skyctrl.py
+    :language: python
+    :linenos:
 
 
 TODO
