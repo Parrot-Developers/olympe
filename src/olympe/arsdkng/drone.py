@@ -1546,9 +1546,12 @@ class Drone(object):
         if self.pdraw.is_legacy():
             f = self.thread_loop.run_async(self._enable_legacy_video_streaming_impl)
             try:
-                return f.result(timeout=5)
+                if not f.result(timeout=5):
+                    msg = "Unable to enable legacy video streaming"
+                    self.logging.logE(msg)
+                    return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
-                msg = "Unable to enable legacy video streaming"
+                msg = "Unable to enable legacy video streaming (timeout)"
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
@@ -1568,14 +1571,22 @@ class Drone(object):
         if self.pdraw.is_legacy():
             f = self.thread_loop.run_async(self._disable_legacy_video_streaming_impl)
             try:
-                return f.result(timeout=5)
+                if not f.result(timeout=5):
+                    msg = "Unable to disable legacy video streaming"
+                    self.logging.logE(msg)
+                    return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
-                msg = "Unable to disable legacy video streaming"
+                msg = "Unable to disable legacy video streaming (timeout)"
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        if not self.pdraw.pause().result(timeout=5):
-            msg = "Failed to pause video stream"
+        try:
+            if not self.pdraw.pause().result(timeout=5):
+                msg = "Failed to pause video stream"
+                self.logging.logE(msg)
+                return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+        except FutureTimeoutError:
+            msg = "Failed to pause video stream (timeout)"
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
