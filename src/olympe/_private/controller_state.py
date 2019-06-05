@@ -69,35 +69,6 @@ class DeviceStates(object):
         self.get_all_settings_done = False
 
 
-class MavlinkMissionItemsExecuted(object):
-    """
-    Save all mission items executed since last mavlink_start_command
-    """
-
-    def __init__(self):
-        self.reset_mission_items_list()
-
-    def add_mission_items(self, mission_item_id):
-        """
-        Method to add mission item id
-        @param mission_item_id: Id of mission item to add to list (int)
-        """
-        self.mission_items_executed.append(mission_item_id)
-
-    def get_mission_items_executed(self):
-        """
-        Return the mission items executed since last mavlink_start command executed
-        @return: List mission items id (int)
-        """
-        return self.mission_items_executed
-
-    def reset_mission_items_list(self):
-        """
-        Reset mission item list to empty list
-        """
-        self.mission_items_executed = []
-
-
 class Callbacks(object):
     """
     Manage expected callbacks after sending a command to the device
@@ -148,4 +119,3 @@ class ControllerState(object):
         self.device_states = DeviceStates()
         self.callbacks = Callbacks()
         self.piloting_command = PilotingCommand()
-        self.mavlink_mission_items_executed = MavlinkMissionItemsExecuted()

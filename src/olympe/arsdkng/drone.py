@@ -192,7 +192,6 @@ class Drone(object):
         self._device_states = self._controller_state.device_states
         self._callbacks = self._controller_state.callbacks
         self._piloting_command = self._controller_state.piloting_command
-        self._mavlink_mission_items_executed = self._controller_state.mavlink_mission_items_executed
 
         self.DRONE_DEVICE_TYPE_LIST = []
         self.SKYCTRL_DEVICE_TYPE_LIST = []
@@ -434,13 +433,6 @@ class Drone(object):
             (name.upper(), message_args[pos])
             for name, pos in args_pos.items()
         ))
-
-        # If state is mission item executed, add value also to list of mission item executed
-        STATES_MAVLINK_MISSION_ITEM = "mavlink_mission_item"
-        if STATES_MAVLINK_MISSION_ITEM in message_args.keys():
-            self._controller_state.mavlink_mission_items_executed.add_mission_items(
-                message_args[STATES_MAVLINK_MISSION_ITEM]
-            )
 
         if callback_type == messages.ArsdkMessageCallbackType.STANDARD:
             self._controller_state.device_states.states[message_name] = message_args
