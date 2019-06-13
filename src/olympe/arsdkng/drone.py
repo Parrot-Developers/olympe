@@ -1650,6 +1650,9 @@ class Drone(object):
         self.pdraw.set_callbacks(h264_cb,
                                  raw_cb)
 
+    def get_streaming_session_metadata(self):
+        return self.pdraw.get_session_metadata()
+
     @ensure_connected
     def get_last_available_states(self):
         """

@@ -9,7 +9,7 @@ sys.meta_path.append(olympe.arsdkng.module_loader.ModuleLoader())
 
 from .arsdkng.drone import Drone
 from .arsdkng.expectations import ArsdkExpectationBase as Expectation
-from .arsdkng.pdraw import VideoFrame
+from .arsdkng.pdraw import VideoFrame, VMetaFrameType
 import olympe.messages
 import olympe.enums
 from ._private.__version__ import __version__

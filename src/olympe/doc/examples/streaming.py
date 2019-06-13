@@ -70,16 +70,16 @@ class StreamingExample:
 
             :type yuv_frame: olympe.VideoFrame
         """
-        # the VideoFrame.metadata() dictionary contains some useful informations
+        # the VideoFrame.info() dictionary contains some useful informations
         # such as the video resolution
-        metadata = yuv_frame.metadata()
-        height, width = metadata["yuv"]["height"], metadata["yuv"]["width"]
+        info = yuv_frame.info()
+        height, width = info["yuv"]["height"], info["yuv"]["width"]
 
         # convert pdraw YUV flag to OpenCV YUV flag
         cv2_cvt_color_flag = {
             olympe.PDRAW_YUV_FORMAT_I420: cv2.COLOR_YUV2BGR_I420,
             olympe.PDRAW_YUV_FORMAT_NV12: cv2.COLOR_YUV2BGR_NV12,
-        }[metadata["yuv"]["format"]]
+        }[info["yuv"]["format"]]
 
         # yuv_frame.as_ndarray() is a 2D numpy array with the proper "shape"
         # i.e (3 * height / 2, width) because it's a YUV I420 or NV12 frame
@@ -106,9 +106,9 @@ class StreamingExample:
         # interface or to decode it with our preferred hardware decoder..
 
         # Compute some stats and dump them in a csv file
-        metadata = h264_frame.metadata()
-        frame_ts = metadata["ntp_raw_timestamp"]
-        if not bool(metadata["h264"]["is_sync"]):
+        info = h264_frame.info()
+        frame_ts = info["ntp_raw_timestamp"]
+        if not bool(info["h264"]["is_sync"]):
             if len(self.h264_frame_stats) > 0:
                 while True:
                     start_ts, _ = self.h264_frame_stats[0]

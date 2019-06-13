@@ -39,6 +39,7 @@ import olympe_deps as od
 import errno
 import json
 import numpy as np
+import re
 from aenum import Enum, auto
 from collections import defaultdict, namedtuple
 
@@ -57,6 +58,15 @@ class State(Enum):
     Playing = auto()
     Paused = auto()
     Error = auto()
+
+
+VMetaFrameType = Enum(
+    'VMetaFrameType',
+    {
+        re.compile('^VMETA_FRAME_TYPE_').sub('', v): k
+        for k, v in od.vmeta_frame_type__enumvalues.items()
+    }
+)
 
 
 PDRAW_LOCAL_ADDR = b"0.0.0.0"
@@ -83,11 +93,13 @@ class H264Header(namedtuple('H264Header', ['sps', 'spslen', 'pps', 'ppslen'])):
 
 class VideoFrame:
 
-    def __init__(self, logging, buf, stream, yuv_packed_buffer_pool):
+    def __init__(self, logging, buf, stream, yuv_packed_buffer_pool,
+                 session_metadata):
         self.logging = logging
         self._buf = buf
         self._stream = stream
         self._yuv_packed_buffer_pool = yuv_packed_buffer_pool
+        self._session_metadata = session_metadata
         self._pdraw_video_frame = od.POINTER_T(ctypes.c_ubyte)()
         self._frame_pointer = ctypes.POINTER(ctypes.c_ubyte)()
         self._frame_size = 0
@@ -96,7 +108,8 @@ class VideoFrame:
         self._yuv_packed_video_frame_storage = od.struct_pdraw_video_frame()
         self._yuv_packed_video_frame = od.POINTER_T(
             od.struct_pdraw_video_frame)()
-        self._metadata = None
+        self._frame_info = None
+        self._metadata_pointers = []
 
     def __bool__(self):
         return bool(self._buf)
@@ -232,17 +245,17 @@ class VideoFrame:
             frame_pointer, shape=shape)
         return self._frame_array
 
-    def metadata(self):
+    def info(self):
         """
-        Returns a dictionary of video frame metadata
+        Returns a dictionary of video frame info
         """
-        if self._metadata is not None:
-            return self._metadata
+        if self._frame_info is not None:
+            return self._frame_info
         frame = self._get_pdraw_video_frame()
         if not frame:
-            return self._metadata
+            return self._frame_info
         # convert the binary metadata into json
-        self._metadata = {}
+        self._frame_info = {}
         jsonbuf = ctypes.create_string_buffer(4096)
         res = od.pdraw_video_frame_to_json_str(
             frame, jsonbuf, ctypes.sizeof(jsonbuf))
@@ -250,9 +263,38 @@ class VideoFrame:
             self.logging.logE(
                 'pdraw_frame_metadata_to_json returned error {}'.format(res))
         else:
-            self._metadata = json.loads(str(jsonbuf.value, encoding="utf-8"))
-            self.logging.logD('metadata: {}'.format(self._metadata))
-        return self._metadata
+            self._frame_info = json.loads(str(jsonbuf.value, encoding="utf-8"))
+        return self._frame_info
+
+    def vmeta(self):
+        """
+        Returns a 2-tuple (VMetaFrameType, dictionary of video frame metadata)
+        """
+        vmeta = {}
+        vmeta_type = VMetaFrameType.NONE
+        frame = self._get_pdraw_video_frame()
+        if not frame:
+            return vmeta_type, vmeta
+        vmeta = self.info().get('metadata')
+        vmeta_type = VMetaFrameType(frame.contents.metadata.type)
+        return vmeta_type, vmeta
+
+    def vbuf_userdata_ctypes_pointers(self):
+        """
+        Unstable/experimental API
+        This returns some additional and optional SEI metadata
+        """
+        userata_pointer = od.vbuf_get_cuserdata(self._buf)
+        userdata_size = od.vbuf_get_userdata_size(self._buf)
+        userata_pointer = ctypes.cast(
+            userata_pointer, ctypes.POINTER(ctypes.c_ubyte * userdata_size))
+        return userata_pointer, userdata_size
+
+    def session_metadata(self):
+        """
+        Returns video stream session metadata
+        """
+        return self._session_metadata
 
 
 class Pdraw(object):
@@ -289,6 +331,7 @@ class Pdraw(object):
             'video_queue_fd': 0,
             'video_queue_event': None,
         })
+        self.session_metadata = {}
 
         self.outfiles = {
             od.PDRAW_VIDEO_MEDIA_FORMAT_H264:
@@ -712,7 +755,8 @@ class Pdraw(object):
                 self.logging,
                 buf,
                 self.streams[id_],
-                self.yuv_packed_buffer_pool
+                self.yuv_packed_buffer_pool,
+                self.get_session_metadata()
             )
             try:
                 if not self._process_stream_buffer(id_, video_frame):
@@ -731,7 +775,8 @@ class Pdraw(object):
 
         f = files['meta']
         if f and not f.closed:
-            files['meta'].write(json.dumps(video_frame.metadata()) + '\n')
+            vmeta_type, vmeta = video_frame.vmeta()
+            files['meta'].write(json.dumps((str(vmeta_type), vmeta)) + '\n')
 
         f = files['data']
         if f and not f.closed:
@@ -814,6 +859,9 @@ class Pdraw(object):
             f.set_result(False)
             return f
 
+        # reset session metadata from any previous session
+        self.session_metadata = {}
+
         self._open_output_files()
         if self._state is State.Created:
             f = self.pdraw_thread_loop.run_async(self._open_stream)
@@ -848,6 +896,25 @@ class Pdraw(object):
             self.logging.logE("Unable to stop streaming ({})".format(res))
             self._pause_resp_future.set_result(False)
         return self._pause_resp_future
+
+    def get_session_metadata(self):
+        if self.pdraw is None:
+            self.logging.logE("Error Pdraw interface seems to be destroyed")
+            return None
+
+        if self.session_metadata:
+            return self.session_metadata
+
+        vmeta_session = od.struct_vmeta_session()
+        res = od.pdraw_get_peer_session_metadata(
+            self.pdraw, ctypes.pointer(vmeta_session))
+        if res != 0:
+            msg = "Unable to get sessions metata"
+            self.logging.logE(msg)
+            return None
+        self.session_metadata = od.struct_vmeta_session.as_dict(
+            vmeta_session)
+        return self.session_metadata
 
     def is_legacy(self):
         return self._legacy
