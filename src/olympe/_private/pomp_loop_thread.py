@@ -102,11 +102,12 @@ class Future(concurrent.futures.Future):
             try:
                 if deferred:
                     temp = self._loop.run_later(fn, self.result())
+                    temp.chain(result)
                 elif not threading.current_thread() is self._loop:
                     temp = self._loop.run_async(fn, self.result())
+                    temp.chain(result)
                 else:
                     result.set_result(fn(self.result()))
-                temp.chain(result)
             except Exception as e:
                 result.set_exception(e)
             except:
@@ -202,6 +203,7 @@ class PompLoopThread(threading.Thread):
                 ret = f(*args, **kwargs)
             except Exception as e:
                 traceback.print_exc()
+                self._unregister_future(future, ignore_error=True)
                 future.set_exception(e)
                 continue
             if not isinstance(ret, concurrent.futures.Future):
@@ -225,18 +227,19 @@ class PompLoopThread(threading.Thread):
             lambda t: t.name == "MainThread",
             threading.enumerate()
         ))
-        while self.running and main_thread.is_alive():
-            try:
-                self._wait_and_process()
-            except RuntimeError as e:
-                self.logging.logE('Exception caught: %s.' % e)
+        try:
+            while self.running and main_thread.is_alive():
+                try:
+                    self._wait_and_process()
+                except RuntimeError as e:
+                    self.logging.logE('Exception caught: %s.' % e)
 
-            self._run_task_list(self.async_pomp_task)
-            self._run_task_list(self.deferred_pomp_task)
-
-        # Perform some cleanup before this thread dies
-        self._cleanup()
-        self.destroy()
+                self._run_task_list(self.async_pomp_task)
+                self._run_task_list(self.deferred_pomp_task)
+        finally:
+            # Perform some cleanup before this thread dies
+            self._cleanup()
+            self.destroy()
 
     def _wait_and_process(self):
         od.pomp_loop_wait_and_process(self.pomp_loop, self.pomptimeout_ms)
