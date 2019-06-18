@@ -54,7 +54,8 @@ import olympe.arsdkng.enums as enums
 import olympe.arsdkng.messages as messages
 from olympe.arsdkng.expectations import FailedExpectation, FutureExpectation
 
-from olympe.arsdkng.pdraw import Pdraw, PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT
+from olympe.arsdkng.pdraw import Pdraw, PDRAW_LOCAL_STREAM_PORT
+from olympe.arsdkng.pdraw import PDRAW_LOCAL_CONTROL_PORT
 
 from olympe.tools.logger import TraceLogger, DroneLogger, ErrorCodeDrone
 from olympe._private import makeReturnTuple
@@ -1531,7 +1532,9 @@ class Drone(object):
                 ErrorCodeDrone.ERROR_PILOTING_STATE,
                 "You must launch start_piloting")
 
-    def start_video_streaming(self):
+    def start_video_streaming(self,
+                              resource_name="live",
+                              media_name="DefaultVideo"):
         """
         Starts the live video streaming from the drone front camera
 
@@ -1548,7 +1551,8 @@ class Drone(object):
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if self.pdraw.is_legacy():
-            f = self.thread_loop.run_async(self._enable_legacy_video_streaming_impl)
+            f = self.thread_loop.run_async(
+                self._enable_legacy_video_streaming_impl)
             try:
                 if not f.result(timeout=5):
                     msg = "Unable to enable legacy video streaming"
@@ -1559,12 +1563,15 @@ class Drone(object):
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        if not self.pdraw.play().result(timeout=5):
+        if (not self.pdraw.play(
+                resource_name=resource_name,
+                media_name=media_name).result(timeout=5)):
             msg = "Failed to play video stream"
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        return makeReturnTuple(self.error_code_drones.OK, "Playing video stream")
+        return makeReturnTuple(
+            self.error_code_drones.OK, "Playing video stream")
 
     def stop_video_streaming(self):
         """
@@ -1578,7 +1585,8 @@ class Drone(object):
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if self.pdraw.is_legacy():
-            f = self.thread_loop.run_async(self._disable_legacy_video_streaming_impl)
+            f = self.thread_loop.run_async(
+                self._disable_legacy_video_streaming_impl)
             try:
                 if not f.result(timeout=5):
                     msg = "Unable to disable legacy video streaming"

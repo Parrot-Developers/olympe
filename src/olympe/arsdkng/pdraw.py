@@ -75,7 +75,6 @@ PDRAW_LOCAL_CONTROL_PORT = 55005
 PDRAW_REMOTE_STREAM_PORT = 0
 PDRAW_REMOTE_CONTROL_PORT = 0
 PDRAW_IFACE_ADRR = b""
-PDRAW_URL = b"rtsp://%s/live"
 
 
 class H264Header(namedtuple('H264Header', ['sps', 'spslen', 'pps', 'ppslen'])):
@@ -195,7 +194,7 @@ class VideoFrame:
         if self._stream['type'] == od.PDRAW_VIDEO_MEDIA_FORMAT_H264:
             # get the size in bytes of the raw data
             self._frame_size = od.vbuf_get_size(self._buf)
-            self.logging.logD("Frame of %s bytes received".format(self._frame_size))
+            self.logging.logD("Frame of {} bytes received".format(self._frame_size))
 
             # retrieve the raw data from the buffer
             od.vbuf_get_cdata.restype = ctypes.POINTER(ctypes.c_ubyte)
@@ -351,6 +350,9 @@ class Pdraw(object):
             od.PDRAW_VIDEO_MEDIA_FORMAT_YUV: None,
         }
 
+        self.resource_name = "live"
+        self.media_name = None
+
         self.local_stream_port = PDRAW_LOCAL_STREAM_PORT
         self.local_control_port = PDRAW_LOCAL_CONTROL_PORT
 
@@ -365,6 +367,7 @@ class Pdraw(object):
             "select_demuxer_media": self._select_demuxer_media,
             "media_added": self._media_added,
             "media_removed": self._media_removed,
+            "end_of_range": self._end_of_range,
         })
 
         self.video_sink_cb = od.struct_pdraw_video_sink_cbs.bind({
@@ -390,6 +393,8 @@ class Pdraw(object):
             msg = "Error while creating yuv packged buffer pool {}".format(res)
             self.logging.logE(msg)
             raise RuntimeError("ERROR: {}".format(msg))
+
+        self.pdraw_thread_loop.register_cleanup(self.dispose)
 
         res = od.pdraw_new(
             self.pomp_loop,
@@ -423,10 +428,12 @@ class Pdraw(object):
         if res != 0:
             self.logging.logE("Cannot destroy yuv packed buffer pool")
         self.yuv_packed_buffer_pool = od.POINTER_T(od.struct_vbuf_pool)()
-        res = od.pdraw_destroy(self.pdraw)
-        if res != 0:
-            raise RuntimeError('Cannot destroy pdraw object')
+        if self.pdraw:
+            res = od.pdraw_destroy(self.pdraw)
+            if res != 0:
+                self.logging.logE("Cannot destroy pdraw object")
         self.pdraw = ctypes.c_void_p(0)
+        self.logging.logI("pdraw destroyed")
         return True
 
     def _open_single_stream(self):
@@ -456,11 +463,14 @@ class Pdraw(object):
         """
         Opening rtsp streaming url
         """
-        url = PDRAW_URL % self.streaming_server_addr
-        res = od.pdraw_open_url(
-            self.pdraw,
-            url
-        )
+        url = b"rtsp://%s/%s" % (
+            self.streaming_server_addr, self.resource_name.encode())
+        if self.resource_name.startswith("replay/"):
+            if self.media_name is None:
+                self.logging.logE(
+                    "Error media_name should be provided in video stream replay mode")
+                return False
+        res = od.pdraw_open_url(self.pdraw, url)
 
         if res != 0:
             self.logging.logE(
@@ -497,10 +507,10 @@ class Pdraw(object):
         Close pdraw stream
         """
         self._close_resp_future = Future(self.pdraw_thread_loop)
-        if self._state in (State.Closed, State.Created):
-            self.logging.logW("Cannot close stream from {}".format(self._state))
-            self._close_resp_future.set_result(False)
-            self._state = State.Error
+
+        if self._state is State.Closed:
+            self.logging.logI("pdraw is already closed".format(self._state))
+            self._close_resp_future.set_result(True)
             return self._close_resp_future
 
         if not self.pdraw:
@@ -543,7 +553,7 @@ class Pdraw(object):
         self._open_resp_future.set_result(status == 0)
 
     def _close_resp(self, pdraw, status, userdata):
-        self.logging.logD("_close_resp called")
+        self.logging.logI("_close_resp called")
         if status != 0:
             self._close_resp_future.set_result(False)
             self._state = State.Error
@@ -589,17 +599,30 @@ class Pdraw(object):
         self.logging.logD("_socket_created called")
 
     def _select_demuxer_media(self, pdraw, medias, count, userdata):
+        # by default select the default media (media_id=0)
+        selected_media_id = 0
+        selected_media_idx = 0
         for idx in range(count):
             self.logging.logI(
                 "_select_demuxer_media: "
-                "idx={} media_id={} name={} uri={} default={}".format(
+                "idx={} media_id={} name={} default={}".format(
                     idx, medias[idx].media_id,
                     od.string_cast(medias[idx].name),
-                    od.string_cast(medias[idx].uri),
                     str(bool(medias[idx].is_default)))
             )
-        # select the default media
-        return 0
+            if (self.media_name is not None and
+                    self.media_name == od.string_cast(medias[idx].name)):
+                selected_media_id = medias[idx].media_id
+                selected_media_idx = idx
+        if (
+            self.media_name is not None and
+            od.string_cast(medias[selected_media_idx].name) != self.media_name
+        ):
+            self.logging.logW(
+                "media_name {} is unavailable. "
+                "Selecting the default media instead".format(self.media_name)
+            )
+        return selected_media_id
 
     def _media_added(self, pdraw, media_info, userdata):
         id_ = media_info.contents.id
@@ -686,6 +709,10 @@ class Pdraw(object):
 
         self.streams.pop(id_)
 
+    def _end_of_range(self, pdraw, timestamp, userdata):
+        self.logging.logI("_end_for_range")
+        self._close_stream_impl()
+
     def _video_sink_flush(self, pdraw, videosink, userdata):
 
         id_ = py_object_cast(userdata)
@@ -693,12 +720,6 @@ class Pdraw(object):
             self.logging.logE(
                 'Received flush event from unknown ID {}'.format(id_))
             return
-        self.pdraw_thread_loop.run_async(
-            self._video_sink_flush_impl, pdraw, videosink, id_)
-
-    def _video_sink_flush_impl(self, pdraw, videosink, id_):
-
-        self.logging.logD('video sink flush from media #%d' % id_)
 
         res = od.vbuf_queue_flush(self.streams[id_]['video_queue'])
         if res < 0:
@@ -848,7 +869,7 @@ class Pdraw(object):
                 if f:
                     f.close()
 
-    def play(self):
+    def play(self, resource_name="live", media_name="DefaultVideo"):
         if self._state not in (State.Opened,
                                State.Playing,
                                State.Paused,
@@ -858,6 +879,9 @@ class Pdraw(object):
             f = Future(self.pdraw_thread_loop)
             f.set_result(False)
             return f
+
+        self.resource_name = resource_name
+        self.media_name = media_name
 
         # reset session metadata from any previous session
         self.session_metadata = {}
