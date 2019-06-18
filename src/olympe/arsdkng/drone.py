@@ -1635,6 +1635,7 @@ class Drone(object):
                                     h264_meta_file,
                                     raw_data_file,
                                     raw_meta_file)
+        return makeReturnTuple(self.error_code_drones.OK, "Video stream paused")
 
     def set_streaming_callbacks(self,
                                 h264_cb=None,
@@ -1657,8 +1658,11 @@ class Drone(object):
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         self.pdraw.set_callbacks(h264_cb,
                                  raw_cb)
+        return makeReturnTuple(self.error_code_drones.OK, "Video stream set_callbacks")
 
     def get_streaming_session_metadata(self):
+        if self.pdraw is None:
+            return None
         return self.pdraw.get_session_metadata()
 
     @ensure_connected
