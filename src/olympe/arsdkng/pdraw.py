@@ -327,7 +327,6 @@ class Pdraw(object):
             'h264_header': None,
             'video_sink': od.POINTER_T(od.struct_pdraw_video_sink)(),
             'video_queue': None,
-            'video_queue_fd': 0,
             'video_queue_event': None,
         })
         self.session_metadata = {}
@@ -680,12 +679,9 @@ class Pdraw(object):
         self.streams[id_]['video_queue_event'] = \
             od.vbuf_queue_get_evt(self.streams[id_]['video_queue'])
 
-        self.streams[id_]['video_queue_fd'] = \
-            od.pomp_evt_get_fd(self.streams[id_]['video_queue_event'])
-
         # add the file description to our pomp loop
-        self.callbacks_thread_loop.add_fd_to_loop(
-            self.streams[id_]['video_queue_fd'],
+        self.callbacks_thread_loop.add_event_to_loop(
+            self.streams[id_]['video_queue_event'],
             lambda *args: self._video_sink_queue_event(*args),
             id_
         )
@@ -699,9 +695,9 @@ class Pdraw(object):
 
         self.logging.logI("_media_removed called id : {}".format(id_))
 
-        if self.streams[id_]['video_queue_fd']:
-            self.callbacks_thread_loop.remove_fd_from_loop(
-                self.streams[id_]['video_queue_fd'])
+        if self.streams[id_]['video_queue_event']:
+            self.callbacks_thread_loop.remove_event_from_loop(
+                self.streams[id_]['video_queue_event'])
 
         res = od.pdraw_stop_video_sink(pdraw, self.streams[id_]['video_sink'])
         if res < 0:
@@ -735,7 +731,7 @@ class Pdraw(object):
             self.logging.logD(
                 'pdraw_video_sink_queue_flushed() returned %s' % res)
 
-    def _video_sink_queue_event(self, fd, revents, userdata):
+    def _video_sink_queue_event(self, pomp_evt, userdata):
         id_ = py_object_cast(userdata)
         self.logging.logD('media id = {}'.format(id_))
 

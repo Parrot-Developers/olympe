@@ -131,7 +131,7 @@ class PompLoopThread(threading.Thread):
         self.async_pomp_task = list()
         self.deferred_pomp_task = list()
         self.wakeup_evt = od.pomp_evt_new()
-        self.pomp_fd_callbacks = dict()
+        self.pomp_event_callbacks = dict()
         self.pomp_loop = None
         self.pomp_timers = {}
         self.pomp_timer_callbacks = {}
@@ -186,11 +186,11 @@ class PompLoopThread(threading.Thread):
         self.deferred_pomp_task.append((future, func, args, kwargs))
         return future
 
-    def _wake_up_event_cb(self, fd, revents, _userdata):
+    def _wake_up_event_cb(self, pomp_evt, _userdata):
         """
-        Callback received when evenfd is triggered.
+        Callback received when a pomp_evt is triggered.
         """
-        self._acknowledge_wake_up()
+        # the pomp_evt is acknowledged by libpomp
 
     def _run_task_list(self, task_list):
         """
@@ -215,8 +215,8 @@ class PompLoopThread(threading.Thread):
         """
         Thread's main loop
         """
-        self.add_fd_to_loop(
-            od.pomp_evt_get_fd(self.wakeup_evt), lambda *args: self._wake_up_event_cb(*args))
+        self.add_event_to_loop(
+            self.wakeup_evt, lambda *args: self._wake_up_event_cb(*args))
 
         # We have to monitor the main thread exit. This is the simplest way to
         # let the main thread handle the signals while still being able to
@@ -244,43 +244,41 @@ class PompLoopThread(threading.Thread):
     def _wait_and_process(self):
         od.pomp_loop_wait_and_process(self.pomp_loop, self.pomptimeout_ms)
 
-    def _acknowledge_wake_up(self):
-        od.pomp_evt_clear(self.wakeup_evt)
-
     def _wake_up(self):
         if self.wakeup_evt:
             od.pomp_evt_signal(self.wakeup_evt)
 
-    def add_fd_to_loop(self, fd, cb, userdata=None):
+    def add_event_to_loop(self, pomp_evt, cb, userdata=None):
         """
-        The event fd is used to wake up the pomp thread
+        Add a pomp event to the loop
         """
-        self.pomp_fd_callbacks[fd] = od.pomp_fd_event_cb_t(cb)
+        evt_id = id(pomp_evt)
+        self.pomp_event_callbacks[evt_id] = od.pomp_evt_cb_t(cb)
 
-        self.userdata[fd] = userdata
+        self.userdata[evt_id] = userdata
         userdata = ctypes.cast(ctypes.pointer(ctypes.py_object(userdata)), ctypes.c_void_p)
-        self.c_userdata[fd] = userdata
-        res = od.pomp_loop_add(
+        self.c_userdata[evt_id] = userdata
+        res = od.pomp_evt_attach_to_loop(
+            pomp_evt,
             self.pomp_loop,
-            fd,
-            select.EPOLLIN,
-            self.pomp_fd_callbacks[fd],
+            self.pomp_event_callbacks[evt_id],
             userdata
         )
         if res != 0:
             raise RuntimeError('Cannot add eventfd to pomp loop')
 
-    def remove_fd_from_loop(self, fd):
-        self.userdata.pop(fd, None)
-        self.c_userdata.pop(fd, None)
-        if self.pomp_fd_callbacks.pop(fd, None) is not None:
-            if od.pomp_loop_remove(self.pomp_loop, fd) != 0:
-                self.logging.logE('Cannot remove eventfd "%s" from pomp loop' % fd)
+    def remove_event_from_loop(self, pomp_evt):
+        evt_id = id(pomp_evt)
+        self.userdata.pop(evt_id, None)
+        self.c_userdata.pop(evt_id, None)
+        if self.pomp_event_callbacks.pop(evt_id, None) is not None:
+            if od.pomp_evt_detach_from_loop(pomp_evt, self.pomp_loop) != 0:
+                self.logging.logE('Cannot remove event "%s" from pomp loop' % evt_id)
 
     def _destroy_pomp_loop_fds(self):
-        fds = list(self.pomp_fd_callbacks.keys())[:]
-        for fd in fds:
-            self.remove_fd_from_loop(fd)
+        evt_ids = list(self.pomp_event_callbacks.keys())[:]
+        for evt_id in evt_ids:
+            self.remove_event_from_loop(evt_id)
 
     def _create_pomp_loop(self):
 
