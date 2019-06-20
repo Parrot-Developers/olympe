@@ -131,6 +131,7 @@ class PompLoopThread(threading.Thread):
         self.async_pomp_task = list()
         self.deferred_pomp_task = list()
         self.wakeup_evt = od.pomp_evt_new()
+        self.pomp_events = dict()
         self.pomp_event_callbacks = dict()
         self.pomp_loop = None
         self.pomp_timers = {}
@@ -253,6 +254,7 @@ class PompLoopThread(threading.Thread):
         Add a pomp event to the loop
         """
         evt_id = id(pomp_evt)
+        self.pomp_events[evt_id] = pomp_evt
         self.pomp_event_callbacks[evt_id] = od.pomp_evt_cb_t(cb)
 
         self.userdata[evt_id] = userdata
@@ -271,14 +273,15 @@ class PompLoopThread(threading.Thread):
         evt_id = id(pomp_evt)
         self.userdata.pop(evt_id, None)
         self.c_userdata.pop(evt_id, None)
-        if self.pomp_event_callbacks.pop(evt_id, None) is not None:
+        self.pomp_event_callbacks.pop(evt_id, None)
+        if self.pomp_events.pop(evt_id, None) is not None:
             if od.pomp_evt_detach_from_loop(pomp_evt, self.pomp_loop) != 0:
                 self.logging.logE('Cannot remove event "%s" from pomp loop' % evt_id)
 
     def _destroy_pomp_loop_fds(self):
-        evt_ids = list(self.pomp_event_callbacks.keys())[:]
-        for evt_id in evt_ids:
-            self.remove_event_from_loop(evt_id)
+        evts = list(self.pomp_events.values())[:]
+        for evt in evts:
+            self.remove_event_from_loop(evt)
 
     def _create_pomp_loop(self):
 
