@@ -418,7 +418,7 @@ class Pdraw(object):
         if not self.pdraw:
             return
 
-        f = self.pdraw_thread_loop.run_async(self._close_stream).then(
+        f = self.close().then(
             lambda _: self._destroy(), deferred=True)
         return f
 
@@ -431,7 +431,7 @@ class Pdraw(object):
             res = od.pdraw_destroy(self.pdraw)
             if res != 0:
                 self.logging.logE("Cannot destroy pdraw object")
-        self.pdraw = ctypes.c_void_p(0)
+        self.pdraw = od.POINTER_T(od.struct_pdraw)()
         self.logging.logI("pdraw destroyed")
         return True
 
@@ -501,12 +501,17 @@ class Pdraw(object):
 
         return self._open_resp_future
 
+    def close(self):
+        if self._state is not State.Closing:
+            self._close_resp_future = Future(self.pdraw_thread_loop)
+            self._state = State.Closing
+            self.pdraw_thread_loop.run_async(self._close_stream)
+        return self._close_resp_future
+
     def _close_stream(self):
         """
         Close pdraw stream
         """
-        self._close_resp_future = Future(self.pdraw_thread_loop)
-
         if self._state is State.Closed:
             self.logging.logI("pdraw is already closed".format(self._state))
             self._close_resp_future.set_result(True)
@@ -518,7 +523,6 @@ class Pdraw(object):
             self._close_resp_future.set_result(False)
             return self._close_resp_future
 
-        self._state = State.Closing
         if not self._close_stream_impl():
             self._state = State.Error
             self._close_resp_future.set_result(False)
@@ -552,13 +556,31 @@ class Pdraw(object):
         self._open_resp_future.set_result(status == 0)
 
     def _close_resp(self, pdraw, status, userdata):
-        self.logging.logI("_close_resp called")
+        self._close_output_files()
         if status != 0:
+            self.logging.logE("_close_resp called {}".format(status))
             self._close_resp_future.set_result(False)
             self._state = State.Error
         else:
+            self.logging.logI("_close_resp called {}".format(status))
             self._state = State.Closed
             self._close_resp_future.set_result(True)
+
+        if self.pdraw:
+            res = od.pdraw_destroy(self.pdraw)
+            if res != 0:
+                self.logging.logE("Cannot destroy pdraw object")
+        self.pdraw = od.POINTER_T(od.struct_pdraw)()
+        res = od.pdraw_new(
+            self.pomp_loop,
+            self.cbs,
+            ctypes.cast(ctypes.pointer(ctypes.py_object(self)), ctypes.c_void_p),
+            ctypes.byref(self.pdraw)
+        )
+        if res != 0:
+            msg = "Error while creating pdraw interface: {}".format(res)
+            self.logging.logE(msg)
+            self.pdraw = od.POINTER_T(od.struct_pdraw)()
 
     def _ready_to_play(self, pdraw, ready, userdata):
         self.logging.logI("_ready_to_play({}) called".format(ready))
@@ -577,7 +599,6 @@ class Pdraw(object):
             self._play_resp_future.set_result(False)
 
     def _pause_resp(self, pdraw, status, timestamp, userdata):
-        self._close_output_files()
         if status == 0:
             self.logging.logD("_pause_resp called {}".format(status))
             self._state = State.Paused
@@ -707,7 +728,7 @@ class Pdraw(object):
 
     def _end_of_range(self, pdraw, timestamp, userdata):
         self.logging.logI("_end_for_range")
-        self._close_stream_impl()
+        self.close()
 
     def _video_sink_flush(self, pdraw, videosink, userdata):
 
@@ -866,10 +887,12 @@ class Pdraw(object):
                     f.close()
 
     def play(self, resource_name="live", media_name="DefaultVideo"):
-        if self._state not in (State.Opened,
-                               State.Playing,
-                               State.Paused,
-                               State.Created):
+        if self.pdraw is None:
+            self.logging.logE("Error Pdraw interface seems to be destroyed")
+            self._play_resp_future.set_result(False)
+            return self._pause_resp_future
+
+        if self._state in (State.Opening, State.Closing):
             self.logging.logW("Cannot play stream from the {} state".format(
                 self._state))
             f = Future(self.pdraw_thread_loop)
@@ -883,7 +906,7 @@ class Pdraw(object):
         self.session_metadata = {}
 
         self._open_output_files()
-        if self._state is State.Created:
+        if self._state in (State.Created, State.Closed):
             f = self.pdraw_thread_loop.run_async(self._open_stream)
         else:
             f = self._play_resp_future = Future(self.pdraw_thread_loop)
@@ -905,12 +928,24 @@ class Pdraw(object):
         return self._play_resp_future
 
     def pause(self):
-        self._pause_resp_future = Future(self.pdraw_thread_loop)
         if self.pdraw is None:
             self.logging.logE("Error Pdraw interface seems to be destroyed")
             self._pause_resp_future.set_result(False)
             return self._pause_resp_future
 
+        self._pause_resp_future = Future(self.pdraw_thread_loop)
+        if self._state is State.Playing:
+            self.pdraw_thread_loop.run_async(self._pause_impl)
+        elif self._state is State.Closed:
+            # Pause a closed stream is OK
+            self._pause_resp_future.set_result(True)
+        else:
+            self.logging.logW("Cannot pause stream from the {} state".format(
+                self._state))
+            self._pause_resp_future.set_result(False)
+        return self._pause_resp_future
+
+    def _pause_impl(self):
         res = od.pdraw_pause(self.pdraw)
         if res != 0:
             self.logging.logE("Unable to stop streaming ({})".format(res))

@@ -1602,8 +1602,12 @@ class Drone(object):
                 msg = "Failed to pause video stream"
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+            if not self.pdraw.close().result(timeout=5):
+                msg = "Failed to close video stream"
+                self.logging.logE(msg)
+                return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         except FutureTimeoutError:
-            msg = "Failed to pause video stream (timeout)"
+            msg = "Failed to stop video stream (timeout)"
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
