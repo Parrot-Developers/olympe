@@ -400,8 +400,11 @@ class ArsdkEventExpectation(ArsdkFillDefaultArgsExpectationMixin, ArsdkExpectati
                     lambda command_message, command_args:
                     command_args[argname]
                 )(argname)
+            elif arg.name in expected_message.args_enum:
+                args[arg.name] = (
+                    expected_message.args_enum[arg.name][arg.value])
             else:
-                args[arg.name] = expected_message.args_enum[arg.name][arg.value]
+                args[arg.name] = int(arg.value)
         return cls(expected_message, args)
 
     def __iter__(self):
