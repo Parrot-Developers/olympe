@@ -44,6 +44,9 @@ Olympe is part of the {{ workspace }} workspace so first, you need to clone that
 Install {{ olympe_product }} dependencies
 -----------------------------------------
 
+Recommended dependency installation procedure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 To install the dependencies of the "{{ workspace }}" workspace, just execute the `postinst` script.
 
 .. code-block:: console
@@ -51,6 +54,57 @@ To install the dependencies of the "{{ workspace }}" workspace, just execute the
     $ pwd
     ~/code/{{ workspace }}
     $ {{ olympe_scripts_path }}/postinst
+
+.. Warning::
+    For Anaconda users
+    You may want to manually install the Python dependencies rather than
+    relying on the `postinst` script (see manual-dependency-installation_)
+
+.. _manual-dependency-installation:
+
+Manual depencency installation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The `postinst` script will install some global Python packages using your
+system provided python-pip. Hence:
+
+    - It will NOT install any dependency in you custom Python environment
+      (e.g. Anaconda) even if your Anaconda installation
+      is in your `PATH`.
+    - The `build.sh` script (see below) WILL fail if your Anaconda Python is
+      in your `PATH`.
+
+As a workaround, you may choose to:
+    - Remove Anaconda (or any other custom Python environement) from your
+      `PATH` before running the `postinst` and `build.sh` scripts.
+    - Proceed with a manual depencendy installation (see below).
+
+.. code-block:: console
+
+    # pdraw dependencies
+    $ sudo apt-get -y install build-essential yasm cmake libtool libc6 libc6-dev \
+      unzip freeglut3-dev libglfw3 libglfw3-dev libsdl2-dev libjson-c-dev \
+      libcurl4-gnutls-dev libavahi-client-dev libgles2-mesa-dev
+
+    # ffmpeg build dependencies
+    $ sudo apt-get -y install rsync
+
+    # arsdk build dependencies
+    $ sudo apt-get -y install cmake libbluetooth-dev libavahi-client-dev \
+        libopencv-dev libswscale-dev libavformat-dev \
+        libavcodec-dev libavutil-dev cython python-dev
+
+    # olympe build dependency
+    $ pip3 install clang
+
+Please, modify `{{ workspace }}` workspace location below according to your
+local installation path.
+
+.. code-block:: console
+
+    # olympe python runtime dependencies
+    $ pip3 install -r ~/code/{{ workspace }}/packages/olympe/requirements.txt
+    $ echo "export PYTHONPATH=\$PYTHONPATH:~/code/{{ workspace }}/out/olympe-linux/final/usr/lib/python/site-packages/" >> ~/code/{{ workspace }}/products/olympe/linux/env/setenv
 
 
 Build {{ olympe_product }}
