@@ -1536,7 +1536,37 @@ class Drone(object):
                               resource_name="live",
                               media_name="DefaultVideo"):
         """
-        Starts the live video streaming from the drone front camera
+        Starts a video streaming session
+
+        :type resource_name: str
+        :param resource_name: video streaming ressource. This parameter defaults
+            to "live" for the live video stream from the drone front camera.
+            Alternatively, `resource_name` can also point to a video file on the
+            drone that is available for replay. In the later case, it takes the
+            form "replay/RESOURCE_ID" where `RESOURCE_ID` can be obtained
+            through the drone media REST API at
+            http://10.202.0.1/api/v1/media/medias.
+
+            Examples:
+
+                - "live"
+                - "replay/100000010001.MP4"
+                - "replay/200000020002.MP4"
+                - ...
+
+        :type media_name: str
+        :param media_name: video stream media name. A video stream resource
+            (e.g. "live" or "replay/..") may provide multiple media tracks.
+            Use the `media_name` parameter to select the media from the
+            available medias. This parameter defaults to "DefaultVideo".
+            If the requested media is unavailable, the default media will be
+            selected instead without reporting any error.
+
+            Possible values:
+
+                - "DefaultVideo"
+                - "ParrotThermalVideo" (available with an ANAFI Thermal when
+                  replaying a thermal video).
 
         See:
             - :py:func:`~olympe.Drone.set_streaming_output_files`

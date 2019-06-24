@@ -24,7 +24,8 @@ Olympe API Reference Documentation
 
     .. automethod:: ref
     .. automethod:: unref
-    .. automethod:: metadata
+    .. automethod:: info
+    .. automethod:: vmeta
     .. automethod:: as_ctypes_pointer
     .. automethod:: as_ndarray
 
