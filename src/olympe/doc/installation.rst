@@ -37,7 +37,7 @@ Olympe is part of the {{ workspace }} workspace so first, you need to clone that
         - default.xml: all branches are tracked
         - release.xml: all branches are frozen on sha1 (RECOMMENDED)
         - stable.xml: based on release, but some active projects are tracking master (e.g. Olympe,
-        test scripts, ...)
+          test scripts, ...)
         - experimental.xml: based on stabled, but some projects are using development branches
 
 
