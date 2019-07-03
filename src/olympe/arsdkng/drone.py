@@ -761,9 +761,8 @@ class Drone(object):
     def _create_pdraw_interface(self):
         legacy_streaming = self.drone_type not in (None, od.ARSDK_DEVICE_TYPE_ANAFI4K)
         self.pdraw = Pdraw(
-            self.logging,
-            self.thread_loop,
-            self.addr,
+            logging=self.logging,
+            pdraw_thread_loop=self.thread_loop,
             legacy=legacy_streaming,
             buffer_queue_size=self.video_buffer_queue_size,
         )
@@ -1594,6 +1593,7 @@ class Drone(object):
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if (not self.pdraw.play(
+                server_addr=self.addr,
                 resource_name=resource_name,
                 media_name=media_name).result(timeout=5)):
             msg = "Failed to play video stream"
@@ -1673,25 +1673,30 @@ class Drone(object):
 
     def set_streaming_callbacks(self,
                                 h264_cb=None,
-                                raw_cb=None):
+                                raw_cb=None,
+                                end_cb=None):
         """
-        Set the callbacks that will be called when a new video stream frame is available.
+        Set the callback functions that will be called when a new video stream frame is available or
+        when the video stream has ended.
 
-        The callbacks return values are ignored.
+        Video frame callbacks:
+        - `h264_cb` is associated to the H264 encoded video stream
+        - `raw_cb` is associated to the decoded video stream
 
-        - h264_cb is associated to the H264 encoded video stream
-        - raw_cb is associated to the decoded video stream
-
-        Each callback function takes an :py:func:`~olympe.VideoFrame` parameter
-
+        Each video frame callback function takes an :py:func:`~olympe.VideoFrame` parameter
+        The `end_cb` callback function is called when the (replayed) video stream ends and takes
+        no parameter.
+        The return value of all these callback functions are ignored.
         If a callback is not desired, just set it to `None`.
         """
+
         if self.pdraw is None:
             msg = "Cannot set streaming callbacks while the drone is not connected"
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
-        self.pdraw.set_callbacks(h264_cb,
-                                 raw_cb)
+        self.pdraw.set_callbacks(
+            h264_cb=h264_cb, raw_cb=raw_cb, end_cb=end_cb
+        )
         return makeReturnTuple(self.error_code_drones.OK, "Video stream set_callbacks")
 
     def get_streaming_session_metadata(self):

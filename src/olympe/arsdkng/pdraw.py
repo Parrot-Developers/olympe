@@ -39,13 +39,16 @@ import olympe_deps as od
 import errno
 import json
 import numpy as np
+import os
 import re
+import sys
 import threading
 from aenum import Enum, auto
 from collections import defaultdict, namedtuple
 
 from olympe._private import py_object_cast
 from olympe._private.pomp_loop_thread import Future, PompLoopThread
+from olympe.tools.logger import TraceLogger
 
 _copyright__ = "Copyright 2018, Parrot"
 
@@ -300,19 +303,39 @@ class VideoFrame:
 class Pdraw(object):
 
     def __init__(self,
-                 logging,
-                 pdraw_thread_loop,
-                 streaming_server_addr,
+                 buffer_queue_size=2,
+                 loglevel=TraceLogger.level.info,
+                 logfile=sys.stdout,
                  legacy=False,
-                 buffer_queue_size=2):
+                 pdraw_thread_loop=None,
+                 logging=None):
+        """
+        :param buffer_queue_size: video buffer queue size (defaults to 2)
+        :type buffer_queue_size: int
+        :param loglevel: pdraw logger log level (defaults to :py:attr:`olympe.tools.logger.level.info`)
+        :type loglevel: int
+        :param logfile: pdraw logger file (defaults to sys.stdout)
+        :type logfile: FileObjectLike
+        :param legacy: Defaults to False, set this parameter to True for legacy
+            drones (Bebop, Disco, ...) streaming support
+        :type legacy: bool
+        """
 
-        self.logging = logging
-        self.pdraw_thread_loop = pdraw_thread_loop
-        self.callbacks_thread_loop = PompLoopThread(logging)
+        if logging is None:
+            self.logging = TraceLogger(loglevel, logfile)
+        else:
+            self.logging = logging
+
+        if pdraw_thread_loop is None:
+            self.pdraw_thread_loop = PompLoopThread(self.logging)
+            self.pdraw_thread_loop.start()
+        else:
+            self.pdraw_thread_loop = pdraw_thread_loop
+
+        self.callbacks_thread_loop = PompLoopThread(self.logging)
         self.callbacks_thread_loop.start()
         self.buffer_queue_size = buffer_queue_size
         self.pomp_loop = self.pdraw_thread_loop.pomp_loop
-        self.streaming_server_addr = streaming_server_addr
         self._legacy = legacy
 
         self._open_resp_future = Future(self.pdraw_thread_loop)
@@ -347,11 +370,14 @@ class Pdraw(object):
             },
         }
 
-        self.callbacks = {
+        self.frame_callbacks = {
             od.PDRAW_VIDEO_MEDIA_FORMAT_H264: None,
             od.PDRAW_VIDEO_MEDIA_FORMAT_YUV: None,
         }
+        self.end_callback = None
 
+        self.url = None
+        self.server_addr = None
         self.resource_name = "live"
         self.media_name = None
 
@@ -433,7 +459,7 @@ class Pdraw(object):
             PDRAW_LOCAL_ADDR,
             self.local_stream_port,
             self.local_control_port,
-            self.streaming_server_addr,
+            self.server_addr,
             PDRAW_REMOTE_STREAM_PORT,
             PDRAW_REMOTE_CONTROL_PORT,
             PDRAW_IFACE_ADRR
@@ -451,21 +477,19 @@ class Pdraw(object):
         """
         Opening rtsp streaming url
         """
-        url = b"rtsp://%s/%s" % (
-            self.streaming_server_addr, self.resource_name.encode())
         if self.resource_name.startswith("replay/"):
             if self.media_name is None:
                 self.logging.logE(
                     "Error media_name should be provided in video stream replay mode")
                 return False
-        res = od.pdraw_open_url(self.pdraw, url)
+        res = od.pdraw_open_url(self.pdraw, self.url)
 
         if res != 0:
             self.logging.logE(
-                "Error while opening pdraw url: {} ({})".format(url, res))
+                "Error while opening pdraw url: {} ({})".format(self.url, res))
             return False
         else:
-            self.logging.logI("Opening pdraw url OK: {}".format(url))
+            self.logging.logI("Opening pdraw url OK: {}".format(self.url))
         return True
 
     def _open_stream(self):
@@ -495,6 +519,9 @@ class Pdraw(object):
         return self._open_resp_future
 
     def close(self):
+        """
+        Close a playing or paused video stream session
+        """
         if self._state is not State.Closing:
             self._close_resp_future = Future(self.pdraw_thread_loop)
             self._state = State.Closing
@@ -586,6 +613,9 @@ class Pdraw(object):
         if ready:
             self._play_resp_future = Future(self.pdraw_thread_loop)
             self._play_impl()
+        if self._state in (State.Playing, State.Closing, State.Closed):
+            if self.end_callback is not None:
+                self.callbacks_thread_loop.run_async(self.end_callback)
 
     def _play_resp(self, pdraw, status, timestamp, speed, userdata):
         if status == 0:
@@ -839,7 +869,7 @@ class Pdraw(object):
                 ))
 
         # call callbacks when existing
-        cb = self.callbacks[mediatype]
+        cb = self.frame_callbacks[mediatype]
         if cb is not None:
             cb(video_frame)
 
@@ -853,6 +883,19 @@ class Pdraw(object):
                          h264_meta_file,
                          raw_data_file,
                          raw_meta_file):
+        """
+        Records the video stream session to the disk
+
+        - xxx_meta_file: video stream metadata output files
+        - xxx_data_file: video stream frames output files
+        - h264_***_file: files associated to the H264 encoded video stream
+        - raw_***_file: files associated to the decoded video stream
+
+        This function MUST NOT be called when a video streaming session is
+        active.
+        Setting a file parameter to `None` disables the recording for the
+        related stream part.
+        """
         if self._state is State.Playing:
             raise RuntimeError(
                 'Cannot set video streaming files while streaming is on.')
@@ -874,12 +917,29 @@ class Pdraw(object):
             self.outfiles[mediatype][datatype].close()
 
     def set_callbacks(self,
-                      h264_cb,
-                      raw_cb):
+                      h264_cb=None,
+                      raw_cb=None,
+                      end_cb=None):
+        """
+        Set the callback functions that will be called when a new video stream frame is available or
+        when the video stream has ended.
+
+        Video frame callbacks:
+        - `h264_cb` is associated to the H264 encoded video stream
+        - `raw_cb` is associated to the decoded video stream
+
+        Each video frame callback function takes an :py:func:`~olympe.VideoFrame` parameter
+        The `end_cb` callback function is called when the (replayed) video stream ends and takes
+        no parameter.
+        The return value of all these callback functions are ignored.
+        If a callback is not desired, just set it to `None`.
+        """
 
         for mediatype, cb in ((od.PDRAW_VIDEO_MEDIA_FORMAT_H264, h264_cb),
                               (od.PDRAW_VIDEO_MEDIA_FORMAT_YUV, raw_cb)):
-            self.callbacks[mediatype] = cb
+            self.frame_callbacks[mediatype] = cb
+
+        self.end_callback = end_cb
 
     def _open_output_files(self):
         self.logging.logD('opening video output files')
@@ -895,7 +955,30 @@ class Pdraw(object):
                 if f:
                     f.close()
 
-    def play(self, resource_name="live", media_name="DefaultVideo"):
+    def play(self, url=None, media_name="DefaultVideo", server_addr=None, resource_name="live"):
+        """
+        Play a video
+
+        By default, open and play a live video streaming session available
+        from rtsp://192.168.42.1/live where "192.168.42.1" is the default IP
+        address of a physical (Anafi) drone. The default is equivalent to
+        `Pdraw.play(url="rtsp://192.168.42.1/live")`
+
+        For a the live video streaming from a **simulated drone**, you have to
+        specify the default simulated drone IP address (10.202.0.1) instead:
+        `Pdraw.play(url="rtsp://10.202.0.1/live")`.
+
+        The `url` parameter can also point to a local file example:
+        `Pdraw.play(url="file://~/Videos/100000010001.MP4")`.
+
+        :param url: rtsp or local file video URL
+        :type url: str
+        :param media_name: name of the media/track (defaults to "DefaultVideo").
+            If the provided media name is not available from the requested video
+            stream, the default media is selected instead.
+        :type media_name: str
+
+        """
         if self.pdraw is None:
             self.logging.logE("Error Pdraw interface seems to be destroyed")
             self._play_resp_future.set_result(False)
@@ -910,6 +993,27 @@ class Pdraw(object):
 
         self.resource_name = resource_name
         self.media_name = media_name
+
+        if server_addr is None:
+            self.server_addr = "192.168.42.1"
+        else:
+            self.server_addr = server_addr
+
+        if url is None:
+            self.url = b"rtsp://%s/%s" % (
+                self.server_addr, self.resource_name.encode())
+        else:
+            if isinstance(url, bytes):
+                url = url.decode('utf-8')
+            if url.startswith('file://'):
+                url = url[7:]
+            if url.startswith('~/'):
+                url = os.path.expanduser(url)
+            url = os.path.expandvars(url)
+            url = url.encode('utf-8')
+            self.url = url
+            if self.is_legacy():
+                self.logging.logW("Cannot open streaming url for legacy drones")
 
         # reset session metadata from any previous session
         self.session_metadata = {}
@@ -947,6 +1051,9 @@ class Pdraw(object):
         return self._play_resp_future
 
     def pause(self):
+        """
+        Pause the currently playing video
+        """
         if self.pdraw is None:
             self.logging.logE("Error Pdraw interface seems to be destroyed")
             self._pause_resp_future.set_result(False)
@@ -972,6 +1079,9 @@ class Pdraw(object):
         return self._pause_resp_future
 
     def get_session_metadata(self):
+        """
+        Returns a dictionary of video stream session metadata
+        """
         if self.pdraw is None:
             self.logging.logE("Error Pdraw interface seems to be destroyed")
             return None
