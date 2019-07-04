@@ -216,7 +216,7 @@ class PompLoopThread(threading.Thread):
         """
         Thread's main loop
         """
-        self.add_event_to_loop(
+        self._add_event_to_loop(
             self.wakeup_evt, lambda *args: self._wake_up_event_cb(*args))
 
         # We have to monitor the main thread exit. This is the simplest way to
@@ -249,10 +249,13 @@ class PompLoopThread(threading.Thread):
         if self.wakeup_evt:
             od.pomp_evt_signal(self.wakeup_evt)
 
-    def add_event_to_loop(self, pomp_evt, cb, userdata=None):
+    def add_event_to_loop(self, *args, **kwds):
         """
         Add a pomp event to the loop
         """
+        self.run_async(self._add_event_to_loop, *args, **kwds)
+
+    def _add_event_to_loop(self, pomp_evt, cb, userdata=None):
         evt_id = id(pomp_evt)
         self.pomp_events[evt_id] = pomp_evt
         self.pomp_event_callbacks[evt_id] = od.pomp_evt_cb_t(cb)
@@ -269,7 +272,13 @@ class PompLoopThread(threading.Thread):
         if res != 0:
             raise RuntimeError('Cannot add eventfd to pomp loop')
 
-    def remove_event_from_loop(self, pomp_evt):
+    def remove_event_from_loop(self, *args, **kwds):
+        """
+        Remove a pomp event from the loop
+        """
+        self.run_later(self._remove_event_from_loop, *args, **kwds)
+
+    def _remove_event_from_loop(self, pomp_evt):
         evt_id = id(pomp_evt)
         self.userdata.pop(evt_id, None)
         self.c_userdata.pop(evt_id, None)
@@ -281,7 +290,7 @@ class PompLoopThread(threading.Thread):
     def _destroy_pomp_loop_fds(self):
         evts = list(self.pomp_events.values())[:]
         for evt in evts:
-            self.remove_event_from_loop(evt)
+            self._remove_event_from_loop(evt)
 
     def _create_pomp_loop(self):
 

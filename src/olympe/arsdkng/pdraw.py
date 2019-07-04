@@ -40,6 +40,7 @@ import errno
 import json
 import numpy as np
 import re
+import threading
 from aenum import Enum, auto
 from collections import defaultdict, namedtuple
 
@@ -326,6 +327,8 @@ class Pdraw(object):
             'type': od.PDRAW_VIDEO_MEDIA_FORMAT_UNKNOWN,
             'h264_header': None,
             'video_sink': od.POINTER_T(od.struct_pdraw_video_sink)(),
+            'video_sink_flushed': False,
+            'video_sink_lock': threading.Lock(),
             'video_queue': None,
             'video_queue_event': None,
         })
@@ -394,20 +397,6 @@ class Pdraw(object):
             raise RuntimeError("ERROR: {}".format(msg))
 
         self.pdraw_thread_loop.register_cleanup(self.dispose)
-
-        res = od.pdraw_new(
-            self.pomp_loop,
-            self.cbs,
-            ctypes.cast(ctypes.pointer(ctypes.py_object(self)), ctypes.c_void_p),
-            ctypes.byref(self.pdraw)
-        )
-
-        if res != 0:
-            msg = "Error while creating pdraw interface: {}".format(res)
-            self.logging.logE(msg)
-            raise RuntimeError("ERROR: {}".format(msg))
-        else:
-            self.logging.logI("Pdraw interface has been created")
 
     def dispose(self):
         self.callbacks_thread_loop.stop()
@@ -491,6 +480,10 @@ class Pdraw(object):
             return self._open_resp_future
 
         self._state = State.Opening
+        if not self._pdraw_new():
+            self._open_resp_future.set_result(False)
+            return self._open_resp_future
+
         if not self._legacy:
             ret = self._open_url()
         else:
@@ -571,6 +564,8 @@ class Pdraw(object):
             if res != 0:
                 self.logging.logE("Cannot destroy pdraw object")
         self.pdraw = od.POINTER_T(od.struct_pdraw)()
+
+    def _pdraw_new(self):
         res = od.pdraw_new(
             self.pomp_loop,
             self.cbs,
@@ -581,6 +576,10 @@ class Pdraw(object):
             msg = "Error while creating pdraw interface: {}".format(res)
             self.logging.logE(msg)
             self.pdraw = od.POINTER_T(od.struct_pdraw)()
+            return False
+        else:
+            self.logging.logI("Pdraw interface has been created")
+            return True
 
     def _ready_to_play(self, pdraw, ready, userdata):
         self.logging.logI("_ready_to_play({}) called".format(ready))
@@ -738,19 +737,21 @@ class Pdraw(object):
                 'Received flush event from unknown ID {}'.format(id_))
             return
 
-        res = od.vbuf_queue_flush(self.streams[id_]['video_queue'])
-        if res < 0:
-            self.logging.logE('vbuf_queue_flush() returned %s' % res)
-        else:
-            self.logging.logD('vbuf_queue_flush() returned %s' % res)
+        with self.streams[id_]['video_sink_lock']:
+            res = od.vbuf_queue_flush(self.streams[id_]['video_queue'])
+            if res < 0:
+                self.logging.logE('vbuf_queue_flush() returned %s' % res)
+            else:
+                self.logging.logI('vbuf_queue_flush() returned %s' % res)
 
-        res = od.pdraw_video_sink_queue_flushed(pdraw, videosink)
-        if res < 0:
-            self.logging.logE(
-                'pdraw_video_sink_queue_flushed() returned %s' % res)
-        else:
-            self.logging.logD(
-                'pdraw_video_sink_queue_flushed() returned %s' % res)
+            res = od.pdraw_video_sink_queue_flushed(pdraw, videosink)
+            self.streams[id_]['video_sink_flushed'] = True
+            if res < 0:
+                self.logging.logE(
+                    'pdraw_video_sink_queue_flushed() returned %s' % res)
+            else:
+                self.logging.logD(
+                    'pdraw_video_sink_queue_flushed() returned %s' % res)
 
     def _video_sink_queue_event(self, pomp_evt, userdata):
         id_ = py_object_cast(userdata)
@@ -785,23 +786,28 @@ class Pdraw(object):
         return buf
 
     def _process_stream(self, id_):
-        while od.vbuf_queue_get_count(self.streams[id_]['video_queue']) > 0:
-            buf = self._pop_stream_buffer(id_)
-            if not buf:
-                return False
-            video_frame = VideoFrame(
-                self.logging,
-                buf,
-                self.streams[id_],
-                self.yuv_packed_buffer_pool,
-                self.get_session_metadata()
-            )
-            try:
-                if not self._process_stream_buffer(id_, video_frame):
+        with self.streams[id_]['video_sink_lock']:
+            if self.streams[id_]['video_sink_flushed']:
+                self.logging.logI(
+                    'Video sink has already been flushed ID {}'.format(id_))
+                return
+            while od.vbuf_queue_get_count(self.streams[id_]['video_queue']) > 0:
+                buf = self._pop_stream_buffer(id_)
+                if not buf:
                     return False
-            finally:
-                # Once we're done with this frame, dispose the associated frame buffer
-                video_frame.unref()
+                video_frame = VideoFrame(
+                    self.logging,
+                    buf,
+                    self.streams[id_],
+                    self.yuv_packed_buffer_pool,
+                    self.get_session_metadata()
+                )
+                try:
+                    if not self._process_stream_buffer(id_, video_frame):
+                        return False
+                finally:
+                    # Once we're done with this frame, dispose the associated frame buffer
+                    video_frame.unref()
 
     def _process_stream_buffer(self, id_, video_frame):
         stream = self.streams[id_]
