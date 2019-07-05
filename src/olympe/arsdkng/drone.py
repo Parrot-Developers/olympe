@@ -762,7 +762,6 @@ class Drone(object):
         legacy_streaming = self.drone_type not in (None, od.ARSDK_DEVICE_TYPE_ANAFI4K)
         self.pdraw = Pdraw(
             logging=self.logging,
-            pdraw_thread_loop=self.thread_loop,
             legacy=legacy_streaming,
             buffer_queue_size=self.video_buffer_queue_size,
         )
