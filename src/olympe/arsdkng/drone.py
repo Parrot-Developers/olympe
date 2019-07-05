@@ -1019,7 +1019,6 @@ class Drone(object):
             self._stop_piloting_impl()
 
         self._disconnection_impl()
-        self._destroy_pdraw()
 
         self._controller_state.device_conn_status.reset_status()
         self._controller_state.device_states.reset_all_states()

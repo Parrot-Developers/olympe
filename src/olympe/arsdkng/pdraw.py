@@ -522,11 +522,18 @@ class Pdraw(object):
         """
         Close a playing or paused video stream session
         """
-        if self._state is not State.Closing:
+        if self._state in (State.Opened, State.Paused, State.Playing, State.Error):
+            self.logging.logD("pdraw closing from the {} state".format(self._state))
             self._close_resp_future = Future(self.pdraw_thread_loop)
+            f = self._close_resp_future
             self._state = State.Closing
             self.pdraw_thread_loop.run_async(self._close_stream)
-        return self._close_resp_future
+        elif self._state is not State.Closing:
+            f = Future(self.pdraw_thread_loop)
+            f.set_result(False)
+        else:
+            f = self._close_resp_future
+        return f
 
     def _close_stream(self):
         """
@@ -591,6 +598,7 @@ class Pdraw(object):
             if res != 0:
                 self.logging.logE("Cannot destroy pdraw object")
         self.pdraw = od.POINTER_T(od.struct_pdraw)()
+        self._close_resp_future.set_result(True)
 
     def _pdraw_new(self):
         res = od.pdraw_new(
@@ -1062,8 +1070,8 @@ class Pdraw(object):
         self._pause_resp_future = Future(self.pdraw_thread_loop)
         if self._state is State.Playing:
             self.pdraw_thread_loop.run_async(self._pause_impl)
-        elif self._state is State.Closed:
-            # Pause a closed stream is OK
+        elif self._state in (State.Closed, State.Opened):
+            # Pause an opened/closed stream is OK
             self._pause_resp_future.set_result(True)
         else:
             self.logging.logW("Cannot pause stream from the {} state".format(
