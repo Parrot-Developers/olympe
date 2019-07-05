@@ -769,8 +769,9 @@ class Pdraw(object):
                 "Unable to clear frame received event ({})".format(res))
 
         # process all available buffers in the queue
-        while self._process_stream(id_):
-            pass
+        with self.streams[id_]['video_sink_lock']:
+            while self._process_stream(id_):
+                pass
 
     def _pop_stream_buffer(self, id_):
         buf = od.POINTER_T(od.struct_vbuf_buffer)()
@@ -786,28 +787,30 @@ class Pdraw(object):
         return buf
 
     def _process_stream(self, id_):
-        with self.streams[id_]['video_sink_lock']:
-            if self.streams[id_]['video_sink_flushed']:
-                self.logging.logI(
-                    'Video sink has already been flushed ID {}'.format(id_))
-                return
-            while od.vbuf_queue_get_count(self.streams[id_]['video_queue']) > 0:
-                buf = self._pop_stream_buffer(id_)
-                if not buf:
-                    return False
-                video_frame = VideoFrame(
-                    self.logging,
-                    buf,
-                    self.streams[id_],
-                    self.yuv_packed_buffer_pool,
-                    self.get_session_metadata()
-                )
-                try:
-                    if not self._process_stream_buffer(id_, video_frame):
-                        return False
-                finally:
-                    # Once we're done with this frame, dispose the associated frame buffer
-                    video_frame.unref()
+        self.logging.logD('media id = {}'.format(id_))
+        if self.streams[id_]['video_sink_flushed']:
+            self.logging.logI(
+                'Video sink has already been flushed ID {}'.format(id_))
+            return False
+        if od.vbuf_queue_get_count(self.streams[id_]['video_queue']) == 0:
+            return False
+        buf = self._pop_stream_buffer(id_)
+        if not buf:
+            return False
+        video_frame = VideoFrame(
+            self.logging,
+            buf,
+            self.streams[id_],
+            self.yuv_packed_buffer_pool,
+            self.get_session_metadata()
+        )
+        try:
+            if not self._process_stream_buffer(id_, video_frame):
+                return False
+            return True
+        finally:
+            # Once we're done with this frame, dispose the associated frame buffer
+            video_frame.unref()
 
     def _process_stream_buffer(self, id_, video_frame):
         stream = self.streams[id_]
@@ -910,6 +913,16 @@ class Pdraw(object):
 
         # reset session metadata from any previous session
         self.session_metadata = {}
+        self.streams = defaultdict(lambda: {
+            'id': None,
+            'type': od.PDRAW_VIDEO_MEDIA_FORMAT_UNKNOWN,
+            'h264_header': None,
+            'video_sink': od.POINTER_T(od.struct_pdraw_video_sink)(),
+            'video_sink_flushed': False,
+            'video_sink_lock': threading.Lock(),
+            'video_queue': None,
+            'video_queue_event': None,
+        })
 
         self._open_output_files()
         if self._state in (State.Created, State.Closed):
