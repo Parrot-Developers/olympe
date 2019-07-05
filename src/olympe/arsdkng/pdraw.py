@@ -881,11 +881,6 @@ class Pdraw(object):
         if cb is not None:
             cb(video_frame)
 
-    def _unref_buffer(self, buf):
-        od.vbuf_unref(buf)
-
-        return True
-
     def set_output_files(self,
                          h264_data_file,
                          h264_meta_file,
