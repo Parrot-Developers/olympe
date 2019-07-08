@@ -96,10 +96,11 @@ class H264Header(namedtuple('H264Header', ['sps', 'spslen', 'pps', 'ppslen'])):
 
 class VideoFrame:
 
-    def __init__(self, logging, buf, stream, yuv_packed_buffer_pool,
+    def __init__(self, logging, buf, media_id, stream, yuv_packed_buffer_pool,
                  session_metadata):
         self.logging = logging
         self._buf = buf
+        self._media_id = media_id
         self._stream = stream
         self._yuv_packed_buffer_pool = yuv_packed_buffer_pool
         self._session_metadata = session_metadata
@@ -136,6 +137,9 @@ class VideoFrame:
         finally:
             if self._yuv_packed_buffer:
                 od.vbuf_unref(self._yuv_packed_buffer)
+
+    def media_id(self):
+        return self._media_id
 
     def _get_pdraw_video_frame(self):
         if self._yuv_packed_video_frame:
@@ -375,6 +379,7 @@ class Pdraw(object):
             od.PDRAW_VIDEO_MEDIA_FORMAT_YUV: None,
         }
         self.end_callback = None
+        self.flush_callback = None
 
         self.url = None
         self.server_addr = None
@@ -776,6 +781,12 @@ class Pdraw(object):
             return
 
         with self.streams[id_]['video_sink_lock']:
+            self.logging.logD("flush_callback {}".format(id_))
+            if self.flush_callback is not None:
+                res = self.flush_callback(id_)
+                if res != 0:
+                    self.logging.logE(
+                        'video sink flush id {} error {}'.format(id_, res))
             res = od.vbuf_queue_flush(self.streams[id_]['video_queue'])
             if res < 0:
                 self.logging.logE('vbuf_queue_flush() returned %s' % res)
@@ -838,6 +849,7 @@ class Pdraw(object):
         video_frame = VideoFrame(
             self.logging,
             buf,
+            id_,
             self.streams[id_],
             self.yuv_packed_buffer_pool,
             self.get_session_metadata()
@@ -922,7 +934,8 @@ class Pdraw(object):
     def set_callbacks(self,
                       h264_cb=None,
                       raw_cb=None,
-                      end_cb=None):
+                      end_cb=None,
+                      flush_cb=None):
         """
         Set the callback functions that will be called when a new video stream frame is available or
         when the video stream has ended.
@@ -943,6 +956,7 @@ class Pdraw(object):
             self.frame_callbacks[mediatype] = cb
 
         self.end_callback = end_cb
+        self.flush_callback = flush_cb
 
     def _open_output_files(self):
         self.logging.logD('opening video output files')

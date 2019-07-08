@@ -1672,7 +1672,8 @@ class Drone(object):
     def set_streaming_callbacks(self,
                                 h264_cb=None,
                                 raw_cb=None,
-                                end_cb=None):
+                                end_cb=None,
+                                flush_cb=None):
         """
         Set the callback functions that will be called when a new video stream frame is available or
         when the video stream has ended.
@@ -1693,7 +1694,7 @@ class Drone(object):
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         self.pdraw.set_callbacks(
-            h264_cb=h264_cb, raw_cb=raw_cb, end_cb=end_cb
+            h264_cb=h264_cb, raw_cb=raw_cb, end_cb=end_cb, flush_cb=flush_cb
         )
         return makeReturnTuple(self.error_code_drones.OK, "Video stream set_callbacks")
 
