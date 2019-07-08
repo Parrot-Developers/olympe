@@ -1229,7 +1229,7 @@ class Drone(object):
                     message.FullName, tuple(args)))
                 return e
             try:
-                f.result(timeout)
+                f.result_or_cancel(timeout)
                 self.logging.logI("{}{}: has been sent".format(
                     message.FullName, tuple(args)))
                 return makeReturnTuple(
@@ -1278,7 +1278,7 @@ class Drone(object):
         if ensure_connected and not self._device_conn_status.connected and not self.connection():
             return FailedExpectation("Cannot make connection")
 
-        self.thread_loop.run_async(self._expect_impl, expectations).result()
+        self.thread_loop.run_async(self._expect_impl, expectations).result_or_cancel()
         return expectations
 
     def _expect_impl(self, expectations):
@@ -1467,7 +1467,7 @@ class Drone(object):
 
         f = self.thread_loop.run_async(self._start_piloting_impl)
 
-        ok = f.result(timeout=2)
+        ok = f.result_or_cancel(timeout=2)
         if not ok:
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
@@ -1490,7 +1490,7 @@ class Drone(object):
 
         f = self.thread_loop.run_async(self._stop_piloting_impl)
 
-        ok = f.result(timeout=2)
+        ok = f.result_or_cancel(timeout=2)
         if not ok:
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
@@ -1581,7 +1581,7 @@ class Drone(object):
             f = self.thread_loop.run_async(
                 self._enable_legacy_video_streaming_impl)
             try:
-                if not f.result(timeout=5):
+                if not f.result_or_cancel(timeout=5):
                     msg = "Unable to enable legacy video streaming"
                     self.logging.logE(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
@@ -1593,7 +1593,7 @@ class Drone(object):
         if (not self.pdraw.play(
                 server_addr=self.addr,
                 resource_name=resource_name,
-                media_name=media_name).result(timeout=5)):
+                media_name=media_name).result_or_cancel(timeout=5)):
             msg = "Failed to play video stream"
             self.logging.logE(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
@@ -1616,7 +1616,7 @@ class Drone(object):
             f = self.thread_loop.run_async(
                 self._disable_legacy_video_streaming_impl)
             try:
-                if not f.result(timeout=5):
+                if not f.result_or_cancel(timeout=5):
                     msg = "Unable to disable legacy video streaming"
                     self.logging.logE(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
@@ -1626,11 +1626,11 @@ class Drone(object):
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         try:
-            if not self.pdraw.pause().result(timeout=5):
+            if not self.pdraw.pause().result_or_cancel(timeout=5):
                 msg = "Failed to pause video stream"
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
-            if not self.pdraw.close().result(timeout=5):
+            if not self.pdraw.close().result_or_cancel(timeout=5):
                 msg = "Failed to close video stream"
                 self.logging.logE(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)

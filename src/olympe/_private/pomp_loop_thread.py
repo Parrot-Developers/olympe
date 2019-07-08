@@ -116,6 +116,13 @@ class Future(concurrent.futures.Future):
         self.add_done_callback(callback)
         return result
 
+    def result_or_cancel(self, timeout=None):
+        try:
+            return self.result(timeout=timeout)
+        except:
+            self.cancel()
+            raise
+
 
 class PompLoopThread(threading.Thread):
     """
