@@ -233,6 +233,7 @@ class Drone(object):
         self._declare_callbacks()
         self._create_manager()
         self._create_backend()
+        self._create_pdraw_interface()
 
         # Setup piloting commands timer
         self.piloting_timer = self.thread_loop.create_timer(
@@ -310,7 +311,6 @@ class Drone(object):
                 'json contents cannot be parsed: {}'.format(json_info))
 
         self._create_command_interface()
-        self._create_pdraw_interface()
         self._controller_state.device_conn_status.connected = True
 
     def _disconnected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
