@@ -344,6 +344,7 @@ class Pdraw(object):
 
         self._open_resp_future = Future(self.pdraw_thread_loop)
         self._close_resp_future = Future(self.pdraw_thread_loop)
+        self._close_resp_future.add_done_callback(self._on_close_resp_done)
         self._play_resp_future = Future(self.pdraw_thread_loop)
         self._pause_resp_future = Future(self.pdraw_thread_loop)
         self._state = State.Created
@@ -530,6 +531,7 @@ class Pdraw(object):
         if self._state in (State.Opened, State.Paused, State.Playing, State.Error):
             self.logging.logD("pdraw closing from the {} state".format(self._state))
             self._close_resp_future = Future(self.pdraw_thread_loop)
+            self._close_resp_future.add_done_callback(self._on_close_resp_done)
             f = self._close_resp_future
             self._state = State.Closing
             self.pdraw_thread_loop.run_async(self._close_stream)
@@ -573,6 +575,19 @@ class Pdraw(object):
             self.logging.logI("Closing pdraw stream OK")
 
         return True
+
+    def _on_close_resp_done(self, close_resp_future):
+        if close_resp_future.cancelled():
+            # FIXME: workaround pdraw closing timeout
+            # This random issue is quiet hard to reproduce
+            self.logging.logE("Closing Pdraw timedout")
+            if self.pdraw:
+                res = od.pdraw_destroy(self.pdraw)
+                if res != 0:
+                    self.logging.logE("Cannot destroy pdraw object")
+            self.pdraw = od.POINTER_T(od.struct_pdraw)()
+            self.state = PdrawState.Closed
+            self.logging.logE("Pdraw has been closed")
 
     def _open_resp(self, pdraw, status, userdata):
         self.logging.logD("_open_resp called")
