@@ -586,7 +586,7 @@ class Pdraw(object):
                 if res != 0:
                     self.logging.logE("Cannot destroy pdraw object")
             self.pdraw = od.POINTER_T(od.struct_pdraw)()
-            self.state = State.Closed
+            self._state = State.Closed
             self.logging.logE("Pdraw has been closed")
 
     def _open_resp(self, pdraw, status, userdata):
