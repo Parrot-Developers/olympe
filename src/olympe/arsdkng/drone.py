@@ -58,7 +58,7 @@ from olympe.arsdkng.pdraw import Pdraw, PDRAW_LOCAL_STREAM_PORT
 from olympe.arsdkng.pdraw import PDRAW_LOCAL_CONTROL_PORT
 
 from olympe.tools.logger import TraceLogger, DroneLogger, ErrorCodeDrone
-from olympe._private import makeReturnTuple
+from olympe._private import makeReturnTuple, DEFAULT_FLOAT_TOL
 from olympe._private.controller_state import ControllerState
 from olympe._private.format import columns as format_columns
 from olympe._private.pomp_loop_thread import PompLoopThread
@@ -1428,8 +1428,10 @@ class Drone(object):
         Returns True if the drone state associated to the given message is already reached.
         Otherwise, returns False
         """
+        _float_tol = kwds.pop('_float_tol', DEFAULT_FLOAT_TOL)
         last_event = self.get_last_event(message)
         expectation = message._expectation_from_args(*args, **kwds)
+        expectation.set_float_tol(_float_tol)
         return expectation.check(last_event).success()
 
     def query_state(self, query):

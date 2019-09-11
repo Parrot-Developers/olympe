@@ -437,7 +437,10 @@ class ArsdkCheckStateExpectation(ArsdkFillDefaultArgsExpectationMixin, ArsdkExpe
     def _schedule(self, drone):
         super(ArsdkCheckStateExpectation, self)._schedule(drone)
         try:
-            if drone.check_state(self.expected_message, **self.expected_args):
+            if drone.check_state(
+                    self.expected_message,
+                    _float_tol=self._float_tol,
+                    **self.expected_args):
                 self.matched_state = drone.get_state(self.expected_message)
                 self._success = True
                 self.set_result()
