@@ -1206,6 +1206,11 @@ class ArsdkMessages(object):
     def _populate_messages(self):
         for featureId in sorted(self._ctx.featuresById.keys()):
             featureObj = self._ctx.featuresById[featureId]
+            # Workaround messages from the "generic" feature may contain
+            # "multisettings" arguments that Olympe doesn't handle.
+            # Here we simply ignore these messages to avoid any further error
+            if featureObj.name == "generic":
+                continue
             if featureObj.classes and len(featureObj.classes) != 0:
                 for classId in sorted(featureObj.classesById.keys()):
                     classObj = featureObj.classesById[classId]
