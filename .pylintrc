@@ -49,7 +49,7 @@ load-plugins=
 # R0904: Too many public methods
 # R0912: Too many branches in a function
 # R0913: Too many args in a function
-# W0702: Too generic exception catched
+# W0702: Too generic exception caught
 disable=R0903,C0303,C0111,C0326,C0325,W0702,R0912,R0913,R0904,R0801,E1103,W0212,C0302,R0914,R0915
 
 

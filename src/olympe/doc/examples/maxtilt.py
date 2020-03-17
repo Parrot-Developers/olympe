@@ -5,7 +5,7 @@ import olympe
 from olympe.messages.ardrone3.PilotingSettings import MaxTilt
 
 drone = olympe.Drone("10.202.0.1")
-drone.connection()
+drone.connect()
 maxTiltAction = drone(MaxTilt(10)).wait()
 if maxTiltAction.success():
     print("MaxTilt(10) success")
@@ -22,4 +22,4 @@ elif maxTiltAction.timedout():
 else:
     # If ".wait()" is called on the ``maxTiltAction`` this shouldn't happen
     print("MaxTilt(0) is still in progress")
-drone.disconnection()
+drone.disconnect()

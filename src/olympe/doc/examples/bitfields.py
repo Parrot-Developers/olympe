@@ -4,8 +4,9 @@ import olympe
 from olympe.messages.ardrone3.PilotingState import FlyingStateChanged
 from olympe.enums.ardrone3.PilotingState import FlyingStateChanged_State as FlyingState
 
-drone = olympe.Drone("10.202.0.1", loglevel=2)
-drone.connection()
+olympe.log.update_config({"loggers": {"olympe": {"level": "WARNING"}}})
+drone = olympe.Drone("10.202.0.1")
+drone.connect()
 
 flying_states = FlyingState._bitfield_type_("takingoff|hovering|flying")
 

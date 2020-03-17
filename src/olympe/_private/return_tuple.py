@@ -31,7 +31,7 @@
 
 
 from collections import namedtuple
-from olympe.tools.logger import ErrorCodeDrone
+from olympe.tools.error import ErrorCodeDrone
 import itertools
 
 
@@ -133,6 +133,7 @@ class ReturnTuple(
             return
         if id(self) in ReturnTuple._iterlen:
             del ReturnTuple._iterlen[id(self)]
+
 
 def makeReturnTuple(*args):
     """

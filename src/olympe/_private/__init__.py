@@ -35,10 +35,12 @@ from __future__ import absolute_import
 from future.builtins import str, bytes
 
 import ctypes
+import functools
 import six
 
 from collections import OrderedDict
 from datetime import datetime
+from logging import getLogger
 from math import isclose
 
 
@@ -51,6 +53,70 @@ def py_object_cast(c_pointer):
     if not c_pointer:
         return None
     return ctypes.cast(c_pointer, ctypes.py_object).value
+
+
+class FuncDecoratorMeta(type):
+    def __call__(cls, *args, **kwds):
+        def _create(f):
+            if f is None:
+                return None
+            d = super(FuncDecoratorMeta, cls).__call__(f)
+            d._set_args(*args, **kwds)
+            return d
+
+        return _create
+
+
+class decorator(metaclass=FuncDecoratorMeta):
+    def __init__(self, f):
+        self._f = f
+        self._args = None
+        self._kwds = None
+
+    def _set_args(self, *args, **kwds):
+        self._args = args
+        self._kwds = kwds
+
+    @property
+    def func(self):
+        return self._f
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwds(self):
+        return self._kwds
+
+    def __get__(self, obj, owner=None):
+        return functools.wraps(self._f)(
+            lambda *args, **kwds: self._method_call(obj, *args, **kwds)
+        )
+
+    def _method_call(self, this, *args, **kwds):
+        return self.__call__(this, *args, **kwds)
+
+
+class callback_decorator(decorator):
+    def __call__(self, *args, **kwargs):
+        try:
+            return self.func(*args, **kwargs)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            if "logger" in self.kwds:
+                logger = self.kwds["logger"]
+            elif not args:
+                logger = getLogger("olympe.callbacks")
+            elif hasattr(args[0], "_logging"):
+                logger = args[0]._logging
+            elif hasattr(args[0], "logging"):
+                logger = args[0].logging
+            else:
+                logger = getLogger("olympe.callbacks")
+            logger.exception("Unhandled exception")
+            return None
 
 
 def string_from_arsdkxml(_input):

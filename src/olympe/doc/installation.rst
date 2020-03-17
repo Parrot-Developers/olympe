@@ -30,7 +30,7 @@ Olympe is part of the {{ workspace }} workspace so first, you need to clone that
 
 .. only:: internal
 
-    By default, it's a good idea to checkout the release.xml manifest likes it done in the command above.
+    By default, it's a good idea to checkout the stable.xml manifest like it is done in the command above.
     Sometime however you might need to keep up with some recent changes and might want to use one
     of the following manifests:
 
@@ -38,7 +38,7 @@ Olympe is part of the {{ workspace }} workspace so first, you need to clone that
         - release.xml: all branches are frozen on sha1 (RECOMMENDED)
         - stable.xml: based on release, but some active projects are tracking master (e.g. Olympe,
           test scripts, ...)
-        - experimental.xml: based on stabled, but some projects are using development branches
+        - experimental.xml: based on stable, but some projects are using development branches
 
 
 Install {{ olympe_product }} dependencies
@@ -62,7 +62,7 @@ To install the dependencies of the "{{ workspace }}" workspace, just execute the
 
 .. _manual-dependency-installation:
 
-Manual depencency installation
+Manual dependency installation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The `postinst` script will install some global Python packages using your
@@ -75,7 +75,7 @@ system provided python-pip. Hence:
       in your `PATH`.
 
 As a workaround, you may choose to:
-    - Remove Anaconda (or any other custom Python environement) from your
+    - Remove Anaconda (or any other custom Python environment) from your
       `PATH` before running the `postinst` and `build.sh` scripts.
     - Proceed with a manual depencendy installation (see below).
 
@@ -103,7 +103,7 @@ local installation path.
 .. code-block:: console
 
     # olympe python runtime dependencies
-    $ pip3 install -r ~/code/{{ workspace }}/packages/olympe/requirements.txt
+    $ pip3 install -r ~/code/{{ workspace }}/{{olympe_path}}/requirements.txt
     $ echo "export PYTHONPATH=\$PYTHONPATH:~/code/{{ workspace }}/out/olympe-linux/final/usr/lib/python/site-packages/" >> ~/code/{{ workspace }}/products/olympe/linux/env/setenv
 
 

@@ -222,6 +222,7 @@ html_context = {
 custom_html_context = {
     "python_prompt": "olympe-python3",
     "workspace": "parrot-groundsdk",
+    "olympe_path": "packages/olympe",
     "olympe_product": "olympe-linux",
     "olympe_scripts_path": "./products/olympe/linux/env",
     "repo_dl_url": "https://source.android.com/setup/build/downloading",

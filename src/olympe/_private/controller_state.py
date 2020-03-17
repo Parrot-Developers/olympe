@@ -38,7 +38,6 @@ import datetime
 from collections import OrderedDict, defaultdict
 
 
-
 class DeviceConnStatus(object):
     """
     Save info about connection/device
@@ -48,8 +47,8 @@ class DeviceConnStatus(object):
         self.reset_status()
 
     def reset_status(self):
-        # Set to True when connected callback is received
-        # and to False when disconnected callback is received
+        # Set to True when connected callback is called
+        # and to False when disconnected callback is called
         self.connected = False
         # Keep all device info in a dictionary
         self.device_infos = {}
@@ -65,20 +64,6 @@ class DeviceStates(object):
 
     def reset_all_states(self):
         self.states = defaultdict(OrderedDict)
-        self.get_all_states_done = False
-        self.get_all_settings_done = False
-
-
-class Callbacks(object):
-    """
-    Manage expected callbacks after sending a command to the device
-    """
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.expectations = []
 
 
 class PilotingCommand(object):
@@ -88,12 +73,6 @@ class PilotingCommand(object):
 
     def __init__(self):
         self.set_default_piloting_command()
-        # set to True when loop timer is reached (means that we should send a new piloting command)
-        self.loop_timer_rcv = False
-        self.piloting_command = ""
-
-    def set_piloting_command(self, command):
-        self.piloting_command = command
 
     def update_piloting_command(self, roll, pitch, yaw, gaz, piloting_time):
         self.roll = roll
@@ -117,5 +96,4 @@ class ControllerState(object):
     def __init__(self):
         self.device_conn_status = DeviceConnStatus()
         self.device_states = DeviceStates()
-        self.callbacks = Callbacks()
         self.piloting_command = PilotingCommand()

@@ -219,7 +219,7 @@ class ArsdkBitfield(with_metaclass(ArsdkBitfieldMeta)):
         return not self == other
 
     def __nonzero__(self):
-        return bool(int(self))
+        return bool(self.to_int())
 
     __bool__ = __nonzero__  # Python 3
 

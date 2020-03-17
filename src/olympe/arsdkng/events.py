@@ -44,14 +44,34 @@ from yapf.yapflib.style import CreateFacebookStyle
 from olympe.arsdkng.event_marker import EventMarker
 
 
-class ArsdkMessageEvent(object):
-
-    def __init__(self, message, args, policy=None):
-        self._message = message
-        self._args = args
+class Event:
+    def __init__(self, policy=None):
         self._policy = policy
         self._uuid = uuid4()
         self._date = datetime.now()
+
+    @property
+    def policy(self):
+        return self._policy
+
+    @property
+    def uuid(self):
+        return self._uuid
+
+    @property
+    def date(self):
+        return self._date
+
+    @property
+    def id(self):
+        return self._uuid
+
+
+class ArsdkMessageEvent(Event):
+    def __init__(self, message, args, policy=None):
+        self._message = message
+        self._args = args
+        super().__init__(policy=policy)
 
     @property
     def message(self):
@@ -62,15 +82,11 @@ class ArsdkMessageEvent(object):
         return self._args
 
     @property
-    def policy(self):
-        return self._policy
-
-    @property
-    def uuid(self):
-        return self._uuid
+    def id(self):
+        return self._message.id
 
     def __str__(self):
-        ret = (self.message.fullName + "(")
+        ret = self.message.fullName + "("
         if isinstance(self.args, (list)):
             if len(self.args) == 1:
                 ret += self._str_args()
@@ -93,7 +109,7 @@ class ArsdkMessageEvent(object):
         return ", ".join(args_list)
 
     def _str_arg(self, argvalue):
-        if hasattr(argvalue, 'pretty'):
+        if hasattr(argvalue, "pretty"):
             return argvalue.pretty()
         elif isinstance(argvalue, str):
             return "'" + argvalue + "'"
@@ -118,8 +134,7 @@ def _format_olympe_dsl(code):
         return code
 
 
-class ArsdkEventContext(object):
-
+class EventContext(object):
     def __init__(self, event_list=None, policy=None, marker=None):
         if event_list is None:
             event_list = []
@@ -127,10 +142,10 @@ class ArsdkEventContext(object):
             for event in event_list:
                 event._policy = policy
         self._marker = marker
-        self._by_uuid = OrderedDict(
-            zip(map(lambda e: e.uuid, event_list), event_list))
-        self._by_message_id = OrderedMultiDict(
-            zip(map(lambda e: e.message.id, self._by_uuid.values()), self._by_uuid.values()))
+        self._by_uuid = OrderedDict(zip(map(lambda e: e.uuid, event_list), event_list))
+        self._by_id = OrderedMultiDict(
+            zip(map(lambda e: e.id, self._by_uuid.values()), self._by_uuid.values())
+        )
 
     def events(self):
         return list(self._by_uuid.values())
@@ -142,18 +157,22 @@ class ArsdkEventContext(object):
         self._marker = marker
         return self
 
-    def filter(self, message):
-        if message.id in self._by_message_id:
-            events = self._by_message_id.getlist(message.id)[:]
-            return ArsdkEventContext(events, marker=self._marker)
+    def filter(self, payload):
+        if hasattr(payload, "id") and payload.id in self._by_id:
+            events = self._by_id.getlist(payload.id)[:]
+            return EventContext(events, marker=self._marker)
         else:
-            return ArsdkEventContext()
+            return EventContext()
 
-    def last(self, message=None):
-        if message is None:
+    def last(self, payload=None):
+        if payload is None:
             return next(reversed(self._by_uuid.values()), None)
+        elif hasattr(payload, "id"):
+            return self._by_id.get(payload.id)
         else:
-            return self._by_message_id.get(message.id)
+            raise RuntimeError(
+                "EventContext.last() payload argument doesn't have an 'id' attribute"
+            )
 
     def __bool__(self):
         return len(self._by_uuid) > 0
@@ -170,9 +189,9 @@ class ArsdkEventContext(object):
         ret = ""
         if len(self._by_uuid.values()) > 1:
             ret += "["
-        for i, message_event in enumerate(self._by_uuid.values()):
+        for i, event in enumerate(self._by_uuid.values()):
             ret += self._marker_prefix_str()
-            ret += str(message_event)
+            ret += str(event)
             ret += self._marker_suffix_str()
             if i != (len(self._by_uuid.values()) - 1):
                 ret += ","
@@ -184,23 +203,22 @@ class ArsdkEventContext(object):
         return EventMarker.color_string(_format_olympe_dsl(self._to_str()))
 
 
-class ArsdkMultipleEventContext(ArsdkEventContext):
-
+class MultipleEventContext(EventContext):
     def __init__(self, contexts, combine_method, policy=None, marker=None):
         self._contexts = list(contexts)
         self._combine_method = " {} ".format(combine_method)
-        super(ArsdkMultipleEventContext, self).__init__(
-            list(chain.from_iterable(
-                map(lambda c: c.events(), self._contexts))),
+        super(MultipleEventContext, self).__init__(
+            list(chain.from_iterable(map(lambda c: c.events(), self._contexts))),
             policy=policy,
-            marker=marker)
+            marker=marker,
+        )
 
     @property
     def contexts(self):
         return list(filter(lambda c: bool(c), self._contexts))
 
     def _set_marker(self, marker):
-        super(ArsdkMultipleEventContext, self)._set_marker(marker)
+        super(MultipleEventContext, self)._set_marker(marker)
         for context in self._contexts:
             context._set_marker(marker)
         return self
@@ -210,7 +228,10 @@ class ArsdkMultipleEventContext(ArsdkEventContext):
             return self.contexts[0]._to_str()
         elif len(self._contexts) != 0:
             return (
-                "( " + self._combine_method.join(map(lambda c: c._to_str(), self.contexts)) + " )")
+                "( "
+                + self._combine_method.join(map(lambda c: c._to_str(), self.contexts))
+                + " )"
+            )
         else:
             return ""
 

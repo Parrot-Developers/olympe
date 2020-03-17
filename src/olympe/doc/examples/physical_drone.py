@@ -3,4 +3,4 @@
 import olympe
 
 drone = olympe.Drone("192.168.42.1")
-drone.connection()
+drone.connect()

@@ -1,12 +1,18 @@
 #!/usr/bin/env python
 
+# NOTE: Line numbers of this example are referenced in the user guide.
+# Don't forget to update the user guide after every modification of this example.
+
 import csv
 import cv2
 import math
 import os
+import queue
 import shlex
 import subprocess
 import tempfile
+import threading
+import traceback
 
 import olympe
 from olympe.messages.ardrone3.Piloting import TakeOff, Landing
@@ -15,18 +21,15 @@ from olympe.messages.ardrone3.PilotingState import FlyingStateChanged
 from olympe.messages.ardrone3.PilotingSettings import MaxTilt
 from olympe.messages.ardrone3.GPSSettingsState import GPSFixStateChanged
 
-# NOTE: Line numbers of this example are referenced in the user guide.
-# Don't forget to update the user guide after every modification of this example.
+
+olympe.log.update_config({"loggers": {"olympe": {"level": "WARNING"}}})
 
 
-class StreamingExample:
+class StreamingExample(threading.Thread):
 
     def __init__(self):
         # Create the olympe.Drone object from its IP address
-        self.drone = olympe.Drone(
-            "10.202.0.1",
-            loglevel=3,
-        )
+        self.drone = olympe.Drone("10.202.0.1")
         self.tempd = tempfile.mkdtemp(prefix="olympe_streaming_test_")
         print("Olympe streaming example output dir: {}".format(self.tempd))
         self.h264_frame_stats = []
@@ -35,10 +38,14 @@ class StreamingExample:
         self.h264_stats_writer = csv.DictWriter(
             self.h264_stats_file, ['fps', 'bitrate'])
         self.h264_stats_writer.writeheader()
+        self.frame_queue = queue.Queue()
+        self.flush_queue_lock = threading.Lock()
+        super().__init__()
+        super().start()
 
     def start(self):
         # Connect the the drone
-        self.drone.connection()
+        self.drone.connect()
 
         # You can record the video stream from the drone if you plan to do some
         # post processing.
@@ -53,7 +60,10 @@ class StreamingExample:
         # Setup your callback functions to do some live video processing
         self.drone.set_streaming_callbacks(
             raw_cb=self.yuv_frame_cb,
-            h264_cb=self.h264_frame_cb
+            h264_cb=self.h264_frame_cb,
+            start_cb=self.start_cb,
+            end_cb=self.end_cb,
+            flush_raw_cb=self.flush_cb,
         )
         # Start video streaming
         self.drone.start_video_streaming()
@@ -61,7 +71,7 @@ class StreamingExample:
     def stop(self):
         # Properly stop the video stream and disconnect
         self.drone.stop_video_streaming()
-        self.drone.disconnection()
+        self.drone.disconnect()
         self.h264_stats_file.close()
 
     def yuv_frame_cb(self, yuv_frame):
@@ -70,26 +80,20 @@ class StreamingExample:
 
             :type yuv_frame: olympe.VideoFrame
         """
-        # the VideoFrame.info() dictionary contains some useful informations
-        # such as the video resolution
-        info = yuv_frame.info()
-        height, width = info["yuv"]["height"], info["yuv"]["width"]
+        yuv_frame.ref()
+        self.frame_queue.put_nowait(yuv_frame)
 
-        # convert pdraw YUV flag to OpenCV YUV flag
-        cv2_cvt_color_flag = {
-            olympe.PDRAW_YUV_FORMAT_I420: cv2.COLOR_YUV2BGR_I420,
-            olympe.PDRAW_YUV_FORMAT_NV12: cv2.COLOR_YUV2BGR_NV12,
-        }[info["yuv"]["format"]]
+    def flush_cb(self):
+        with self.flush_queue_lock:
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait().unref()
+        return True
 
-        # yuv_frame.as_ndarray() is a 2D numpy array with the proper "shape"
-        # i.e (3 * height / 2, width) because it's a YUV I420 or NV12 frame
+    def start_cb(self):
+        pass
 
-        # Use OpenCV to convert the yuv frame to RGB
-        cv2frame = cv2.cvtColor(yuv_frame.as_ndarray(), cv2_cvt_color_flag)
-
-        # Use OpenCV to show this frame
-        cv2.imshow("Olympe Streaming Example", cv2frame)
-        cv2.waitKey(1)  # please OpenCV for 1 ms...
+    def end_cb(self):
+        pass
 
     def h264_frame_cb(self, h264_frame):
         """
@@ -123,6 +127,54 @@ class StreamingExample:
             self.h264_stats_writer.writerow(
                 {'fps': h264_fps, 'bitrate': h264_bitrate})
 
+    def show_yuv_frame(self, window_name, yuv_frame):
+        # the VideoFrame.info() dictionary contains some useful information
+        # such as the video resolution
+        info = yuv_frame.info()
+        height, width = info["yuv"]["height"], info["yuv"]["width"]
+
+        # yuv_frame.vmeta() returns a dictionary that contains additional
+        # metadata from the drone (GPS coordinates, battery percentage, ...)
+
+        # convert pdraw YUV flag to OpenCV YUV flag
+        cv2_cvt_color_flag = {
+            olympe.PDRAW_YUV_FORMAT_I420: cv2.COLOR_YUV2BGR_I420,
+            olympe.PDRAW_YUV_FORMAT_NV12: cv2.COLOR_YUV2BGR_NV12,
+        }[info["yuv"]["format"]]
+
+        # yuv_frame.as_ndarray() is a 2D numpy array with the proper "shape"
+        # i.e (3 * height / 2, width) because it's a YUV I420 or NV12 frame
+
+        # Use OpenCV to convert the yuv frame to RGB
+        cv2frame = cv2.cvtColor(yuv_frame.as_ndarray(), cv2_cvt_color_flag)
+        # Use OpenCV to show this frame
+        cv2.imshow(window_name, cv2frame)
+        cv2.waitKey(1)  # please OpenCV for 1 ms...
+
+    def run(self):
+        window_name = "Olympe Streaming Example"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        main_thread = next(
+            filter(lambda t: t.name == "MainThread", threading.enumerate())
+        )
+        while main_thread.is_alive():
+            with self.flush_queue_lock:
+                try:
+                    yuv_frame = self.frame_queue.get(timeout=0.01)
+                except queue.Empty:
+                    continue
+                try:
+                    self.show_yuv_frame(window_name, yuv_frame)
+                except Exception:
+                    # We have to continue popping frame from the queue even if
+                    # we fail to show one frame
+                    traceback.print_exc()
+                finally:
+                    # Don't forget to unref the yuv frame. We don't want to
+                    # starve the video buffer pool
+                    yuv_frame.unref()
+        cv2.destroyWindow(window_name)
+
     def fly(self):
         # Takeoff, fly, land, ...
         print("Takeoff if necessary...")
@@ -155,7 +207,7 @@ class StreamingExample:
         h264_filepath = os.path.join(self.tempd, 'h264_data.264')
         mp4_filepath = os.path.join(self.tempd, 'h264_data.mp4')
         subprocess.run(
-            shlex.split('ffmpeg -i {} -c:v copy {}'.format(
+            shlex.split('ffmpeg -i {} -c:v copy -y {}'.format(
                 h264_filepath, mp4_filepath)),
             check=True
         )

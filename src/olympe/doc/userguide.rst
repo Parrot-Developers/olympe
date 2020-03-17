@@ -158,7 +158,7 @@ For ``anafi`` this class constructor requires only one argument: the drone IP ad
 simulated drone, we can use "10.202.0.1" which is the default drone IP address over the virtual
 Ethernet interface.
 
-:py:meth:`olympe.Drone.connection` actually performs the connection to the drone. This would fail if
+:py:meth:`olympe.Drone.connect` actually performs the connection to the drone. This would fail if
 the drone is unreachable (or non-existent) for some reason.
 
 Then, ``drone(TakeOff()).wait()`` sends the
@@ -168,7 +168,7 @@ should be taking off. For now, we will always use the ``drone(....).wait()`` con
 command message and will explain later what the ``wait()`` function does and what we could do
 differently with or without it.
 
-Finally, :py:meth:`olympe.Drone.disconnection` disconnect Olympe from the drone properly.
+Finally, :py:meth:`olympe.Drone.disconnect` disconnect Olympe from the drone properly.
 
 To execute this script and see your drone taking off, from the same shell/terminal you've just
 source'd the ``shell`` script:
@@ -191,7 +191,7 @@ Changing a drone setting will be demonstrated in the following example. Here, we
 in getting the current drone setting.
 
 When Olympe connects to a drone it also asks the drone to send back all its event messages in order
-to initialize Olympe drone state informations as returned by the :py:meth:`olympe.Drone.get_state`
+to initialize Olympe drone state information as returned by the :py:meth:`olympe.Drone.get_state`
 method. So **if Olympe is connected to a drone** :py:meth:`olympe.Drone.get_state` always returns
 the current drone state associated to an **event message**.
 
@@ -662,7 +662,7 @@ the default value for the `_policy` parameter. The possible values for the `_pol
       kind received from the drone).
     - "wait", to wait for a new event message from the drone (even if the last event message of this
       kind that has been received would have matched).
-    - "check_wait" (the default), to "check" the current state of the drone and if neccessary "wait"
+    - "check_wait" (the default), to "check" the current state of the drone and if necessary "wait"
       for a matching event message.
 
 In the above example we are using a compound expectation expression to send a taking off command
@@ -681,7 +681,7 @@ directly expecting the "hovering" flying state. We are using the '&' ("AND") ope
 If the ">>" ("THEN") operator were to be used instead, we might (theoretically) miss the
 *FlyingStateChanged* event drone response while Olympe sends the 'TakeOff' message.
 
-As demonstrated bellow, this problem can also be solved without using any control flow statements:
+As demonstrated below, this problem can also be solved without using any control flow statements:
 
 .. literalinclude:: examples/takeoff_if_necessary_2.py
     :language: python
@@ -706,8 +706,8 @@ Before you start the video streaming, you can register some callback functions t
 whenever Olympe receive/decode a new video frame. See
 :py:func:`~olympe.Drone.set_streaming_callbacks`.
 
-Record the video stream for a post-processing
-"""""""""""""""""""""""""""""""""""""""""""""
+Record the live/replayed video stream for a post-processing
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 Before you start the video streaming, you can specify some output files that will be used by Olympe
 to record the video stream and its metadata.
@@ -736,8 +736,8 @@ olympe.Drone object and some H.264 statistics.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 22
-    :lines: 22-37
+    :lineno-start: 28
+    :lines: 28-44
 
 Our objective is to start the video stream, fly the drone around, perform some
 live video processing, stop the video stream and finally perform some video
@@ -746,8 +746,8 @@ postprocessing.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 170
-    :lines: 170-179
+    :lineno-start: 222
+    :lines: 222-231
 
 Before we start the video streaming, we must connect to the drone and optionally
 register our callback functions and output files for the recorded video stream.
@@ -755,35 +755,45 @@ register our callback functions and output files for the recorded video stream.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 39
-    :lines: 39-59
+    :lineno-start: 46
+    :lines: 46-69
 
 The :py:func:`StreamingExample.yuv_frame_cb` and
 :py:func:`StreamingExample.h264_frame_cb` receives an
-:py:func:`~olympe.VideoFrame` object in parameter that you can use to access a
-video frame data (see :py:func:`~olympe.VideoFrame.as_ndarray`,
-:py:func:`~olympe.VideoFrame.as_ctypes_pointer`) and its metadata
-:py:func:`~olympe.VideoFrame.metadata`.
+:py:func:`olympe.VideoFrame` object in parameter that you can use to access a
+video frame data (see: :py:func:`olympe.VideoFrame.as_ndarray`,
+:py:func:`olympe.VideoFrame.as_ctypes_pointer`) and its metadata
+(see: :py:func:`olympe.VideoFrame.info` and :py:func:`olympe.VideoFrame.vmeta`).
 
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 67
-    :lines: 67-92
+    :lineno-start: 130
+    :lines: 130-152
 
 The `.264` file recorded by Olympe contains raw H.264 frames. In order to
 view this file with your favorite media player, you might need to convert it
-into an `.mp4` file. Here as our postprocessing step, we are merly copying the
+into an `.mp4` file. Here as our postprocessing step, we are merely copying the
 H.264 video frames into an MP4 container.
 
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 153
-    :lines: 153-161
+    :lineno-start: 205
+    :lines: 205-219
 
 The full code of this example can be found in
 `src/olympe/doc/examples/streaming.py <https://github.com/Parrot-Developers/olympe/blob/master/src/olympe/doc/examples/streaming.py>`_.
+
+
+Post-processing a recorded video
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+You can also use Olympe to perform some post-processing on an .MP4 file downloaded from the drone.
+
+.. literalinclude:: examples/pdraw.py
+
+See the :py:class:`~olympe.Pdraw` documentation for more information.
 
 Connect to a physical drone or to a SkyController
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -811,7 +821,7 @@ Connect to a physical drone or to a SkyController
 Connect to a physical drone
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-to connect olympe to a physical drone, you first need to connect to your linux
+To connect olympe to a physical drone, you first need to connect to your linux
 box to a drone wifi access point. once you are connected to your drone over wifi,
 you just need to specify the drone ip address on its WiFi interface ("192.168.42.1").
 
@@ -828,6 +838,16 @@ box to the SkyController 3 USB-C port. Then you should be able to connect to you
 with its RNDIS IP address ("192.168.53.1").
 
 .. literalinclude:: examples/physical_skyctrl.py
+    :language: python
+    :linenos:
+
+
+Pair a SkyController with a drone
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If your SkyController is not already connected to a drone, you may have to pair it first.
+
+.. literalinclude:: examples/skyctrl_drone_pairing.py
     :language: python
     :linenos:
 

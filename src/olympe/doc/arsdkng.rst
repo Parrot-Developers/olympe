@@ -74,6 +74,13 @@ Messages Reference Documentation
     arsdkng_gimbal
 
 .. toctree::
+    :caption: LEDS feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_leds
+
+.. toctree::
     :caption: Mapper feature
     :maxdepth: 1
     :titlesonly:
@@ -86,6 +93,13 @@ Messages Reference Documentation
     :titlesonly:
 
     arsdkng_mediastore
+
+.. toctree::
+    :caption: Piloting Style feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_piloting_style
 
 .. toctree::
     :caption: PreciseHome feature

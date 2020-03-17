@@ -44,26 +44,34 @@ import json
 import olympe_deps as od
 import pprint
 import re
-import sys
 import time
-import traceback
+from tzlocal import get_localzone
 from collections import OrderedDict
+from logging import getLogger
+from warnings import warn
 
 
 import olympe.arsdkng.enums as enums
 import olympe.arsdkng.messages as messages
-from olympe.arsdkng.expectations import FailedExpectation, FutureExpectation
+from olympe.arsdkng.expectations import (
+    AbstractScheduler, Scheduler, FailedExpectation)
 
+from olympe.arsdkng.backend import Backend
+from olympe.arsdkng.discovery import DiscoveryNet, DiscoveryNetRaw, SKYCTRL_DEVICE_TYPE_LIST
 from olympe.arsdkng.pdraw import Pdraw, PDRAW_LOCAL_STREAM_PORT
 from olympe.arsdkng.pdraw import PDRAW_LOCAL_CONTROL_PORT
+from olympe.media import Media
 
-from olympe.tools.logger import TraceLogger, DroneLogger, ErrorCodeDrone
-from olympe._private import makeReturnTuple, DEFAULT_FLOAT_TOL
+from olympe.tools.error import ErrorCodeDrone
+from olympe._private import makeReturnTuple, DEFAULT_FLOAT_TOL, py_object_cast, callback_decorator
 from olympe._private.controller_state import ControllerState
+from olympe._private.pomp_loop_thread import Future
 from olympe._private.format import columns as format_columns
-from olympe._private.pomp_loop_thread import PompLoopThread
-from olympe.messages import common as common
-from olympe.messages import skyctrl as skyctrl
+from olympe.messages import ardrone3
+from olympe.messages import common
+from olympe.messages import skyctrl
+from olympe.messages import drone_manager
+from olympe.enums import drone_manager as drone_manager_enums
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 
@@ -81,10 +89,10 @@ def ensure_connected(function):
     @functools.wraps(function)
     def wrapper(self, *args, **kwargs):
         if not self._device_conn_status.connected:
-            DroneLogger.LOGGER.logI(
+            self.logging.info(
                 "Disconnection has been detected, reconnection will be done")
-            if not self.connection():
-                DroneLogger.LOGGER.logE("Cannot make connection")
+            if not self.connect():
+                self.logging.error("Cannot make connection")
                 return makeReturnTuple(
                     ErrorCodeDrone.ERROR_CONNECTION, "Cannot make connection"
                 )
@@ -98,78 +106,49 @@ def ensure_connected(function):
 
 ##############################################################################
 
-class Drone(object):
-    """
-    Drone controller class
-
-    Use this class to send and/or receive SDK messages to a simulated or physical drone.
-
-    Please refer to the Olympe :ref:`user guide<user-guide>` for more information.
-
-    Example:
-
-    .. code-block:: python
-
-        import olympe
-        from olympe.messages.ardrone3.Piloting import TakeOff
-
-        drone = olympe.Drone("10.202.0.1")
-        drone.connection()
-        drone(TakeOff()).wait()
-        drone.disconnection()
-    """
+class ControllerBase(AbstractScheduler):
 
     def __init__(self,
                  ip_addr,
-                 drone_type=None,
-                 avahi=False,
+                 name=None,
                  dcport=44444,
-                 mpp=False,
-                 loglevel=TraceLogger.level.info,
-                 logfile=sys.stdout,
-                 video_buffer_queue_size=2):
+                 drone_type=0,
+                 is_skyctrl=None,
+                 video_buffer_queue_size=8,
+                 media_autoconnect=True):
         """
         :param ip_addr: the drone IP address
         :type ip_addr: str
-        :param drone_type: (optional) the drone device type ID
-        :type drone_type: int
-        :param avahi: use avahi discovery if True (defaults to False). Avahi discovery is only
-                      relevant for legacy drones.
-        :type avahi: bool
+        :param name: (optional) the controller name (used by Olympe logs)
+        :type name: str
         :param dcport: drone control port (default to 44444)
         :type dcport: int
-        :param mpp: True if Olympe needs to connect to a drone through an MPP
-        :type mpp: bool
-        :param loglevel: drone logger log level (defaults to :py:attr:`olympe.tools.logger.level.info`)
-        :type loglevel: int
-        :param logfile: drone logger file (defaults to sys.stdout)
-        :type logfile: FileObjectLike
+        :param drone_type: (optional) the drone device type ID
+        :type drone_type: int
+        :param is_sky_controller: True if Olympe needs to connect to a drone through a SkyController
+        :type is_sky_controller: bool
+        :param video_buffer_queue_size: the video buffer pool size (defaults to 8)
+        :param media_autoconnect: autoconnect to the drone media API when the SDK
+            connection is established (defaults to True)
         """
 
-        if isinstance(ip_addr, str):
-            self.addr = ip_addr.encode('utf-8')
+        self._name = name
+        self._device_name = None
+        if self._name is not None:
+            self.logging = getLogger("olympe.{}.drone".format(name))
         else:
-            self.addr = ip_addr
-        self.drone_type = drone_type
-        self.rawdiscov_info = None
-        self.backend_type = od.ARSDK_BACKEND_TYPE_NET
-        self.avahi = avahi
-        self.manager = None
-        self.backend_net = None
-        self.thread_loop = None
-        self.discovery_inst = None
-        self.stop_discov_steps = dict()
+            self.logging = getLogger("olympe.drone")
+        self._ip_addr_str = str(ip_addr)
+        self._ip_addr = ip_addr.encode('utf-8')
 
-        if dcport is not None and drone_type is not None:
-            self.rawdiscov_info = {
-                'name': b'drone_under_test',
-                'addr': self.addr,
-                'port': dcport,
-                'dronetype': drone_type,
-                'serialnb': b'000000000',
-            }
-        self.mpp = mpp
+        self._backend = Backend(name=name)
+        self._thread_loop = self._backend._thread_loop
         self.video_buffer_queue_size = video_buffer_queue_size
+        self._scheduler = Scheduler(self._thread_loop, name=self._name)
+        self._scheduler.add_context("olympe.controller", self)
+
+        self._media = None
+        self._media_autoconnect = media_autoconnect
 
         # Extract arsdk-xml infos
         self.enums = enums.ArsdkEnums.get()
@@ -185,71 +164,30 @@ class Drone(object):
             for cmd_aliases in message.aliases:
                 self.__dict__[cmd_aliases] = message.send
 
+        self._decoding_errors = []
         self.error_code_drones = ErrorCodeDrone()
 
-        self.logging = TraceLogger(loglevel, logfile)
-        DroneLogger.LOGGER = self.logging
-
         self._controller_state = ControllerState()
+        self._connect_future = None
+        self._disconnect_future = None
         self._device_conn_status = self._controller_state.device_conn_status
         self._device_states = self._controller_state.device_states
-        self._callbacks = self._controller_state.callbacks
         self._piloting_command = self._controller_state.piloting_command
 
-        self.DRONE_DEVICE_TYPE_LIST = []
-        self.SKYCTRL_DEVICE_TYPE_LIST = []
-        for name, value in od.__dict__.items():
-            if name.startswith('ARSDK_DEVICE_TYPE_'):
-                if name.startswith('ARSDK_DEVICE_TYPE_SKYCTRL'):
-                    self.SKYCTRL_DEVICE_TYPE_LIST.append(value)
-                else:
-                    self.DRONE_DEVICE_TYPE_LIST.append(value)
+        # Set skyctrl parameter
+        self._is_skyctrl = is_skyctrl
 
-        if self.drone_type is not None:
-            self.discovery_device_types = [self.drone_type] + self.SKYCTRL_DEVICE_TYPE_LIST
-        else:
-            self.discovery_device_types = (
-                self.DRONE_DEVICE_TYPE_LIST + self.SKYCTRL_DEVICE_TYPE_LIST)
-
-        self.pdraw = None
-
-        self.thread_loop = PompLoopThread(self.logging)
+        self._pdraw = None
 
         self._reset_instance()
 
-        self.thread_loop.register_cleanup(self.destroy)
-
-        # set methods according to backend choice
-        if self.backend_type == od.ARSDK_BACKEND_TYPE_NET:
-            self._create_backend = self._create_net_backend
-            if self.avahi:
-                self._start_discovery = self._start_avahi_discovery
-            else:
-                self._start_discovery = self._start_net_discovery
-        else:
-            raise RuntimeError('Unknown backend type: {}'.format(
-                self.backend_type))
+        self._thread_loop.register_cleanup(self.destroy)
 
         self._declare_callbacks()
-        self._create_manager()
-        self._create_backend()
-        self._create_pdraw_interface()
 
         # Setup piloting commands timer
-        self.piloting_timer = self.thread_loop.create_timer(
+        self._piloting_timer = self._thread_loop.create_timer(
             self._piloting_timer_cb)
-
-        # Setup expectations monitoring timer, this is used to detect timedout
-        # expectations periodically
-        self.expectations_timer = self.thread_loop.create_timer(
-            self._expectations_timer_cb)
-        if not self.thread_loop.set_timer(self.expectations_timer, delay=200, period=50):
-            error_message = "Unable to launch piloting interface"
-            self.logging.logE(error_message)
-            raise RuntimeError(error_message)
-        # Start pomp loop thread (this is the only thread that will be running waiting
-        # for commands to be sent or received)
-        self.thread_loop.start()
 
     def __enter__(self):
         return self
@@ -261,7 +199,7 @@ class Drone(object):
         """
         Define all callbacks
         """
-        self.device_cbs_cfg = od.struct_arsdk_device_conn_cbs.bind({
+        self._device_cbs_cfg = od.struct_arsdk_device_conn_cbs.bind({
             "connecting": self._connecting_cb,
             "connected": self._connected_cb,
             "disconnected": self._disconnected_cb,
@@ -269,59 +207,76 @@ class Drone(object):
             "link_status": self._link_status_cb,
         })
 
-        self.arsdk_mngr_device_cbs = od.struct_arsdk_ctrl_device_cbs.bind({
-            "added": self._device_added_cb,
-            "removed": self._device_removed_cb,
-        })
+        self._send_status = od.arsdk_cmd_itf_send_status_cb_t(self._cmd_itf_send_status_cb)
+        self._send_status_userdata = {}
+        self._userdata = ctypes.c_void_p()
 
-        self.cmd_itf_cbs = od.struct_arsdk_cmd_itf_cbs.bind({
+        self._cmd_itf_cbs = od.struct_arsdk_cmd_itf_cbs.bind({
             "dispose": self._dispose_cmd_cb,
             "recv_cmd": self._recv_cmd_cb,
-            "send_status": self._cmd_itf_send_status_cb,
+            "send_status": self._send_status,
         })
 
-        self.backend_net_socket_callback = \
-            od.arsdkctrl_backend_net_socket_cb_t(
-                lambda *args: self._backend_socket_cb(*args))
-
-        self.send_status = od.arsdk_cmd_itf_send_status_cb_t()
-        self.userdata = ctypes.c_void_p()
-
+    @callback_decorator()
     def _connecting_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         """
         Notify connection initiation.
         """
-        self.logging.logI("Connecting to device: {}".format(
+        self.logging.info("Connecting to device: {}".format(
             od.string_cast(arsdk_device_info.contents.name)))
 
+    @callback_decorator()
     def _connected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         """
         Notify connection completion.
         """
         device_name = od.string_cast(arsdk_device_info.contents.name)
-        self.logging.logI("Connected to device: {}".format(device_name))
+        if self._device_name is None:
+            self._device_name = device_name
+            if self._name is None:
+                self.logging = getLogger(
+                    "olympe.drone.{}".format(self._device_name))
+        self.logging.info("Connected to device: {}".format(device_name))
         json_info = od.string_cast(arsdk_device_info.contents.json)
         try:
             self._controller_state.device_conn_status.device_infos["json"] = \
                 json.loads(json_info)
-            self.logging.logI(
+            self.logging.info(
                 '%s' % pprint.pformat(self._controller_state.device_conn_status.device_infos))
         except ValueError:
-            self.logging.logE(
+            self.logging.error(
                 'json contents cannot be parsed: {}'.format(json_info))
 
-        self._create_command_interface()
         self._controller_state.device_conn_status.connected = True
 
+        if not self._is_skyctrl and self._media_autoconnect:
+            media_hostname = self._ip_addr_str
+            if self._media is not None:
+                self._media.shutdown()
+                self._media = None
+            self._media = Media(
+                media_hostname,
+                name=self._name,
+                device_name=self._device_name,
+                scheduler=self._scheduler
+            )
+            self._media.async_connect()
+        if self._connect_future is not None:
+            self._connect_future.set_result(True)
+
+    @callback_decorator()
     def _disconnected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         """
          Notify disconnection.
         """
-        self.logging.logI("Disconnected from device: {}".format(
+        self.logging.info("Disconnected from device: {}".format(
             od.string_cast(arsdk_device_info.contents.name)))
         self._controller_state.device_conn_status.connected = False
-        self.thread_loop.run_later(self._on_device_removed)
+        if self._disconnect_future is not None:
+            self._disconnect_future.set_result(True)
+        self._thread_loop.run_later(self._on_device_removed)
 
+    @callback_decorator()
     def _canceled_cb(self, _arsdk_device, arsdk_device_info, reason, _user_data):
         """
         Notify connection cancellation. Either because 'disconnect' was
@@ -330,18 +285,14 @@ class Drone(object):
         """
         reason_txt = od.string_cast(
             od.arsdk_conn_cancel_reason_str(reason))
-        self.logging.logI(
+        self.logging.info(
             "Connection to device: {} has been canceled for reason: {}".format(
-                arsdk_device_info.contents.name, reason_txt))
-        time.sleep(0.1)
-        self.thread_loop.run_later(self._on_device_removed)
+                od.string_cast(arsdk_device_info.contents.name), reason_txt))
+        if self._connect_future is not None:
+            self._connect_future.set_result(False)
+        self._thread_loop.run_later(self._on_device_removed)
 
-    def _backend_socket_cb(self, backend_net, socket_fd, socket_kind, userdata):
-        self.logging.logI(
-            "backend_pointer {} socket_fd {} socket_kind {} userdate_pointer {}"
-            .format(backend_net, socket_fd, socket_kind, userdata)
-        )
-
+    @callback_decorator()
     def _link_status_cb(self, _arsdk_device, _arsdk_device_info, status, _user_data):
         """
          Notify link status. At connection completion, it is assumed to be
@@ -350,79 +301,122 @@ class Drone(object):
          immediately. In this case, call arsdk_device_disconnect and the
          'disconnected' callback will be called.
         """
-        self.logging.logI("Link status: {}".format(status))
+        self.logging.info("Link status: {}".format(status))
         # If link has been lost, we must start disconnection procedure
         if status == od.ARSDK_LINK_STATUS_KO:
-            # the device has been destroyed
-            self.device = None
-            self.thread_loop.run_later(self._on_device_removed)
+            # the device has been disconnected
             self._controller_state.device_conn_status.connected = False
+            self._thread_loop.run_later(self._on_device_removed)
 
-    def _device_added_cb(self, arsdk_device, _user_data):
-        """
-        Callback received when a new device is detected.
-        Detected devices depends on discovery parameters
-        """
-        self.logging.logI("New device has been detected")
-
-        self.device = arsdk_device
-        device_conn_status = self._controller_state.device_conn_status
-        device_conn_status.device_infos["state"] = 0
-        self.logging.logI(
-            '%s' % pprint.pformat(self._controller_state.device_conn_status.device_infos))
-
-        # Check if the detected device has the right ip address
-        # and if we are not already connected
-        if not self._controller_state.device_conn_status.connected:
-            # Connect the controller to the device
-            # FIXME: here we are connecting to the first device we've
-            # discovered. We should somehow filter on self.addr (at least for
-            # AVAHI). This shouldn't be a problem for the NET discovery though.
-            self._connect_to_device()
-
-            # stop the AVAHI discovery
-            # (needs to be done after connection for avahi)
-            if self.backend_type == od.ARSDK_BACKEND_TYPE_NET\
-                    and self.avahi:
-                self._stop_discovery()
-        # TODO: check if we still want a connection
-
-    def _device_removed_cb(self, arsdk_device, _user_data):
-        """
-        Callback received when a device disappear from discovery search
-        """
-        self.logging.logI("Device has been removed")
-        # TODO: Check if the device removed is the device we are connected to
-        # if arsdk_device.contents.id == self._controller_state.device_conn_status.device_infos.get("id", ""):
-        # the device has been destroyed
-        self.device = None
-        self.thread_loop.run_later(self._on_device_removed)
-        self._controller_state.device_conn_status.connected = False
-
+    @callback_decorator()
     def _recv_cmd_cb(self, _interface, command, _user_data):
         """
         Function called when an arsdk event message has been received.
         """
         message_id = command.contents.id
         if message_id not in self.messages.keys():
-            raise RuntimeError("Unknown message id {}".format(message_id))
+            feature_name, class_name, msg_id = (
+                messages.ArsdkMessages.get().unknown_message_info(message_id))
+            if feature_name is not None:
+                if class_name is not None:
+                    scope = "{}.{}".format(feature_name, class_name)
+                else:
+                    scope = feature_name
+                self.logging.warning(
+                    "Unknown message id: {} in {}".format(msg_id, scope)
+                )
+            else:
+                self.logging.warning(
+                    "Unknown message id {}".format(message_id))
+            return
         message = self.messages[message_id]
-        res, message_args = message._decode_args(command)
-        message_event = message._event_from_args(*message_args)
+        try:
+            res, message_args = message._decode_args(command)
+        except Exception as e:
+            self.logging.exception("Failed to decode message {}".format(message))
+            self._decoding_errors.append(e)
+            return
 
         if res != 0:
-            self.logging.logE(
-                "Unable to decode callback, error: {} , id: {} , name: {}".
-                format(res, command.contents.id, message.FullName))
+            msg = ("Unable to decode callback, error: {} , id: {} , name: {}".
+                   format(res, command.contents.id, message.FullName))
+            self.logging.error(msg)
+            self._decoding_errors.append(RuntimeError(msg))
+
+        try:
+            message_event = message._event_from_args(*message_args)
+        except Exception as e:
+            self.logging.exception("Failed to decode message {}{}".format(
+                message, message_args))
+            self._decoding_errors.append(e)
+            return
 
         # Save the states and settings in a dictionary
         self._update_states(message, message_args, message_event)
 
         # Format received callback as string
-        self.logging.log(str(message_event), message.loglevel)
+        self.logging.log(message.loglevel, str(message_event))
+
+        # Handle drone connection_state events
+        if self._is_skyctrl and message_id == drone_manager.connection_state.id:
+            if message_event._args["state"] == drone_manager_enums.connection_state.connected:
+                self.logging.info("Skycontroller connected to drone")
+                all_states_settings_commands = [
+                    common.Common.AllStates, common.Settings.AllSettings]
+                for all_states_settings_command in all_states_settings_commands:
+                    self._send_command(
+                        all_states_settings_command,
+                        _no_expect=True, _async=True, _ensure_connected=False
+                    )
+
+                # The SkyController forwards port tcp/180 to the drone tcp/80
+                # for the web API endpoints
+                if self._media_autoconnect:
+                    if self._media is not None:
+                        self._media.shutdown()
+                        self._media = None
+                    media_hostname = self._ip_addr_str + ":180"
+                    self._media = Media(
+                        media_hostname,
+                        name=self._name,
+                        device_name=self._device_name,
+                        scheduler=self._scheduler
+                    )
+                    self._media.async_connect()
+            if message_event._args["state"] == drone_manager_enums.connection_state.disconnecting:
+                self.logging.info("Skycontroller disconnected from drone")
+                if self._media is not None:
+                    self._media.shutdown()
+                    self._media = None
 
         # Update the currently monitored expectations
-        self._update_expectations(message_event)
+        self._scheduler.process_event(message_event)
+
+    def _synchronize_clock(self):
+        date_time = datetime.datetime.now(
+            get_localzone()).strftime("%Y%m%dT%H%M%S%z")
+        if not self._is_skyctrl:
+            current_date_time = common.Common.CurrentDateTime
+        else:
+            current_date_time = skyctrl.Common.CurrentDateTime
+        res = self._send_command(
+            current_date_time,
+            date_time,
+            _ensure_connected=False,
+            _async=True,
+            _timeout=0.5
+        )
+
+        def _on_sync_done(res):
+            if not res.success():
+                msg = "Time synchronization failed for {}".format(
+                    self._ip_addr)
+                self.logging.warning(msg)
+            else:
+                self.logging.info("Synchronization of {} at {}".format(
+                    self._ip_addr, date_time))
+
+        res.add_done_callback(_on_sync_done)
 
     def _update_states(self, message, message_args, message_event):
         # Set the last event for this message, this will also update the message state
@@ -446,36 +440,7 @@ class Drone(object):
             insert_pos = next(reversed(self._controller_state.device_states.states[message_name]), -1) + 1
             self._controller_state.device_states.states[message_name][insert_pos] = message_args
 
-    def _update_expectations(self, message_event):
-        """
-        Update the current expectations when an arsdk message is received
-        """
-        # For all current expectations
-        garbage_collected_expectations = []
-        for expectation in self._controller_state.callbacks.expectations:
-            if expectation.cancelled() or expectation.timedout():
-                # Garbage collect canceled/timedout expectations
-                garbage_collected_expectations.append(expectation)
-            elif expectation.check(message_event).success():
-                # If an expectation successfully matched a message, signal the expectation
-                # and remove it from the currently monitored expectations.
-                expectation.set_result()
-                garbage_collected_expectations.append(expectation)
-        for expectation in garbage_collected_expectations:
-            self._controller_state.callbacks.expectations.remove(expectation)
-
-    def _expectations_timer_cb(self, timer, _user_data):
-        """
-        Check for canceled/timedout expectations periodically even if no message is received
-        """
-        # For all current expectations
-        garbage_collected_expectations = []
-        for expectation in self._controller_state.callbacks.expectations:
-            if expectation.cancelled() or expectation.timedout():
-                garbage_collected_expectations.append(expectation)
-        for expectation in garbage_collected_expectations:
-            self._controller_state.callbacks.expectations.remove(expectation)
-
+    @callback_decorator()
     def _piloting_timer_cb(self, timer, _user_data):
         """
          Notify link status. At connection completion, it is assumed to be
@@ -486,17 +451,19 @@ class Drone(object):
         """
         if self._controller_state.device_conn_status.connected:
             # Each time this callback is received; piloting command should be send
-            self.logging.logD("Loop timer callback: {}".format(timer))
+            self.logging.debug("Loop timer callback: {}".format(timer))
             if self._controller_state.device_conn_status.connected:
                 self._send_piloting_command()
 
+    @callback_decorator()
     def _dispose_cmd_cb(self, _interface, _user_data):
         """
         Function called when a dispose command callback has been received.
         """
-        self.logging.logD("Dispose command received")
+        self.logging.debug("Dispose command received")
 
-    def _cmd_itf_send_status_cb(self, _interface, _command, status, done, _userdata):
+    @callback_decorator()
+    def _cmd_itf_send_status_cb(self, _interface, _command, status, done, userdata):
         """
         Function called when a new command has been received.
          0 -> ARSDK_CMD_ITF_SEND_STATUS_SENT,
@@ -504,276 +471,46 @@ class Drone(object):
          2 -> ARSDK_CMD_ITF_SEND_STATUS_TIMEOUT,
          3 -> ARSDK_CMD_ITF_SEND_STATUS_CANCELED,
         """
-        self.logging.logD("Command send status: {0}, done: {1}".format(
-            status, done))
-
-    def _create_manager(self):
-        """
-        Create a manager
-        """
-        # Create the manager
-        self.manager = od.POINTER_T(od.struct_arsdk_ctrl)()
-        res = od.arsdk_ctrl_new(self.thread_loop.pomp_loop, ctypes.byref(self.manager))
-
-        if res != 0:
-            raise RuntimeError("ERROR: {}".format(res))
-
-        self.logging.logI("New manager has been created!")
-
-        # Send a command to add callbacks to the manager
-        res = od.arsdk_ctrl_set_device_cbs(self.manager, self.arsdk_mngr_device_cbs)
-
-        if res != 0:
-            raise RuntimeError("ERROR: {}".format(res))
-
-        self.logging.logI(
-            "Manager device callbacks has been added to the manager")
-
-    def _destroy_manager(self):
-        """
-        Destroy the manager
-        """
-
-        if self.manager is not None:
-            res = od.arsdk_ctrl_destroy(self.manager)
-
-            if res != 0:
-                self.logging.logE(
-                    "Error while destroying manager: {}".format(res))
+        send_status_userdata = py_object_cast(userdata)
+        send_command_future, message, args = send_status_userdata
+        self.logging.debug("Command send status: {} {}, done: {}".format(
+            message.fullName, status, done))
+        if done == 1:
+            if status in (
+                    od.ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
+                    od.ARSDK_CMD_ITF_SEND_STATUS_SENT):
+                send_command_future.set_result(True)
             else:
-                self.manager = None
-                self.logging.logI("Manager has been destroyed")
-
-    def _create_net_backend(self):
-
-        self.backend_net = od.POINTER_T(od.struct_arsdkctrl_backend_net)()
-
-        cfg = od.struct_arsdkctrl_backend_net_cfg(ctypes.create_string_buffer(b"net_config"))
-        cfg.stream_supported = 1
-
-        res = od.arsdkctrl_backend_net_new(
-            self.manager, ctypes.pointer(cfg), ctypes.byref(self.backend_net))
-
-        if res != 0:
-            raise RuntimeError("ERROR: {}".format(res))
-
-        self.logging.logI("New net backend has been created")
-
-        if not self.avahi:
-            res_set_socket = od.arsdkctrl_backend_net_set_socket_cb(
-                self.backend_net, self.backend_net_socket_callback,
-                self.userdata)
-            if res_set_socket != 0:
-                raise RuntimeError(
-                    "ERROR while set callback backend set socket: {}".format(
-                        res))
-
-            self.logging.logI("Set backend socket callback OK")
-
-    def _destroy_net_backend(self):
-        if self.backend_net is not None:
-
-            res = od.arsdkctrl_backend_net_destroy(self.backend_net)
-
-            if res != 0:
-                self.logging.logE(
-                    "Error while destroying net backend: {}".format(res))
-            else:
-                self.backend_net = None
-                self.logging.logI("Net backend has been destroyed")
-
-    def _start_avahi_discovery(self):
-        """
-         Start avahi discovery in order to detect devices
-        """
-
-        if self.discovery_inst:
-            self.logging.logE('Discovery already running')
-            return
-
-        devices_type = (ctypes.c_int * len(self.discovery_device_types))(
-            *self.discovery_device_types
-        )
-        discovery_cfg = od.struct_arsdk_discovery_cfg(
-            ctypes.addressof(devices_type), len(devices_type))
-
-        self.discovery_inst = od.POINTER_T(od.struct_arsdk_discovery_avahi)()
-
-        res = od.arsdk_discovery_avahi_new(
-            self.manager, self.backend_net, discovery_cfg,
-            ctypes.byref(self.discovery_inst))
-
-        if res != 0:
-            raise RuntimeError("ERROR: {}".format(res))
-
-        self.logging.logI("Avahi discovery object has been created")
-        self.stop_discov_steps['destroy'] = od.arsdk_discovery_avahi_destroy
-
-        res = od.arsdk_discovery_avahi_start(self.discovery_inst)
-
-        if res != 0:
-            self._stop_discovery()
-            raise RuntimeError("Avahi: {}".format(res))
-
-        self.logging.logI("Avahi discovery has been started")
-        self.stop_discov_steps['stop'] = od.arsdk_discovery_avahi_stop
-
-    def _start_raw_discovery(self):
-        """
-        Raw discovery corresponds to a discovery without any active
-        method to search for devices.
-        That means that this discovery type only works when adding
-        manually a device (using function _inject_device_to_raw_discovery).
-
-        This method should be considered as a fallback.
-        """
-        if self.discovery_inst:
-            self.logging.logE('Discovery already running')
-            return
-
-        self.discovery_inst = od.POINTER_T(od.struct_arsdk_discovery)()
-
-        backendparent = od.arsdkctrl_backend_net_get_parent(self.backend_net)
-
-        res = od.arsdk_discovery_new(
-            b'raw',
-            backendparent,
-            self.manager,
-            ctypes.byref(self.discovery_inst))
-        if res != 0:
-            raise RuntimeError("Unable to create raw discovery:{}".format(res))
-
-        self.stop_discov_steps['destroy'] = od.arsdk_discovery_destroy
-        self.logging.logI("discovery object has been created")
-
-        res = od.arsdk_discovery_start(self.discovery_inst)
-        if res != 0:
-            self._stop_discovery()
-            raise RuntimeError("Unable to start raw discovery:{}".format(res))
-
-        self.logging.logI("discovery started")
-        self.stop_discov_steps['stop'] = od.arsdk_discovery_stop
-
-    def _inject_device_to_raw_discovery(self, info):
-        """
-        Calling this function supposes that a *raw* discovery is started.
-        :param info dict built as follows:
-                       {
-                            'name':<name of the device>,
-                            'dronetype':<hex number representing the drone model>
-                            'addr':<ip address of the drone>
-                            'port':<tcp port to connect to the drone>
-                            'serialnb':<UUID specific to the drone>
-                       }
-        """
-        info_struct = od.struct_arsdk_discovery_device_info(
-            od.char_pointer_cast(info['name']), ctypes.c_int(info['dronetype']),
-            od.char_pointer_cast(info['addr']), ctypes.c_uint16(info['port']),
-            od.char_pointer_cast(info['serialnb']))
-
-        res = od.arsdk_discovery_add_device(self.discovery_inst, info_struct)
-
-        if res != 0:
-            self.logging.logE("{}".format(res))
-        else:
-            self.stop_discov_steps['remove'] = info_struct
-            self.logging.logI('Device manually added to raw discovery')
-
-    def _start_net_discovery(self):
-        """
-        Start net discovery in order to detect devices
-        """
-        if self.discovery_inst:
-            self.logging.logE('Discovery already running')
-            return
-
-        devices_type = (ctypes.c_int * len(self.discovery_device_types))(
-            *self.discovery_device_types
-        )
-        discovery_cfg = od.struct_arsdk_discovery_cfg(
-            ctypes.cast(devices_type, od.POINTER_T(od.arsdk_device_type)), len(devices_type))
-
-        self.discovery_inst = od.POINTER_T(od.struct_arsdk_discovery_net)()
-
-        res = od.arsdk_discovery_net_new(
-            self.manager, self.backend_net, discovery_cfg,
-            ctypes.c_char_p(self.addr), ctypes.byref(self.discovery_inst))
-        if res != 0:
-            raise RuntimeError("ERROR: {}".format(res))
-
-        self.logging.logI("Net discovery object has been created")
-        self.stop_discov_steps['destroy'] = od.arsdk_discovery_net_destroy
-
-        res = od.arsdk_discovery_net_start(self.discovery_inst)
-
-        if res != 0:
-            self._stop_discovery()
-            raise RuntimeError("Net: {}".format(res))
-
-        self.logging.logI("Net discovery has been started")
-        self.stop_discov_steps['stop'] = od.arsdk_discovery_net_stop
-
-    def _stop_discovery(self):
-        if self.discovery_inst is None:
-            self.logging.logI('No discovery instance to be stopped')
-            self.stop_discov_steps.clear()
-            return
-
-        if len(self.stop_discov_steps) == 0:
-            self.logging.logE('Nothing to execute to stop discovery!')
-
-        # manually remove device from discovery
-        if 'remove' in self.stop_discov_steps:
-            res = od.arsdk_discovery_remove_device(
-                self.discovery_inst, self.stop_discov_steps['remove'])
-            if res != 0:
-                self.logging.logE(
-                    "Error while removing device from discovery: {}".format(res))
-            else:
-                self.logging.logI("Device removed from discovery")
-
-        # stop currently running discovery
-        if 'stop' in self.stop_discov_steps:
-            res = self.stop_discov_steps['stop'](self.discovery_inst)
-            if res != 0:
-                self.logging.logE(
-                    "Error while stopping discovery: {}".format(res))
-            else:
-                self.logging.logI("Discovery has been stopped")
-
-        # then, destroy it
-        if 'destroy' in self.stop_discov_steps:
-            res = self.stop_discov_steps['destroy'](self.discovery_inst)
-            if res != 0:
-                self.logging.logE(
-                    "Error while destroying discovery object: {}".format(res))
-            else:
-                self.logging.logI("Discovery object has been destroyed")
-
-        self.discovery_inst = None
-        self.stop_discov_steps.clear()
+                send_command_future.set_result(False)
+                self.logging.error(
+                    "Command send status cancel/timeout: "
+                    "{} {}, done: {}".format(message.fullName, status, done)
+                )
+            del self._send_status_userdata[id(send_command_future)]
 
     def _destroy_pdraw(self):
-        if self.pdraw is not None:
-            self.pdraw.dispose()
-        self.pdraw = None
+        if self._pdraw is not None:
+            self._pdraw.dispose()
+        self._pdraw = None
 
     def _create_pdraw_interface(self):
-        legacy_streaming = self.drone_type not in (None, od.ARSDK_DEVICE_TYPE_ANAFI4K)
-        self.pdraw = Pdraw(
-            logging=self.logging,
+        legacy_streaming = not od.arsdk_device_type__enumvalues[
+            self._device_type].startswith("ARSDK_DEVICE_TYPE_ANAFI")
+        return Pdraw(
+            name=self._name,
+            device_name=self._device_name,
             legacy=legacy_streaming,
             buffer_queue_size=self.video_buffer_queue_size,
         )
 
+    @callback_decorator()
     def _enable_legacy_video_streaming_impl(self):
         """
         Enable the streaming on legacy drones (pre-anafi)
         """
 
         try:
-            ret = self._send_command_impl(
-                "g_arsdk_cmd_desc_Ardrone3_MediaStreaming_VideoEnable", 1)
+            ret = self._send_command_impl(ardrone3.mediaStreaming.VideoEnable, 1)
         except Exception as e:
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
@@ -790,13 +527,13 @@ class Drone(object):
                 "MediaStreaming_VideoEnable 1 Success"
             )
 
+    @callback_decorator()
     def _disable_legacy_video_streaming_impl(self):
         """
         Disable the streaming on legacy drones (pre-anafi)
         """
         try:
-            ret = self._send_command_impl(
-                "g_arsdk_cmd_desc_Ardrone3_MediaStreaming_VideoEnable", 0)
+            ret = self._send_command_impl(ardrone3.mediaStreaming.VideoEnable, 0)
         except Exception as e:
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
@@ -812,34 +549,38 @@ class Drone(object):
 
         return ret
 
+    @callback_decorator()
     def _create_command_interface(self):
         """
         Create a command interface to send command to the device
         """
 
-        cmd_itf_candidate = od.POINTER_T(od.struct_arsdk_cmd_itf)()
+        cmd_itf = od.POINTER_T(od.struct_arsdk_cmd_itf)()
 
         res = od.arsdk_device_create_cmd_itf(
-            self.device,
-            self.cmd_itf_cbs,
-            ctypes.pointer(cmd_itf_candidate))
+            self._device.arsdk_device,
+            self._cmd_itf_cbs,
+            ctypes.pointer(cmd_itf))
 
         if res != 0:
-            self.logging.logE(
+            self.logging.error(
                 "Error while creating command interface: {}".format(res))
-            ret = False
+            cmd_itf = None
         else:
-            self.cmd_itf = cmd_itf_candidate
-            self.logging.logI("Command interface has been created: itf=%s"
-                              % self.cmd_itf)
-            ret = True
+            self.logging.info("Command interface has been created: itf=%s"
+                              % self._cmd_itf)
 
-        return ret
+        return cmd_itf
 
-    def _send_command_impl(self, command, *args):
+    @callback_decorator()
+    def _send_command_impl(self, message, *args, quiet=False):
         """
         Must be run from the pomp loop
         """
+
+        argv = message._encode_args(*args)
+        command_name = "g_arsdk_cmd_desc_{}".format(message.Full_Name)
+
         # Check if we are already sending a command.
         # if it the case, wait for the lock to be released
         # Define an Arsdk structure
@@ -848,146 +589,109 @@ class Drone(object):
         # Find the description of the command in libarsdk.so
         command_desc = od.struct_arsdk_cmd_desc.in_dll(
             od._libraries['libarsdk.so'],
-            command
+            command_name
         )  # pylint: disable=E1101
 
-        od.arsdk_cmd_enc.argtypes = od.arsdk_cmd_enc.argtypes[:2]
-
-        # Manage commands with args by adding there types in argtypes
-        for arg in args:
-            od.arsdk_cmd_enc.argtypes.append(type(arg))
-
+        # argv is an array of struct_arsdk_value
+        argc = argv._length_
         # Encode the command
-        res = od.arsdk_cmd_enc(ctypes.pointer(cmd), ctypes.pointer(command_desc), *args)
+        res = od.arsdk_cmd_enc_argv(ctypes.pointer(cmd), ctypes.pointer(command_desc), argc, argv)
 
         if res != 0:
-            self.logging.logE("Error while encoding command {}: {}".format(
-                command, res))
+            self.logging.error("Error while encoding command {}: {}".format(
+                message.fullName, res))
         else:
-            self.logging.logD("Command {} has been encoded".format(command))
+            self.logging.debug("Command {} has been encoded".format(message.fullName))
 
         # cmd_itf must exist to send command
-        if self.cmd_itf is None:
+        if self._cmd_itf is None:
             raise RuntimeError("[sendcmd] Error cmd interface seems to be destroyed")
 
         # Send the command
-        try:
-            res = None
-            res = od.arsdk_cmd_itf_send(
-                self.cmd_itf, ctypes.pointer(cmd), self.send_status, self.userdata)
-            # FIXME: We should wait for _cmd_itf_send_status_cb to be called for this command
-            # before 'cmd' is garbage collected. This could also be used to get an drone
-            # acknowledgment or a timeout status for this command.
-        except Exception:
-            self.logging.logE(
-                "Error while send command. Is connected or not ?")
-            self.logging.logE(traceback.format_exc())
+        send_command_future = Future(self._thread_loop)
+        send_status_userdata = ctypes.pointer(ctypes.py_object((
+            send_command_future, message, args
+        )))
+        self._send_status_userdata[id(send_command_future)] = send_status_userdata
+        res = od.arsdk_cmd_itf_send(
+            self._cmd_itf, ctypes.pointer(cmd), self._send_status, send_status_userdata)
 
         if res != 0:
-            self.logging.logE("Error while sending command: {}".format(res))
+            self.logging.error("Error while sending command: {}".format(res))
             return ErrorCodeDrone.ERROR_BAD_STATE
 
-        mess = "Command {} has been sent to the drone with arg {}".format(command, args)
-        self.logging.logD(mess)
-        return ErrorCodeDrone.OK
+        mess = "{}{} has been sent to the device".format(message.fullName, tuple(args))
+        if quiet:
+            self.logging.debug(mess)
+        else:
+            self.logging.info(mess)
+
+        return send_command_future
 
     def _send_piloting_command(self):
 
-        try:
-            # When piloting time is 0 => send default piloting commands
-            if self._controller_state.piloting_command.piloting_time:
-                # Check if piloting time since last piloting_pcmd order has been reached
-                diff_time = datetime.datetime.now() - self._controller_state.piloting_command.initial_time
-                if diff_time.total_seconds() >= self._controller_state.piloting_command.piloting_time:
-                    self._controller_state.piloting_command.set_default_piloting_command()
-
-            # Generate a piloting command with data from PilotingCommand class
-            cmd = od.struct_arsdk_cmd()
-
-            command_desc = od.struct_arsdk_cmd_desc.in_dll(
-                od._libraries['libarsdk.so'], "g_arsdk_cmd_desc_Ardrone3_Piloting_PCMD")
-
-            # Flag to activate movement on roll and pitch. 1 activate, 0 deactivate
-            if self._controller_state.piloting_command.roll or self._controller_state.piloting_command.pitch:
-                activate_movement = 1
-            else:
-                activate_movement = 0
-
-            cfunc = od.arsdk_cmd_enc
-            cfunc.argtypes = cfunc.argtypes[:2] + [
-                ctypes.c_uint8,
-                ctypes.c_int8,
-                ctypes.c_int8,
-                ctypes.c_int8,
-                ctypes.c_int8,
-                ctypes.c_uint32,
-            ]
-            res = cfunc(
-                ctypes.pointer(cmd),
-                ctypes.pointer(command_desc),
-                ctypes.c_uint8(activate_movement),
-                ctypes.c_int8(self._controller_state.piloting_command.roll),
-                ctypes.c_int8(self._controller_state.piloting_command.pitch),
-                ctypes.c_int8(self._controller_state.piloting_command.yaw),
-                ctypes.c_int8(self._controller_state.piloting_command.gaz),
-                ctypes.c_uint32(0),
+        # When piloting time is 0 => send default piloting commands
+        if self._controller_state.piloting_command.piloting_time:
+            # Check if piloting time since last piloting_pcmd order has been reached
+            diff_time = (
+                datetime.datetime.now() -
+                self._controller_state.piloting_command.initial_time
             )
+            if diff_time.total_seconds() >= self._controller_state.piloting_command.piloting_time:
+                self._controller_state.piloting_command.set_default_piloting_command()
 
-            if res != 0:
-                self.logging.logE("Error while encoding command: {}".format(res))
-            else:
-                self.logging.logD("Piloting command has been encoded")
+        # Flag to activate movement on roll and pitch. 1 activate, 0 deactivate
+        if self._controller_state.piloting_command.roll or (
+            self._controller_state.piloting_command.pitch
+        ):
+            activate_movement = 1
+        else:
+            activate_movement = 0
 
-            # cmd_itf must exist to send command
-            if self.cmd_itf is None:
-                raise RuntimeError("[pcmd]Error cmd interface seems to be destroyed")
+        self._send_command_impl(
+            ardrone3.Piloting.PCMD,
+            activate_movement,
+            self._controller_state.piloting_command.roll,
+            self._controller_state.piloting_command.pitch,
+            self._controller_state.piloting_command.yaw,
+            self._controller_state.piloting_command.gaz,
+            0,
+            quiet=True,
+        )
 
-            ret = ErrorCodeDrone.OK
-            res = od.arsdk_cmd_itf_send(self.cmd_itf, cmd, self.send_status, self.userdata)
-            if res != 0:
-                raise RuntimeError("Error while sending  piloting command: {}".format(res))
-
-            self.logging.logD("Piloting command has been sent to the drone")
-
-        except RuntimeError as e:
-            self.logging.logE(str(e))
-            ret = ErrorCodeDrone.ERROR_BAD_STATE
-        return ret
-
+    @callback_decorator()
     def _start_piloting_impl(self):
 
         delay = 100
         period = 25
 
-        # Set piloting command depending on the drone
-        self._controller_state.piloting_command.set_piloting_command(
-            "g_arsdk_cmd_desc_Ardrone3_Piloting_PCMD")
-
-        ok = self.thread_loop.set_timer(self.piloting_timer, delay, period)
+        ok = self._thread_loop.set_timer(self._piloting_timer, delay, period)
 
         if ok:
-            self.piloting = True
-            self.logging.logI(
+            self._piloting = True
+            self.logging.info(
                 "Piloting interface has been correctly launched")
         else:
-            self.logging.logE("Unable to launch piloting interface")
-        return self.piloting
+            self.logging.error("Unable to launch piloting interface")
+        return self._piloting
 
+    @callback_decorator()
     def _stop_piloting_impl(self):
 
         # Stop the drone movements
         self._controller_state.piloting_command.set_default_piloting_command()
         time.sleep(0.1)
 
-        ok = self.thread_loop.clear_timer(self.piloting_timer)
+        ok = self._thread_loop.clear_timer(self._piloting_timer)
         if ok:
             # Reset piloting state value to False
-            self.piloting = False
-            self.logging.logI("Piloting interface stopped")
+            self._piloting = False
+            self.logging.info("Piloting interface stopped")
         else:
-            self.logging.logE("Unable to stop piloting interface")
+            self.logging.error("Unable to stop piloting interface")
 
-    def _connect_to_device(self):
+    @callback_decorator()
+    def _connection_impl(self):
 
         # Use default values for connection json. If we want to changes values
         # (or add new info), we just need to add them in req (using json format)
@@ -1003,19 +707,35 @@ class Drone(object):
             ctypes.create_string_buffer(bytes(device_id)), ctypes.create_string_buffer(req))
 
         # Send connection command
+        self._connect_future = Future(self._thread_loop)
         res = od.arsdk_device_connect(
-            self.device, device_conn_cfg, self.device_cbs_cfg, self.thread_loop.pomp_loop)
+            self._device.arsdk_device,
+            device_conn_cfg,
+            self._device_cbs_cfg,
+            self._thread_loop.pomp_loop
+        )
         if res != 0:
-            self.logging.logE("Error while connecting: {}".format(res))
+            self.logging.error("Error while connecting: {}".format(res))
+            self._connect_future.set_result(False)
         else:
-            self.logging.logI("Connection in progress...")
+            self.logging.info("Connection in progress...")
+        return self._connect_future
 
+    @callback_decorator()
     def _on_device_removed(self):
 
-        self._stop_discovery()
+        if self._discovery:
+            self._discovery.stop()
 
-        if self.piloting:
+        if self._piloting:
             self._stop_piloting_impl()
+
+        if self._pdraw:
+            self._destroy_pdraw()
+
+        if self._media:
+            self._media.shutdown()
+            self._media = None
 
         self._disconnection_impl()
 
@@ -1023,127 +743,183 @@ class Drone(object):
         self._controller_state.device_states.reset_all_states()
         for message in self.messages.values():
             message._reset_state()
-        for expectation in self._controller_state.callbacks.expectations:
-            expectation.cancel()
-        self._controller_state.callbacks.reset()
+        self._scheduler.stop()
 
         self._reset_instance()
 
+    @callback_decorator()
     def _disconnection_impl(self):
 
-        if self.device is None:
-            return
+        f = Future(self._thread_loop)
+        if not self._controller_state.device_conn_status.connected:
+            return f.set_result(True)
 
-        res = od.arsdk_device_disconnect(self.device)
+        self._disconnect_future = f
+        res = od.arsdk_device_disconnect(self._device.arsdk_device)
         if res != 0:
-            self.logging.logE(
-                "Error while disconnecting from device: {} ({})".format(self.addr, res))
+            self.logging.error(
+                "Error while disconnecting from device: {} ({})".format(self._ip_addr, res))
+            self._disconnect_future.set_result(False)
         else:
-            self.logging.logI(
-                "disconnected from device: {}".format(self.addr))
+            self.logging.info(
+                "disconnected from device: {}".format(self._ip_addr))
+        return self._disconnect_future
 
     def _reset_instance(self):
         """
         Reset drone variables
         """
-        self.piloting = False
-        self.device = None
-        self.cmd_itf = None
+        self._piloting = False
+        self._device = None
+        self._device_name = None
+        self._discovery = None
+        self._cmd_itf = None
+        self._pdraw = None
+        self._media = None
+        self._decoding_errors = []
 
     def destroy(self):
         """
         explicit destructor
         """
-        self.thread_loop.unregister_cleanup(self.destroy)
+        self._thread_loop.unregister_cleanup(self.destroy)
         self._destroy_pdraw()
-        self.thread_loop.stop()
+        if self._media is not None:
+            self._media.shutdown()
+            self._media = None
+        self._thread_loop.stop()
         self._on_device_removed()
-        if self.backend_type == od.ARSDK_BACKEND_TYPE_NET:
-            self._destroy_net_backend()
-        self._destroy_manager()
-
-    def _wait_until(self, condfunc, timeout_sec, pollingstep=0.05):
-        """
-        Helper function to poll a condition until a given timeout.
-        Parameter 'condfunc' is a function that return True if the condition
-        is met, False otherwise.
-        """
-        timer = timeout_sec
-        while timer > 0:
-            if condfunc():
-                return True
-            time.sleep(pollingstep)
-            timer -= pollingstep
-
-        return False
+        self._scheduler.destroy()
+        self._backend.destroy()
 
     def connection(self):
+        warn(
+            "Drone.connection is deprecated, "
+            "please use Drone.connect instead",
+            DeprecationWarning
+        )
+        return self.connect()
+
+    def connect(self):
         """
         Make all step to make the connection between the device and the pc
 
         :rtype: ReturnTuple
         """
 
-        # If not already connected to a drone
+        # If not already connected to a device
         if not self._device_conn_status.connected:
 
-            self.thread_loop.run_async(self._start_discovery)
+            # Try to idenfity the device type we are attempting to connect to...
+            discovery = DiscoveryNet(self._backend, ip_addr=self._ip_addr)
+            device = discovery.get_device()
+            if device is None:
+                self.logging.info("Net discovery failed for {}".format(self._ip_addr))
+                self.logging.info("Trying 'NetRaw' discovery for {} ...".format(self._ip_addr))
+                discovery.stop()
+                discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr)
+                device = discovery.get_device()
 
-            # Wait while connected callback hasn't been received or timeout is reached
-            connected = self._wait_until(lambda: self._device_conn_status.connected, 5)
-
-            if not connected and self.rawdiscov_info:
-                self.thread_loop.run_async(self._stop_discovery)
-                self.thread_loop.run_async(self._disconnection_impl)
-
-                self.logging.logI(
-                    'trying to bypass discovery using device %s'
-                    % self.rawdiscov_info)
-                self.thread_loop.run_async(self._start_raw_discovery)
-                self.thread_loop.run_async(
-                    self._inject_device_to_raw_discovery, self.rawdiscov_info)
-                connected = self._wait_until(lambda: self._device_conn_status.connected, 5)
-            if not connected:
-                self.thread_loop.run_async(self._stop_discovery)
-                self.thread_loop.run_async(self._disconnection_impl)
-                msg = "Unable to connect to the device. IP : {} ".format(self.addr)
-                self.logging.logE(msg)
-
+            if device is None:
+                msg = "Unable to discover the device: {}".format(self._ip_addr)
+                self.logging.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, msg)
 
-        # We're connected to the drone, get all drone states and settings if necessary
-        if not self._device_states.get_all_states_done:
-            all_drone_states = self._send_command(
-                common.Common.AllStates, _ensure_connected=False)
-            if all_drone_states.OK and not self.mpp:
-                self._device_states.get_all_states_done = True
-            elif all_drone_states.OK:
-                all_ctrl_states = self._send_command(
-                    skyctrl.Common.AllStates, _ensure_connected=False)
-                self._device_states.get_all_states_done = all_ctrl_states.OK
+            # Save device related info
+            self._device = device
+            self._discovery = discovery
+            self._device_type = self._device.type
+            if self._is_skyctrl is None:
+                if self._device_type in SKYCTRL_DEVICE_TYPE_LIST:
+                    self._is_skyctrl = True
+                else:
+                    self._is_skyctrl = False
 
-        if not self._device_states.get_all_settings_done:
-            all_drone_settings = self._send_command(
-                common.Settings.AllSettings, _ensure_connected=False)
-            if all_drone_settings.OK and not self.mpp:
-                self._device_states.get_all_settings_done = True
-            elif all_drone_settings.OK:
-                all_ctrl_settings = self._send_command(
-                    skyctrl.Settings.AllSettings, _ensure_connected=False)
-                self._device_states.get_all_settings_done = all_ctrl_settings.OK
-        if not self._device_states.get_all_states_done:
-            return makeReturnTuple(
-                ErrorCodeDrone.ERROR_CONNECTION,
-                "Cannot get states info {}".format(self.addr)
-            )
-        if not self._device_states.get_all_settings_done:
-            return makeReturnTuple(
-                ErrorCodeDrone.ERROR_CONNECTION,
-                "Cannot get settings info {}".format(self.addr)
-            )
+            # Connect to the device
+            connected = self._thread_loop.run_async(self._connection_impl)
+
+            # Wait while not connected or timeout is reached
+            try:
+                if not connected.result_or_cancel(timeout=5):
+                    msg = "Unable to connect to the device: {}".format(
+                        self._ip_addr)
+                    self.logging.error(msg)
+                    self._thread_loop.run_later(self._on_device_removed)
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_CONNECTION, msg)
+            except FutureTimeoutError:
+                msg = "connection time out for device: {}".format(
+                    self._ip_addr)
+                self.logging.error(msg)
+                self._thread_loop.run_later(self._on_device_removed)
+                return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, msg)
+
+            # Create the arsdk command interface
+            if self._cmd_itf is None:
+                self._cmd_itf = self._thread_loop.run_async(
+                    self._create_command_interface).result_or_cancel(timeout=1)
+                if self._cmd_itf is None:
+                    msg = "Unable to create command interface: {}".format(
+                        self._ip_addr)
+                    self.logging.error(msg)
+                    self.disconnect()
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_CONNECTION, msg)
+
+            # Create pdraw video streaming interface
+            if self._pdraw is None:
+                self._pdraw = self._create_pdraw_interface()
+                if self._pdraw is None:
+                    msg = "Unable to create video streaming interface: {}".format(
+                        self._ip_addr)
+                    self.logging.error(msg)
+                    self.disconnect()
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_CONNECTION, msg)
+
+            if not self._ip_addr_str.startswith("10.202"):
+                self._synchronize_clock()
+
+            # We're connected to the device, get all device states and settings if necessary
+            if not self._is_skyctrl:
+                all_states_settings_commands = [
+                    common.Common.AllStates, common.Settings.AllSettings]
+            else:
+                all_states_settings_commands = [
+                    skyctrl.Common.AllStates, skyctrl.Settings.AllSettings]
+
+            def _send_states_settings_cmd(self, command):
+                res = self._send_command(command, _ensure_connected=False)
+                if not res.OK:
+                    msg = "Unable get device state/settings: {} for {}".format(
+                        command.fullName, self._ip_addr)
+                    self.logging.error(msg)
+                    self.disconnect()
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_CONNECTION, msg)
+                return res
+
+            # Get device specific states and settings
+            for states_settings_command in all_states_settings_commands:
+                res = _send_states_settings_cmd(self, states_settings_command)
+                if not res.OK:
+                    return res
+
+            if self._is_skyctrl:
+                # If the skyctrl is connected to a drone get the drone states and settings too
+                if self(drone_manager.connection_state(
+                        state="connected", _policy="check")):
+                    all_states = (self)(
+                        common.CommonState.AllStatesChanged() &
+                        common.SettingsState.AllSettingsChanged()
+                    ).wait(_timeout=5)
+                    if not all_states.success():
+                        msg = "Unable get connected drone states and/or settings"
+                        self.logging.error(msg)
+
         return makeReturnTuple(
             ErrorCodeDrone.OK,
-            "Connection with device OK. IP {}".format(self.addr))
+            "Connection with device OK. IP {}".format(self._ip_addr))
 
     def _get_message(self, id_):
         """
@@ -1153,14 +929,10 @@ class Drone(object):
 
     def _send_command_raw(self, message, *args):
         """
-        Convenience wrapper around _send_command. Just send a command message
-        asynchronously without waiting for the command expectations. DOES NOT
-        perform a connection automatically for you if necessary.
+        Just send a command message asynchronously without waiting for the
+        command expectations.
         """
-        return self._send_command(
-            message, *args,
-            _no_expect=True, _async=True, _ensure_connected=False
-        )
+        return self._thread_loop.run_async(self._send_command_impl, message, *args)
 
     def _send_command(self, message, *args, **kwds):
         """
@@ -1170,7 +942,7 @@ class Drone(object):
             ignored if `no_expect` is False or if `async` is True.
         :param _no_expect: boolean value. If True, monitor the command message expected
             callbacks. Otherwise, just send the command message. (defaults to True)
-        :param _async: boolean value. If True, this function returns immedialty an Expectation
+        :param _async: boolean value. If True, this function returns immediately an Expectation
             object that will be signaled when the command message is sent and
             the command message expected callbacks have been received (if `_no_expect`
             is also True). If `_async` is False, this function will wait for the message to be
@@ -1181,12 +953,12 @@ class Drone(object):
         :param _ensure_connected: boolean value. If true this function will try to ensure that
             olympe is connected to the drone before sending the command. (defaults to True)
 
-        :return: an expectation object if `_async` is True or a ReturnTuple otherwize.
+        :return: an expectation object if `_async` is True or a ReturnTuple otherwise.
         """
         # "arsdkng.messages" module contains timeouts customized by commands.
         # Be careful for some cmd this timeout is not appropriate
         # for example : for a move by to detect the end,
-        # we don't take same time for a little move by or a big move by
+        # we don't take different time for a little move by or a big move by
         default_timeout = message.timeout
         timeout = kwds.pop('_timeout', default_timeout)
         no_expect = kwds.pop('_no_expect', False)
@@ -1201,90 +973,60 @@ class Drone(object):
                 return FailedExpectation(error_message)
             return makeReturnTuple(ErrorCodeDrone.ERROR_PARAMETER, error_message)
 
-        if ensure_connected and not self._device_conn_status.connected and not self.connection():
+        if ensure_connected and not self._device_conn_status.connected and not self.connect():
             error_message = "Cannot make connection"
             if _async:
                 return FailedExpectation(error_message)
             return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, error_message)
-
-        if not no_expect:
-            expectations = message._expect(
-                *args, _send_command=False)
-            if deprecated_statedict:
-                expectations._set_deprecated_statedict()
-
-            self._expect(expectations)
-
-        args = message._encode_args(*args)
-        g_arsdk_command_name = "g_arsdk_cmd_desc_{}".format(message.Full_Name)
-        # commands need to be sent from the pomp loop since libpomp is NOT thread-safe.
-        f = self.thread_loop.run_async(self._send_command_impl, g_arsdk_command_name, *args)
-
-        if no_expect:
+        elif not self._device_conn_status.connected:
+            error_message = "Not connected to any device: cannot send message"
             if _async:
-                e = FutureExpectation(
-                    f, status_checker=lambda status: status == ErrorCodeDrone.OK)
-                e._schedule(self)
-                self.logging.logI("{}{}: has been sent asynchronously".format(
-                    message.FullName, tuple(args)))
-                return e
-            try:
-                f.result_or_cancel(timeout)
-                self.logging.logI("{}{}: has been sent".format(
-                    message.FullName, tuple(args)))
-                return makeReturnTuple(
-                    self.error_code_drones.OK,
-                    "message {} sent without expectation".format(message.fullName),
-                    None
-                )
-            except FutureTimeoutError:
-                message = "message {} not sent: unexpected error".format(message.fullName)
-                self.logging.logE(message)
-                return makeReturnTuple(self.error_code_drones.ERROR_PARAMETER, message, None)
+                return FailedExpectation(error_message)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, error_message)
+
+        expectations = message._expect(
+            *args,
+            _no_expect=no_expect,
+            _timeout=(None if not _async else timeout)
+        )
+        if deprecated_statedict:
+            expectations._set_deprecated_statedict()
+
+        self.schedule(expectations)
 
         if _async:
-            self.logging.logI("{}{}: sent asynchronously".format(
-                message.FullName, tuple(args)))
             return expectations
-
-        if expectations.wait(timeout):
-            self.logging.logI("{}{}: sent and acknowledged".format(
-                message.FullName, tuple(args)))
+        elif expectations.wait(timeout).success():
             return makeReturnTuple(
                 self.error_code_drones.OK,
-                "callback found",
+                "message {} successfully sent".format(message.fullName),
                 expectations.received_events()
             )
         else:
-            self.logging.logE("{}: Warning some callbacks weren't called: {}".format(
-                message.FullName, expectations.unmatched_events()))
-            return makeReturnTuple(
-                self.error_code_drones.ERROR_PARAMETER,
-                "Callback not found or expectation canceled: {}".format(
-                    expectations.unmatched_events()),
-                expectations.received_events()
-            )
+            message = "message {} not sent".format(message.fullName)
+            explanation = expectations.explain()
+            if explanation is not None:
+                message += ": {}".format(explanation)
+            self.logging.error(message)
+            return makeReturnTuple(self.error_code_drones.ERROR_PARAMETER, message, None)
 
-    def _expect(self, expectations, **kwds):
+    def schedule(self, expectations, **kwds):
         """
         See: Drone.__call__()
         """
         ensure_connected = kwds.pop('_ensure_connected', False)
         if kwds:
             return FailedExpectation(
-                "Drone._expect got unexpected keyword parameter(s): {}".format(kwds.keys())
+                "Drone.schedule got unexpected keyword parameter(s): {}".format(kwds.keys())
             )
 
-        if ensure_connected and not self._device_conn_status.connected and not self.connection():
+        if ensure_connected and not self._device_conn_status.connected and not self.connect():
             return FailedExpectation("Cannot make connection")
+        elif not self._device_conn_status.connected:
+            return FailedExpectation("Not connected to any device")
 
-        self.thread_loop.run_async(self._expect_impl, expectations).result_or_cancel()
+        self._scheduler.schedule(expectations)
         return expectations
-
-    def _expect_impl(self, expectations):
-        expectations._schedule(self)
-        if not expectations.success():
-            self._callbacks.expectations.append(expectations)
 
     def __call__(self, expectations, **kwds):
         """
@@ -1303,9 +1045,17 @@ class Drone(object):
 
         Please refer to the Olympe :ref:`user guide<user-guide>` for more information.
         """
-        return self._expect(expectations, **kwds)
+        return self.schedule(expectations, **kwds)
 
     def disconnection(self):
+        warn(
+            "Drone.disconnection is deprecated, "
+            "please use Drone.disconnect instead",
+            DeprecationWarning
+        )
+        return self.disconnect()
+
+    def disconnect(self):
         """
         Disconnects current device (if any)
         Blocks until it is done or abandoned
@@ -1315,21 +1065,19 @@ class Drone(object):
         if not self._device_conn_status.connected:
             return makeReturnTuple(ErrorCodeDrone.OK, 'Already disconnected')
 
-        self.logging.logI("we are not disconnected yet")
-        self.thread_loop.run_async(self._disconnection_impl)
+        self.logging.info("we are not disconnected yet")
+        disconnected = self._thread_loop.run_async(self._disconnection_impl)
 
         # wait max 5 sec until disconnection gets done
-        ok = self._wait_until(lambda:
-                              not self._device_conn_status.connected
-                              and not self.discovery_inst, 5)
-        if ok:
-            mess = "Disconnection with the device OK. IP: {}".format(self.addr)
-            self.logging.logI(mess)
+        if disconnected.result_or_cancel(timeout=5):
+            mess = "Disconnection with the device OK. IP: {}".format(
+                self._ip_addr)
+            self.logging.info(mess)
             return makeReturnTuple(ErrorCodeDrone.OK, mess)
 
         mess = 'Cannot disconnect properly: {} {}'.format(
-               self._device_conn_status.connected, self.discovery_inst)
-        self.logging.logE(mess)
+               self._device_conn_status.connected, self._discover)
+        self.logging.error(mess)
 
         return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, mess)
 
@@ -1395,19 +1143,37 @@ class Drone(object):
         """
         # Check if disconnection callback was called
         if not self._device_conn_status.connected:
-            self.logging.logI("Disconnection has been detected")
+            self.logging.info("Disconnection has been detected")
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
-                "The device has been disconnected")
-        else:
-            self.logging.logI("The device is connected")
+                "The device has been disconnected"
+            )
+        elif not self._is_skyctrl:
+            self.logging.info("connected to the drone")
             return makeReturnTuple(ErrorCodeDrone.OK, "The device is connected")
+        else:
+            try:
+                if self.check_state(drone_manager.connection_state, state="connected"):
+                    return makeReturnTuple(
+                        ErrorCodeDrone.OK,
+                        "The SkyController is connected to the drone"
+                    )
+                else:
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_BAD_STATE,
+                        "The SkyController is not connected to the drone"
+                    )
+            except KeyError:
+                    return makeReturnTuple(
+                        ErrorCodeDrone.ERROR_BAD_STATE,
+                        "The SkyController is not connected to the drone"
+                    )
 
-    def get_last_event(self, message):
+    def get_last_event(self, message, key=None):
         """
         Returns the drone last event for the event message given in parameter
         """
-        event = self._get_message(message.id).last_event()
+        event = self._get_message(message.id).last_event(key=key)
         if event is None:
             raise KeyError("Message `{}` last event is unavailable".format(message.fullName))
         return event
@@ -1429,9 +1195,13 @@ class Drone(object):
         Otherwise, returns False
         """
         _float_tol = kwds.pop('_float_tol', DEFAULT_FLOAT_TOL)
-        last_event = self.get_last_event(message)
         expectation = message._expectation_from_args(*args, **kwds)
         expectation.set_float_tol(_float_tol)
+        if message.callback_type is not messages.ArsdkMessageCallbackType.MAP:
+            key = None
+        else:
+            key = expectation.expected_args[message.key_name]
+        last_event = self.get_last_event(message, key=key)
         return expectation.check(last_event).success()
 
     def query_state(self, query):
@@ -1457,17 +1227,42 @@ class Drone(object):
                         break
         return result
 
+    def decoding_errors(self):
+        return self._decoding_errors
+
+    @property
+    def scheduler(self):
+        return self._scheduler
+
+    def subscribe(self, *args, **kwds):
+        """
+        See: :py:func:`~olympe.expectations.Scheduler.subscribe`
+        """
+        return self._scheduler.subscribe(*args, **kwds)
+
+    def unsubscribe(self, subscriber):
+        """
+        Unsubscribe a previously registered subscriber
+
+        :param subscriber: the subscriber previously returned by :py:func:`~olympe.Drone.subscribe`
+        :type subscriber: Subscriber
+        """
+        return self._scheduler.unsubscribe(subscriber)
+
+    def _subscriber_overrun(self, subscriber, event):
+        self._scheduler._subscriber_overrun(subscriber, event)
+
     def start_piloting(self):
         """
         Start interface to send piloting commands
 
         :rtype: ReturnTuple
         """
-        if self.piloting:
-            self.logging.logI("Piloting interface already launched")
+        if self._piloting:
+            self.logging.info("Piloting interface already launched")
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting interface already launched")
 
-        f = self.thread_loop.run_async(self._start_piloting_impl)
+        f = self._thread_loop.run_async(self._start_piloting_impl)
 
         ok = f.result_or_cancel(timeout=2)
         if not ok:
@@ -1486,11 +1281,11 @@ class Drone(object):
         :rtype: ReturnTuple
         """
         # Check piloting interface is running
-        if not self.piloting:
-            self.logging.logI("Piloting interface already stopped")
+        if not self._piloting:
+            self.logging.info("Piloting interface already stopped")
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting interface already stopped")
 
-        f = self.thread_loop.run_async(self._stop_piloting_impl)
+        f = self._thread_loop.run_async(self._stop_piloting_impl)
 
         ok = f.result_or_cancel(timeout=2)
         if not ok:
@@ -1520,13 +1315,13 @@ class Drone(object):
 
         """
         # Check if piloting has been started and update piloting command
-        if self.piloting:
+        if self._piloting:
             self._piloting_command.update_piloting_command(
                 roll, pitch, yaw, gaz, piloting_time)
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting PCMD mode OK")
 
         else:
-            self.logging.logE("You must launch start_piloting")
+            self.logging.error("You must launch start_piloting")
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_PILOTING_STATE,
                 "You must launch start_piloting")
@@ -1538,7 +1333,7 @@ class Drone(object):
         Starts a video streaming session
 
         :type resource_name: str
-        :param resource_name: video streaming ressource. This parameter defaults
+        :param resource_name: video streaming resource. This parameter defaults
             to "live" for the live video stream from the drone front camera.
             Alternatively, `resource_name` can also point to a video file on the
             drone that is available for replay. In the later case, it takes the
@@ -1556,8 +1351,8 @@ class Drone(object):
         :type media_name: str
         :param media_name: video stream media name. A video stream resource
             (e.g. "live" or "replay/..") may provide multiple media tracks.
-            Use the `media_name` parameter to select the media from the
-            available medias. This parameter defaults to "DefaultVideo".
+            Use the `media_name` parameter to select the source from the
+            available media. This parameter defaults to "DefaultVideo".
             If the requested media is unavailable, the default media will be
             selected instead without reporting any error.
 
@@ -1574,30 +1369,36 @@ class Drone(object):
 
         :rtype: ReturnTuple
         """
-        if self.pdraw is None:
+        if self._pdraw is None:
             msg = "Cannot start streaming while the drone is not connected"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        if self.pdraw.is_legacy():
-            f = self.thread_loop.run_async(
+        if self._pdraw.is_legacy():
+            f = self._thread_loop.run_async(
                 self._enable_legacy_video_streaming_impl)
             try:
                 if not f.result_or_cancel(timeout=5):
                     msg = "Unable to enable legacy video streaming"
-                    self.logging.logE(msg)
+                    self.logging.error(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
                 msg = "Unable to enable legacy video streaming (timeout)"
-                self.logging.logE(msg)
+                self.logging.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        if (not self.pdraw.play(
-                server_addr=self.addr,
+        try:
+            play_res = self._pdraw.play(
+                server_addr=self._ip_addr,
                 resource_name=resource_name,
-                media_name=media_name).result_or_cancel(timeout=5)):
+                media_name=media_name).result_or_cancel(timeout=5)
+        except FutureTimeoutError:
+            msg = "video stream play timedout"
+            self.logging.error(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+        if not play_res:
             msg = "Failed to play video stream"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         return makeReturnTuple(
@@ -1609,50 +1410,85 @@ class Drone(object):
 
         :rtype: ReturnTuple
         """
-        if self.pdraw is None:
+        if self._pdraw is None:
             msg = "Cannot start streaming while the drone is not connected"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
-        if self.pdraw.is_legacy():
-            f = self.thread_loop.run_async(
+        if self._pdraw.is_legacy():
+            f = self._thread_loop.run_async(
                 self._disable_legacy_video_streaming_impl)
             try:
                 if not f.result_or_cancel(timeout=5):
                     msg = "Unable to disable legacy video streaming"
-                    self.logging.logE(msg)
+                    self.logging.error(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
                 msg = "Unable to disable legacy video streaming (timeout)"
-                self.logging.logE(msg)
+                self.logging.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         try:
-            if not self.pdraw.pause().result_or_cancel(timeout=5):
+            if not self._pdraw.pause().result_or_cancel(timeout=5):
                 msg = "Failed to pause video stream"
-                self.logging.logE(msg)
+                self.logging.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
-            if not self.pdraw.close().result_or_cancel(timeout=5):
+            if not self._pdraw.close().result_or_cancel(timeout=5):
                 msg = "Failed to close video stream"
-                self.logging.logE(msg)
+                self.logging.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         except FutureTimeoutError:
             msg = "Failed to stop video stream (timeout)"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         return makeReturnTuple(self.error_code_drones.OK, "Video stream paused")
 
+    def wait_video_streaming(self, state, timeout=None):
+        """
+        Wait for the provided Pdraw state
+
+        This function returns True when the requested state is reached or False
+        if the timeout duration is reached.
+
+        If the requested state is already reached, this function returns True
+        immediately.
+
+        This function may block indefinitely when called without a timeout
+        value.
+
+        :type state: PdrawState
+        :param timeout: the timeout duration in seconds or None (the default)
+        :type timeout: float
+        :rtype: bool
+        """
+
+        if self._pdraw is None:
+            msg = "Cannot wait streaming state while the drone is not connected"
+            self.logging.error(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+
+        if not self._pdraw.wait(state, timeout=timeout):
+            msg = "Wait for streaming state {} timedout".format(state)
+            self.logging.error(msg)
+            return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
+
+        return makeReturnTuple(
+            ErrorCodeDrone.OK, "Wait for {} streaming state OK".format(state))
+
     def set_streaming_output_files(self,
                                    h264_data_file=None,
                                    h264_meta_file=None,
+                                   h264_info_file=None,
                                    raw_data_file=None,
-                                   raw_meta_file=None):
+                                   raw_meta_file=None,
+                                   raw_info_file=None):
         """
         Records the video streams from the drone
 
         - xxx_meta_file: video stream metadata output files
         - xxx_data_file: video stream frames output files
+        - xxx_info_file: video stream frames info files
         - h264_***_file: files associated to the H264 encoded video stream
         - raw_***_file: files associated to the decoded video stream
 
@@ -1661,49 +1497,77 @@ class Drone(object):
         Setting a file parameter to `None` disables the recording for the related stream part.
         """
 
-        if self.pdraw is None:
+        if self._pdraw is None:
             msg = "Cannot set streaming output file while the drone is not connected"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
-        self.pdraw.set_output_files(h264_data_file,
-                                    h264_meta_file,
-                                    raw_data_file,
-                                    raw_meta_file)
+        self._pdraw.set_output_files(h264_data_file,
+                                     h264_meta_file,
+                                     h264_info_file,
+                                     raw_data_file,
+                                     raw_meta_file,
+                                     raw_info_file)
         return makeReturnTuple(self.error_code_drones.OK, "Video stream paused")
 
     def set_streaming_callbacks(self,
                                 h264_cb=None,
                                 raw_cb=None,
+                                start_cb=None,
                                 end_cb=None,
-                                flush_cb=None):
+                                flush_h264_cb=None,
+                                flush_raw_cb=None):
         """
-        Set the callback functions that will be called when a new video stream frame is available or
-        when the video stream has ended.
+        Set the callback functions that will be called when a new video stream frame is available,
+        when the video stream starts/ends or when the video buffer needs to get flushed.
 
-        Video frame callbacks:
+        **Video frame callbacks**
+
         - `h264_cb` is associated to the H264 encoded video stream
         - `raw_cb` is associated to the decoded video stream
 
-        Each video frame callback function takes an :py:func:`~olympe.VideoFrame` parameter
-        The `end_cb` callback function is called when the (replayed) video stream ends and takes
-        no parameter.
+        Each video frame callback function takes an :py:func:`~olympe.VideoFrame` parameter whose
+        lifetime ends after the callback execution. If this video frame is passed to another thread,
+        its internal reference count need to be incremented first by calling
+        :py:func:`~olympe.VideoFrame.ref`. In this case, once the frame is no longer needed, its
+        reference count needs to be decremented so that this video frame can be returned to
+        memory pool.
+
+        **Video flush callbacks**
+
+        - `flush_h264_cb` is associated to the H264 encoded video stream
+        - `flush_raw_cb` is associated to the decoded video stream
+
+        Video flush callback functions are called when a video stream reclaim all its associated
+        video buffer. Every frame that has been referenced
+
+        **Start/End callbacks**
+
+        The `start_cb`/`end_cb` callback functions are called when the video stream start/ends.
+        They don't accept any parameter.
+
         The return value of all these callback functions are ignored.
-        If a callback is not desired, just set it to `None`.
+        If a callback is not desired, leave the parameter to its default value or set it to `None`
+        explicitly.
         """
 
-        if self.pdraw is None:
+        if self._pdraw is None:
             msg = "Cannot set streaming callbacks while the drone is not connected"
-            self.logging.logE(msg)
+            self.logging.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
-        self.pdraw.set_callbacks(
-            h264_cb=h264_cb, raw_cb=raw_cb, end_cb=end_cb, flush_cb=flush_cb
+        self._pdraw.set_callbacks(
+            h264_cb=h264_cb,
+            raw_cb=raw_cb,
+            start_cb=start_cb,
+            end_cb=end_cb,
+            flush_h264_cb=flush_h264_cb,
+            flush_raw_cb=flush_raw_cb,
         )
         return makeReturnTuple(self.error_code_drones.OK, "Video stream set_callbacks")
 
     def get_streaming_session_metadata(self):
-        if self.pdraw is None:
+        if self._pdraw is None:
             return None
-        return self.pdraw.get_session_metadata()
+        return self._pdraw.get_session_metadata()
 
     @ensure_connected
     def get_last_available_states(self):
@@ -1735,3 +1599,78 @@ class Drone(object):
 
     def _get_last_state_and_settings(self):
         return self._device_states.states
+
+    @property
+    def media(self):
+        return self._media
+
+    @property
+    def media_autoconnect(self):
+        return self._media_autoconnect
+
+
+class Drone(ControllerBase):
+    """
+    Drone class
+
+    Use this class to send and/or receive SDK messages to a simulated or physical drone.
+    This class can also be used to connect to a SkyController that is already
+    paired with a drone. SkyController class is appropriate if you need
+    to connect to an unknown drone.
+
+    Please refer to the Olympe :ref:`user guide<user-guide>` for more information.
+
+    Example:
+
+    .. code-block:: python
+
+        import olympe
+        from olympe.messages.ardrone3.Piloting import TakeOff
+
+        drone = olympe.Drone("10.202.0.1")
+        drone.connect()
+        drone(TakeOff()).wait()
+        drone.disconnect()
+    """
+
+
+class SkyController(ControllerBase):
+    """
+    SkyController class
+
+    Use this class to send and/or receive SDK messages to a SkyController.
+    See drone_manager feature to connect/forget a drone.
+
+    Please refer to the Olympe :ref:`user guide<user-guide>` for more information.
+
+    Example:
+
+    .. code-block:: python
+
+        import olympe
+        from olympe.messages.drone_manager import connection_state
+
+        skyctrl = olympe.Skyctrl("192.168.53.1")
+        skyctrl.connect()
+        skyctrl(connection_state(state="connected")).wait(_timeout=10)
+        skyctrl.disconnect()
+    """
+
+    def __init__(self, *args, **kwds):
+        super().__init__(*args, is_skyctrl=True, **kwds)
+
+    @callback_decorator()
+    def _link_status_cb(self, _arsdk_device, _arsdk_device_info, status, _user_data):
+        """
+         Notify link status. At connection completion, it is assumed to be
+         initially OK. If called with KO, user is responsible to take action.
+         It can either wait for link to become OK again or disconnect
+         immediately. In this case, call arsdk_device_disconnect and the
+         'disconnected' callback will be called.
+        """
+        self.logging.info("Link status: {}".format(status))
+        if status == od.ARSDK_LINK_STATUS_KO:
+            # FIXME: Link status KO seems to be an unrecoverable
+            # random error with a SkyController when `drone_manager.forget`
+            # is sent to the SkyController
+            self.logging.error("Link status KO")

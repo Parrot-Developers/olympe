@@ -54,6 +54,7 @@ except ImportError:
 from aenum import OrderedEnum
 from collections import OrderedDict
 from itertools import starmap
+import logging
 import olympe_deps as od
 import re
 from six import with_metaclass
@@ -68,7 +69,6 @@ from olympe.arsdkng.expectations import ArsdkCheckWaitStateExpectation
 from olympe.arsdkng.expectations import ExpectPolicy
 from olympe.arsdkng.events import ArsdkMessageEvent
 
-from olympe.tools.logger import level as loglevel
 from olympe._private import string_from_arsdkxml, DEFAULT_FLOAT_TOL
 
 
@@ -332,21 +332,24 @@ class ArsdkMessageMeta(type):
         cls.message_type = ArsdkMessageType.from_arsdk(type(cls.obj))
         cls.buffer_type = ArsdkMessageBufferType.from_arsdk(cls.obj.bufferType)
 
-        cls.loglevel = loglevel.info
+        cls.loglevel = logging.INFO
         if (cls.message_type is ArsdkMessageType.EVT and
            cls.buffer_type is not ArsdkMessageBufferType.ACK):
             # Avoid being flooded by spontaneous event messages sent by the drone
-            cls.loglevel = loglevel.debug
+            cls.loglevel = logging.DEBUG
         elif cls.fullName in \
             ("ardrone3.PilotingState.AltitudeChanged",
+             "ardrone3.PilotingState.AltitudeAboveGroundChanged",
              "ardrone3.PilotingState.AttitudeChanged",
-             "ardrone3.PilotingState.FlyingStateChanged",
              "ardrone3.PilotingState.GpsLocationChanged",
-             "ardrone3.PilotingState.PilotedPOI",
              "ardrone3.PilotingState.PositionChanged",
              "ardrone3.PilotingState.SpeedChanged",
-             "ardrone3.GPSSettingsState.HomeChanged",):
-            cls.loglevel = loglevel.debug
+             "skyctrl.SkyControllerState.AttitudeChanged",
+             "mapper.button_mapping_item",
+             "mapper.axis_mapping_item",
+             "mapper.expo_map_item",
+             "mapper.inverted_map_item",):
+            cls.loglevel = logging.DEBUG
 
         cls.feature_name = name_path[0]
         cls.FeatureName = cls.feature_name[0].upper() + cls.feature_name[1:]
@@ -402,19 +405,13 @@ class ArsdkMessageMeta(type):
               cls.args_bitfield["list_flags"] == list_flags._bitfield_type_):
             cls.callback_type = ArsdkMessageCallbackType.LIST
 
-        if cls.message_type == ArsdkMessageType.CMD:
-            cls.args_default = ArsdkMessages._default_arguments.get(cls.FullName, OrderedDict())
+        if cls.obj.args:
+            cls.arsdk_type_args, cls.arsdk_value_attr, cls.encode_ctypes_args = map(list, zip(*(
+                cls._ar_argtype_encode_type(ar_arg.argType)
+                for ar_arg in cls.obj.args
+            )))
         else:
-            cls.args_default = OrderedDict(zip(cls.args_name, [None] * len(cls.args_name)))
-        cls.args_default_str = ", ".join((
-            "{}={}".format(argname, cls.args_default[argname])
-            if argname in cls.args_default else argname
-            for argname in cls.args_name + ['**kwds']
-        ))
-
-        cls.encode_ctypes_args = []
-        for ar_arg in cls.obj.args:
-            cls.encode_ctypes_args.append(cls._ar_argtype_to_ctypes(ar_arg.argType))
+            cls.arsdk_type_args, cls.arsdk_value_attr, cls.encode_ctypes_args = [], [], []
 
         cls.args_type = OrderedDict()
         for argname, ar_arg in zip(cls.args_name, cls.obj.args):
@@ -437,7 +434,7 @@ class ArsdkMessageMeta(type):
 
         cls.decode_ctypes_args = []
 
-        ARGS_TYPE = {
+        decode_ctypes_args_map = {
             od.ARSDK_ARG_TYPE_I8: ctypes.c_int8,
             od.ARSDK_ARG_TYPE_U8: ctypes.c_uint8,
             od.ARSDK_ARG_TYPE_I16: ctypes.c_int16,
@@ -450,12 +447,33 @@ class ArsdkMessageMeta(type):
             od.ARSDK_ARG_TYPE_DOUBLE: ctypes.c_double,
             od.ARSDK_ARG_TYPE_STRING: ctypes.c_char_p,
             od.ARSDK_ARG_TYPE_ENUM: ctypes.c_int,
-            od.ARSDK_ARG_TYPE_MULTISET: ctypes.c_int  # TODO: implement multiset
         }
 
         for i in range(cls.arsdk_desc.contents.arg_desc_count):
             arg_type = cls.arsdk_desc.contents.arg_desc_table[i].type
-            cls.decode_ctypes_args.append(ARGS_TYPE[arg_type])
+            cls.decode_ctypes_args.append(decode_ctypes_args_map[arg_type])
+
+        # Fixup missing list_flags arguments for LIST_ITEM/MAP_ITEM messages
+        if ("list_flags" not in cls.args_name) and (
+            cls.message_type is ArsdkMessageType.EVT and
+            cls.callback_type in (ArsdkMessageCallbackType.LIST, ArsdkMessageCallbackType.MAP)
+        ):
+            cls.args_pos["list_flags"] = len(cls.args_pos)
+            cls.args_name.append("list_flags")
+            cls.args_bitfield["list_flags"] = list_flags._bitfield_type_
+            cls.args_type[argname] = int
+            cls.decode_ctypes_args.append(ctypes.c_uint8)
+            cls.encode_ctypes_args.append(ctypes.c_uint8)
+
+        if cls.message_type is ArsdkMessageType.CMD:
+            cls.args_default = ArsdkMessages._default_arguments.get(cls.FullName, OrderedDict())
+        else:
+            cls.args_default = OrderedDict(zip(cls.args_name, [None] * len(cls.args_name)))
+        cls.args_default_str = ", ".join((
+            "{}={}".format(argname, cls.args_default[argname])
+            if argname in cls.args_default else argname
+            for argname in cls.args_name + ['**kwds']
+        ))
 
         # docstring
         cls.doc_todos = u""
@@ -471,7 +489,10 @@ class ArsdkMessageMeta(type):
         """
         docstring = u"\n\n".join(
             [cls.FullName] +
-            [cls._py_ar_comment_docstring(cls.obj.doc, cls._py_ar_args_docstring(cls.obj.args))]
+            [cls._py_ar_comment_docstring(
+                cls.obj.doc,
+                cls._py_ar_args_docstring(cls.obj.args),
+                cls.obj.isDeprecated)]
         )
         return docstring
 
@@ -518,9 +539,6 @@ class ArsdkMessageMeta(type):
         if isinstance(ar_arg.argType, (int,)):
             type_ = cls._py_ar_arg_directive(
                 "type", ar_arg.name, arsdkparser.ArArgType.TO_STRING[ar_arg.argType])
-        elif isinstance(ar_arg.argType, (arsdkparser.ArMultiSetting,)):
-            type_ = cls._py_ar_arg_directive(
-                "type", ar_arg.name, string_from_arsdkxml(ar_arg.argType.doc))
         elif isinstance(ar_arg.argType, (arsdkparser.ArBitfield,)):
             enum = ":py:class:`olympe.enums.{}.{}`".format(
                 ".".join(cls.prefix), cls.args_bitfield[ar_arg.name]._enum_type_.__name__)
@@ -541,26 +559,64 @@ class ArsdkMessageMeta(type):
             "param", ar_arg.name, cls._py_ar_comment_docstring(ar_arg.doc))
         return u"\n\n{}\n\n{}".format(type_, param)
 
-    def _py_ar_supported(cls, supported_devices):
+    def _py_ar_supported(cls, supported_devices, deprecated):
+        unsupported_notice = "**Unsupported message**"
+        if not cls.feature_name == "debug":
+            unsupported_notice += (
+                "\n\n.. todo::\n    "
+                "Remove unsupported message {}\n".format(cls.fullName)
+            )
+        deprecation_notice = (
+            "**Deprecated message**\n\n.. warning::\n    "
+            "This message is deprecated and should no longer be used"
+        )
+        if deprecated:
+            unsupported_notice += "\n\n" + deprecation_notice
+        if not supported_devices:
+            return unsupported_notice
         supported_devices = string_from_arsdkxml(supported_devices)
+        if supported_devices == "drones":
+            return "**Supported by every drone product**"
+        elif supported_devices == "none":
+            return unsupported_notice
         supported_devices = supported_devices.split(';')
         supported_devices = list(
-            map(lambda s: s.partition(':')[0:3:2], supported_devices))
+            map(lambda s: s.split(':', maxsplit=2), supported_devices))
         try:
             supported_devices = list(
-                map(lambda s: (int(s[0], base=16), s[1]), supported_devices))
+                map(lambda s: (int(s[0], base=16), *s[1:]), supported_devices))
         except ValueError:
-            return ""
+            return unsupported_notice
         ret = []
         for device in supported_devices:
-            device_str = od.string_cast(od.arsdk_device_type_str(device[0]))
-            if "ANAFI" in device_str or "SKYCTRL_3" in device_str:
-                ret.append("    :{}: since {}".format(
-                    device_str,
-                    device[1] if device[1] else "first version"
-                ))
+            device_str, *versions = device
+            versions = iter(versions)
+            device_str = od.string_cast(od.arsdk_device_type_str(device_str))
+            since = next(versions, None)
+            until = next(versions, None)
+            mapping = {
+                "ANAFI4K": "Anafi/AnafiFPV",
+                "ANAFI_THERMAL": "AnafiThermal",
+                "SKYCTRL_3": "SkyController3",
+            }
+            device_str = mapping.get(device_str, device_str)
+            if "anafi" in device_str.lower() or "skycontroller" in device_str.lower():
+                if until:
+                    ret.append("    :{}: since {} and until {} firmware release".format(
+                        device_str,
+                        since,
+                        until
+                    ))
+                else:
+                    ret.append("    :{}: with an up to date firmware".format(device_str))
+        if not ret:
+            return unsupported_notice
+
         ret = "\n".join(ret)
         ret = "\n\n" + ret + "\n\n"
+        ret = "**Supported by**: " + ret
+        if deprecated:
+            ret += "\n\n" + deprecation_notice
         return ret
 
     def _py_ar_triggered(cls, triggered):
@@ -569,7 +625,7 @@ class ArsdkMessageMeta(type):
             ret = "Triggered " + ret
         return textwrap.fill(ret, break_long_words=False)
 
-    def _py_ar_comment_docstring(cls, ar_comment, ar_args_doc=None):
+    def _py_ar_comment_docstring(cls, ar_comment, ar_args_doc=None, ar_is_deprecated=False):
         """
         Returns a python docstring from an ArComment object
         """
@@ -587,10 +643,9 @@ class ArsdkMessageMeta(type):
         if ar_args_doc is not None:
             ret += ar_args_doc
         # FIXME: arsdk-xml "support" attribute is currently unreliable
-        # if ar_comment.support and ar_comment.support.lower() != "none":
-        #     ret += "\n\n**Supported by**: {}".format(
-        #         cls._py_ar_supported(ar_comment.support),
-        #     )
+        ret += "\n\n{}".format(
+            cls._py_ar_supported(ar_comment.support, ar_is_deprecated),
+        )
         if ar_comment.triggered:
             ret += "\n\n{}".format(
                 cls._py_ar_triggered(ar_comment.triggered),
@@ -700,51 +755,36 @@ class ArsdkMessageMeta(type):
         exec(cls.get_source(), locals())
         return locals()[cls.name]
 
-    def _ar_argtype_to_ctypes(cls, ar_argtype):
+    def _ar_arsdk_encode_type_info(cls, ar_argtype):
+        arsdk_encode_type_info_map = {
+            arsdkparser.ArArgType.I8: (od.ARSDK_ARG_TYPE_I8, "i8", ctypes.c_int8),
+            arsdkparser.ArArgType.U8: (od.ARSDK_ARG_TYPE_U8, "u8", ctypes.c_uint8),
+            arsdkparser.ArArgType.I16: (od.ARSDK_ARG_TYPE_I16, "i16", ctypes.c_int16),
+            arsdkparser.ArArgType.U16: (od.ARSDK_ARG_TYPE_U16, "u16", ctypes.c_uint16),
+            arsdkparser.ArArgType.I32: (od.ARSDK_ARG_TYPE_I32, "i32", ctypes.c_int32),
+            arsdkparser.ArArgType.U32: (od.ARSDK_ARG_TYPE_U32, "u32", ctypes.c_uint32),
+            arsdkparser.ArArgType.I64: (od.ARSDK_ARG_TYPE_I64, "i64", ctypes.c_int64),
+            arsdkparser.ArArgType.U64: (od.ARSDK_ARG_TYPE_U64, "u64", ctypes.c_uint64),
+            arsdkparser.ArArgType.FLOAT: (od.ARSDK_ARG_TYPE_FLOAT, "f32", ctypes.c_float),
+            arsdkparser.ArArgType.DOUBLE: (od.ARSDK_ARG_TYPE_DOUBLE, "f64", ctypes.c_double),
+            arsdkparser.ArArgType.STRING: (od.ARSDK_ARG_TYPE_STRING, "cstr", od.char_pointer_cast),
+            arsdkparser.ArArgType.ENUM: (od.ARSDK_ARG_TYPE_ENUM, "i32", ctypes.c_int32),
+        }
+        return arsdk_encode_type_info_map[ar_argtype]
+
+    def _ar_argtype_encode_type(cls, ar_argtype):
         """
         Returns the ctypes type associated to the ar_argtype from arsdkparser
         """
-        arenum = isinstance(ar_argtype, arsdkparser.ArEnum)
         arbitfield = isinstance(ar_argtype, arsdkparser.ArBitfield)
-        ar_enum_value = ar_argtype == arsdkparser.ArArgType.ENUM
         ar_bitfield_value = ar_argtype == arsdkparser.ArArgType.BITFIELD
 
-        if ar_argtype == arsdkparser.ArArgType.I8:
-            return ctypes.c_int8
-
-        if ar_argtype == arsdkparser.ArArgType.U8:
-            return ctypes.c_uint8
-
-        elif (arenum or arbitfield or ar_argtype == arsdkparser.ArArgType.U32 or
-              ar_enum_value or ar_bitfield_value):
-            return ctypes.c_uint32
-
-        elif ar_argtype == arsdkparser.ArArgType.U64:
-            return ctypes.c_uint64
-
-        elif ar_argtype == arsdkparser.ArArgType.U16:
-            return ctypes.c_uint16
-
-        elif ar_argtype == arsdkparser.ArArgType.I16:
-            return ctypes.c_int16
-
-        elif ar_argtype == arsdkparser.ArArgType.I32:
-            return ctypes.c_int32
-
-        elif ar_argtype == arsdkparser.ArArgType.I64:
-            return ctypes.c_int64
-
-        elif ar_argtype == arsdkparser.ArArgType.DOUBLE:
-            return ctypes.c_double
-
-        elif ar_argtype == arsdkparser.ArArgType.FLOAT:
-            return ctypes.c_double
-
-        elif ar_argtype == arsdkparser.ArArgType.STRING:
-            return ctypes.c_char_p
-
+        if isinstance(ar_argtype, arsdkparser.ArEnum):
+            return od.ARSDK_ARG_TYPE_ENUM, "i32", ctypes.c_int32
+        elif (arbitfield or ar_bitfield_value):
+            return cls._ar_arsdk_encode_type_info(ar_argtype.btfType)
         else:
-            return None
+            return cls._ar_arsdk_encode_type_info(ar_argtype)
 
     def _ar_argtype_to_python(cls, argname, ar_argtype):
         """
@@ -770,6 +810,12 @@ class ArsdkMessageMeta(type):
             return str
         else:
             return None
+
+    def _is_list_item(self):
+        return self.callback_type is ArsdkMessageCallbackType.LIST
+
+    def _is_map_item(self):
+        return self.callback_type is ArsdkMessageCallbackType.MAP
 
     def _resolve_expectations(cls, messages):
         if cls.message_type == ArsdkMessageType.CMD:
@@ -909,27 +955,50 @@ class ArsdkMessage(with_metaclass(ArsdkMessageMeta)):
         args = cls._argsmap_from_args(*args, **kwds)
         return ArsdkMessageEvent(cls, args)
 
-    def last_event(self):
-        return self._last_event
+    def last_event(self, key=None):
+        if key is None:
+            return self._last_event
+        else:
+            return self._last_event[key]
 
     def _set_last_event(self, event):
         if event.message.id != self.id:
             raise RuntimeError("Cannot set message {} last event to {}".format(
                 self.fullName, event.message.fullName))
-        self._last_event = event
 
         if self.callback_type == ArsdkMessageCallbackType.STANDARD:
+            self._last_event = event
             self._state = event.args
         elif self.callback_type == ArsdkMessageCallbackType.MAP:
+            if self._last_event is None:
+                self._last_event = OrderedDict()
             key = event.args[self.key_name]
-            self._state[key] = event.args
+            if (not event.args["list_flags"] or
+                    event.args["list_flags"] == [list_flags.Last]):
+                self._state[key] = event.args
+            if list_flags.First in event.args["list_flags"]:
+                self._state = OrderedDict()
+                self._state[key] = event.args
+            if list_flags.Empty in event.args["list_flags"]:
+                self._state = OrderedDict()
+            if list_flags.Remove in event.args["list_flags"]:
+                # remove the received element from the current map
+                if key in self._state:
+                    self._state.pop(key)
+            else:
+                self._last_event[key] = event
         elif self.callback_type == ArsdkMessageCallbackType.LIST:
+            if (not event.args["list_flags"] or
+                    event.args["list_flags"] == [list_flags.Last]):
+                # append to the current list
+                insert_pos = next(reversed(self._state), -1) + 1
+                self._state[insert_pos] = event.args
             if list_flags.First in event.args["list_flags"]:
                 self._state = OrderedDict()
                 self._state[0] = event.args
-            elif list_flags.Empty in event.args["list_flags"]:
+            if list_flags.Empty in event.args["list_flags"]:
                 self._state = OrderedDict()
-            elif list_flags.Remove in event.args["list_flags"]:
+            if list_flags.Remove in event.args["list_flags"]:
                 # remove the received element from the current list
                 for k, v in self._state:
                     for argname, argval in v.items():
@@ -939,11 +1008,9 @@ class ArsdkMessage(with_metaclass(ArsdkMessageMeta)):
                             break
                     else:
                         # if all arguments have matched except "list_flags"
-                        del self._state[k]
+                        self._state.pop(k, None)
             else:
-                # append to the current list
-                insert_pos = next(reversed(self._state), -1) + 1
-                self._state[insert_pos] = event.args
+                self._last_event = event
 
     def state(self):
         if self._last_event is None:
@@ -1059,11 +1126,14 @@ class ArsdkMessage(with_metaclass(ArsdkMessageMeta)):
         encoded_args = list(map(
             lambda a: a.encode('utf-8') if isinstance(a, str) else a, encoded_args))
 
-        # python -> ctypes conversion
-        encoded_args = list(starmap(
-            lambda arg, ctype: ctype(arg),
-            zip(encoded_args, cls.encode_ctypes_args)))
-        return encoded_args
+        # python -> ctypes -> struct_arsdk_value argv conversion
+        encode_args_len = len(cls.arsdk_type_args)
+        argv = (od.struct_arsdk_value * encode_args_len)()
+        for (i, arg, sdktype, value_attr, ctype) in zip(
+            range(encode_args_len), encoded_args, cls.arsdk_type_args, cls.arsdk_value_attr, cls.encode_ctypes_args):
+            argv[i].type = sdktype
+            setattr(argv[i].data, value_attr, ctype(arg))
+        return argv
 
     @classmethod
     def _decode_args(cls, message_buffer):
@@ -1198,6 +1268,7 @@ class ArsdkMessages(object):
         self.by_id_name = OrderedDict()
         self.by_prefix = OrderedDict()
         self.by_feature = OrderedDict()
+        self._feature_name_by_id = OrderedDict()
 
         self._populate_messages()
         self._resolve_expectations()
@@ -1240,6 +1311,10 @@ class ArsdkMessages(object):
         self.ByName[message.FullName] = message
         self.by_id[message.id] = message
         self.by_id_name[message.id_name] = message
+        feature_id = message.id & 0xFF000000 >> 24
+        class_id = message.id & 0x00FF0000 >> 16
+        self._feature_name_by_id[(feature_id, class_id)] = (
+            message.feature_name, message.class_name)
         if message.prefix not in self.by_prefix:
             self.by_prefix[message.prefix] = OrderedDict()
         self.by_prefix[message.prefix][message.name] = message
@@ -1264,6 +1339,19 @@ class ArsdkMessages(object):
             for message_name, message in messages.items():
                 for argname in message.args_pos.keys():
                     yield prefix, message_name, message, argname
+
+    def unknown_message_info(self, message_id):
+        feature_id = message_id & 0xFF000000 >> 24
+        class_id = message_id & 0x00FF0000 >> 16
+        msg_id = message_id & 0x0000FFFF
+        feature_name, class_name = self._feature_name_by_id.get(
+            (feature_id, class_id),
+            (None, None)
+        )
+        if feature_name is None:
+            return (None, None, message_id)
+        else:
+            return (feature_name, class_name, msg_id)
 
     def _resolve_expectations(self):
         for message in self.by_id.values():

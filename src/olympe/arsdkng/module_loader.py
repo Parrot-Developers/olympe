@@ -143,7 +143,7 @@ class ModuleLoader(object):
             elif len(name_path) == 4:
                 type_, feature_name, class_name = name_path[1:]
             else:
-                raise ImportError("Unkwown module {}".format(name_path))
+                raise ImportError("Unknown module {}".format(name_path))
 
             module = imp.new_module(fullname)
             module.__fakefile__ = os.path.join(self.olympe_root, fullname.replace('.', '/'))

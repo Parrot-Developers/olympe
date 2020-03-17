@@ -1,9 +1,10 @@
 # -*- coding: UTF-8 -*-
 
 import olympe
-from olympe.messages.ardrone3.Piloting import TakeOff
+from olympe.messages.ardrone3.Piloting import TakeOff, Landing
 
 drone = olympe.Drone("10.202.0.1")
-drone.connection()
+drone.connect()
 drone(TakeOff()).wait()
-drone.disconnection()
+drone(Landing()).wait()
+drone.disconnect()

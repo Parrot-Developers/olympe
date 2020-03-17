@@ -7,7 +7,7 @@ from olympe.enums.ardrone3.PilotingState import FlyingStateChanged_State
 from olympe.messages.ardrone3.GPSSettingsState import GPSFixStateChanged
 
 with olympe.Drone("10.202.0.1") as drone:
-    drone.connection()
+    drone.connect()
     print("Takeoff if necessary...")
     if (drone.get_state(FlyingStateChanged)["state"] is not
             FlyingStateChanged_State.hovering):

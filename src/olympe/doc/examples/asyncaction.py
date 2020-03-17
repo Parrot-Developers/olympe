@@ -7,7 +7,7 @@ from olympe.messages.camera import start_recording, stop_recording
 from olympe.messages import gimbal
 
 with olympe.Drone("10.202.0.1") as drone:
-    drone.connection()
+    drone.connect()
 
     # Start a flying action asynchronously
     flyingAction = drone(
@@ -45,4 +45,4 @@ with olympe.Drone("10.202.0.1") as drone:
     if not drone(stop_recording(cam_id=0)).wait().success():
         raise RuntimeError("Cannot stop video recording")
 
-    # Leaving the with statement scope: implicit drone.disconnection()
+    # Leaving the with statement scope: implicit drone.disconnect()
