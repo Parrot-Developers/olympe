@@ -10,6 +10,7 @@ numpy
 opencv-python
 pytz
 PyYAML
+requests
 six
 Sphinx==1.8.5
 sphinx-rtd-theme
