@@ -1150,6 +1150,9 @@ def delete_all_media(_timeout=None, _no_expect=False):
 
 
 class MediaSchedulerMixin(StreamSchedulerMixin):
+
+    __slots__ = ()
+
     def __init__(self, *args, **kwds):
         StreamSchedulerMixin.__init__(
             self, *args, stream_timeout=kwds.pop("stream_timeout", 60), **kwds
