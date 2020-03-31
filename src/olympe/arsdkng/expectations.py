@@ -50,32 +50,26 @@ from olympe._private import (
     merge_mapping,
     timestamp_now,
     equals,
-    DEFAULT_FLOAT_TOL
+    DEFAULT_FLOAT_TOL,
 )
 from olympe._private.pomp_loop_thread import PompLoopThread
-from olympe.arsdkng.events import (
-    EventContext,
-    MultipleEventContext,
-    ArsdkMessageEvent,
-)
+from olympe.arsdkng.events import EventContext, MultipleEventContext, ArsdkMessageEvent
 from olympe.arsdkng.event_marker import EventMarker
 from olympe.arsdkng.listener import Subscriber
 import threading
 
 
 class AbstractScheduler(ABC):
+
+    __slots__ = ()
+
     @abstractmethod
     def schedule(self, expectations, **kwds):
         pass
 
     @abstractmethod
     def subscribe(
-        self,
-        callback,
-        expectation=None,
-        queue_size=None,
-        default=None,
-        timeout=None,
+        self, callback, expectation=None, queue_size=None, default=None, timeout=None
     ):
         """
         Subscribe a callback to some specific event expectation or to all events
@@ -100,47 +94,64 @@ class AbstractScheduler(ABC):
         """
 
 
+class Namespace:
+    pass
+
+
 class DefaultScheduler(AbstractScheduler):
+
+    __slots__ = "_attr"
+
     def __init__(self, pomp_loop_thread, name=None, device_name=None):
-        self._name = name
-        self._device_name = device_name
-        if self._name is not None:
-            self._logging = getLogger("olympe.{}.scheduler".format(self._name))
-        elif self._device_name is not None:
-            self._logging = getLogger(
-                "olympe.scheduler.{}".format(self._device_name))
+        self._attr = Namespace()
+        self._attr.default = Namespace()
+        self._attr.default.name = name
+        self._attr.default.device_name = device_name
+        if self._attr.default.name is not None:
+            self._attr.default.logging = getLogger(
+                "olympe.{}.scheduler".format(self._attr.default.name)
+            )
+        elif self._attr.default.device_name is not None:
+            self._attr.default.logging = getLogger(
+                "olympe.scheduler.{}".format(self._attr.default.device_name)
+            )
         else:
-            self._logging = getLogger("olympe.scheduler")
+            self._attr.default.logging = getLogger("olympe.scheduler")
 
         # Expectations internal state
-        self._contexts = OrderedDict()
-        self._pending_expectations = []
-        self._pomp_loop_thread = pomp_loop_thread
+        self._attr.default.contexts = OrderedDict()
+        self._attr.default.pending_expectations = []
+        self._attr.default.pomp_loop_thread = pomp_loop_thread
 
         # Setup expectations monitoring timer, this is used to detect timedout
         # expectations periodically
-        self._expectations_timer = self._pomp_loop_thread.create_timer(
-            lambda timer, userdata: self._garbage_collect())
-        if not self._pomp_loop_thread.set_timer(self._expectations_timer, delay=200, period=15):
+        self._attr.default.expectations_timer = self._attr.default.pomp_loop_thread.create_timer(
+            lambda timer, userdata: self._garbage_collect()
+        )
+        if not self._attr.default.pomp_loop_thread.set_timer(
+            self._attr.default.expectations_timer, delay=200, period=15
+        ):
             error_message = "Unable to launch piloting interface"
-            self._logging.error(error_message)
+            self._attr.default.logging.error(error_message)
             raise RuntimeError(error_message)
 
         # Subscribers internal state
-        self._subscribers_lock = threading.Lock()
-        self._subscribers = []
-        self._running_subscribers = OrderedDict()
-        self._subscribers_thread_loop = PompLoopThread(self._logging)
-        self._subscribers_thread_loop.start()
+        self._attr.default.subscribers_lock = threading.Lock()
+        self._attr.default.subscribers = []
+        self._attr.default.running_subscribers = OrderedDict()
+        self._attr.default.subscribers_thread_loop = PompLoopThread(
+            self._attr.default.logging
+        )
+        self._attr.default.subscribers_thread_loop.start()
 
     def add_context(self, name, context):
-        self._contexts[name] = context
+        self._attr.default.contexts[name] = context
 
     def remove_context(self, name):
-        return self._contexts.pop(name, None) is not None
+        return self._attr.default.contexts.pop(name, None) is not None
 
     def context(self, name):
-        return self._contexts[name]
+        return self._attr.default.contexts[name]
 
     def schedule(self, expectations, **kwds):
         # IMPORTANT note: the schedule method should ideally be called from
@@ -151,23 +162,25 @@ class DefaultScheduler(AbstractScheduler):
         # execute it through the pomp loop run_async function. If we are already
         # in the pomp loop thread, this `self._schedule()` is called
         # synchronously
-        self._pomp_loop_thread.run_async(self._schedule, expectations, **kwds).result()
+        self._attr.default.pomp_loop_thread.run_async(
+            self._schedule, expectations, **kwds
+        ).result()
 
     @callback_decorator()
     def _schedule(self, expectation, **kwds):
         expectation._schedule(self)
         monitor = kwds.get("monitor", True)
         if monitor and not expectation.success():
-            self._pending_expectations.append(expectation)
+            self._attr.default.pending_expectations.append(expectation)
 
     def process_event(self, event):
-        self._pomp_loop_thread.run_async(self._process_event, event)
+        self._attr.default.pomp_loop_thread.run_async(self._process_event, event)
 
     @callback_decorator()
     def _process_event(self, event):
         # For all current pending expectations
         garbage_collected_expectations = []
-        for expectation in self._pending_expectations:
+        for expectation in self._attr.default.pending_expectations:
             if expectation.cancelled() or expectation.timedout():
                 # Garbage collect canceled/timedout expectations
                 garbage_collected_expectations.append(expectation)
@@ -178,57 +191,64 @@ class DefaultScheduler(AbstractScheduler):
                 garbage_collected_expectations.append(expectation)
         # Remove the garbage collected expectations
         for expectation in garbage_collected_expectations:
-            self._pending_expectations.remove(expectation)
+            self._attr.default.pending_expectations.remove(expectation)
 
         # Notify subscribers
-        self._pomp_loop_thread.run_later(self._notify_subscribers, event)
+        self._attr.default.pomp_loop_thread.run_later(self._notify_subscribers, event)
 
     @callback_decorator()
     def _garbage_collect(self):
         # For all currently pending expectations
         garbage_collected_expectations = []
-        for expectation in self._pending_expectations:
+        for expectation in self._attr.default.pending_expectations:
             # Collect cancelled or timedout expectation
             # The actual cancel/timeout check is delegated to the expectation
             if expectation.cancelled() or expectation.timedout():
                 garbage_collected_expectations.append(expectation)
         # Remove the collected expectations
         for expectation in garbage_collected_expectations:
-            self._pending_expectations.remove(expectation)
+            self._attr.default.pending_expectations.remove(expectation)
 
     def stop(self):
-        for expectation in self._pending_expectations:
+        for expectation in self._attr.default.pending_expectations:
             expectation.cancel()
-        self._pending_expectations = []
+        self._attr.default.pending_expectations = []
 
     def destroy(self):
         self.stop()
-        self._subscribers_thread_loop.stop()
+        self._attr.default.subscribers_thread_loop.stop()
 
     @callback_decorator()
     def _notify_subscribers(self, event):
-        with self._subscribers_lock:
+        with self._attr.default.subscribers_lock:
             defaults = OrderedDict.fromkeys(
-                (s._default for s in self._subscribers if s._default is not None))
-            for subscriber in self._subscribers:
+                (
+                    s._default
+                    for s in self._attr.default.subscribers
+                    if s._default is not None
+                )
+            )
+            for subscriber in self._attr.default.subscribers:
                 checked = subscriber.notify(event)
                 if checked:
                     if subscriber._default is not None:
                         defaults.pop(subscriber._default, None)
-                    future = self._subscribers_thread_loop.run_async(
-                        subscriber.process)
-                    self._running_subscribers[id(subscriber)] = future
+                    future = self._attr.default.subscribers_thread_loop.run_async(
+                        subscriber.process
+                    )
+                    self._attr.default.running_subscribers[id(subscriber)] = future
                     future.add_done_callback(
                         functools.partial(
-                            lambda subsriber, _:
-                                self._running_subscribers.pop(id(subscriber)),
-                            subscriber
+                            lambda subsriber, _: self._attr.default.running_subscribers.pop(
+                                id(subscriber)
+                            ),
+                            subscriber,
                         )
                     )
 
             for default in defaults:
                 default.notify(event)
-                self._subscribers_thread_loop.run_async(default.process)
+                self._attr.default.subscribers_thread_loop.run_async(default.process)
 
     def subscribe(
         self,
@@ -256,10 +276,10 @@ class DefaultScheduler(AbstractScheduler):
             expectation=expectation,
             queue_size=queue_size,
             default=default,
-            timeout=timeout
+            timeout=timeout,
         )
-        with self._subscribers_lock:
-            self._subscribers.append(subscriber)
+        with self._attr.default.subscribers_lock:
+            self._attr.default.subscribers.append(subscriber)
         return subscriber
 
     def unsubscribe(self, subscriber):
@@ -269,17 +289,17 @@ class DefaultScheduler(AbstractScheduler):
         :param subscriber: the subscriber previously returned by :py:func:`~olympe.Drone.subscribe`
         :type subscriber: Subscriber
         """
-        with self._subscribers_lock:
-            future = self._running_subscribers.pop(id(subscriber), None)
+        with self._attr.default.subscribers_lock:
+            future = self._attr.default.running_subscribers.pop(id(subscriber), None)
             if future is not None:
                 try:
                     future.result(subscriber.timeout)
                 except Exception as e:
-                    self._logging.exception(e)
-            self._subscribers.remove(subscriber)
+                    self._attr.default.logging.exception(e)
+            self._attr.default.subscribers.remove(subscriber)
 
     def _subscriber_overrun(self, subscriber, event):
-        self._logging.warning(
+        self._attr.default.logging.warning(
             "Subscriber {} event queue ({}) is overrun by {}".format(
                 subscriber, subscriber.queue_size, event
             )
@@ -293,6 +313,8 @@ class StreamSchedulerMixin:
     the maximum number of parallelized expectation processing.
     """
 
+    __slots__ = ()
+
     def __init__(self, *args, stream_timeout=None, max_parallel_processing=1, **kwds):
         """
         :param scheduler: the decorated scheduler
@@ -301,12 +323,15 @@ class StreamSchedulerMixin:
             processing (defaults to 1)
         """
         queue_size = 1024
-        self._stream_scheduler_timeout = stream_timeout
-        self._stream_scheduler_max_parallel_processing = max_parallel_processing
-        self._stream_scheduler_token_count = threading.BoundedSemaphore(max_parallel_processing)
-        self._stream_scheduler_expectation_queue = deque([], queue_size)
-        self._stream_scheduler_pending_expectations = set()
-        self._stream_scheduler_on_done_condition = threading.Condition()
+        self._attr.stream_scheduler = Namespace()
+        self._attr.stream_scheduler.timeout = stream_timeout
+        self._attr.stream_scheduler.max_parallel_processing = max_parallel_processing
+        self._attr.stream_scheduler.token_count = threading.BoundedSemaphore(
+            max_parallel_processing
+        )
+        self._attr.stream_scheduler.expectation_queue = deque([], queue_size)
+        self._attr.stream_scheduler.pending_expectations = set()
+        self._attr.stream_scheduler.on_done_condition = threading.Condition()
 
     @callback_decorator()
     def _schedule(self, expectation, **kwds):
@@ -316,43 +341,45 @@ class StreamSchedulerMixin:
         remain in an internal pending queue until at least one expectation
         processing is done.
         """
-        self._stream_scheduler_expectation_queue.append((expectation, kwds))
+        self._attr.stream_scheduler.expectation_queue.append((expectation, kwds))
         self._stream_schedule()
 
     def _stream_schedule(self):
         # try to schedule expectations from the queue if possible
         # while at least one token in available
-        while self._stream_scheduler_expectation_queue and (
-                self._stream_scheduler_token_count.acquire(blocking=False)):
-            expectation, kwds = self._stream_scheduler_expectation_queue.popleft()
-            self._stream_scheduler_pending_expectations.add(expectation)
+        while self._attr.stream_scheduler.expectation_queue and (
+            self._attr.stream_scheduler.token_count.acquire(blocking=False)
+        ):
+            expectation, kwds = self._attr.stream_scheduler.expectation_queue.popleft()
+            self._attr.stream_scheduler.pending_expectations.add(expectation)
             expectation.add_done_callback(self._stream_on_done)
             super()._schedule(expectation, **kwds)
 
     def _stream_on_done(self, expectation):
         # release one token
-        self._stream_scheduler_token_count.release()
-        self._stream_scheduler_pending_expectations.remove(expectation)
+        self._attr.stream_scheduler.token_count.release()
+        self._attr.stream_scheduler.pending_expectations.remove(expectation)
 
         # try to schedule one expectation
         self._stream_schedule()
 
         # notify that we're done with one expectation processing
-        with self._stream_scheduler_on_done_condition:
-            self._stream_scheduler_on_done_condition.notify_all()
+        with self._attr.stream_scheduler.on_done_condition:
+            self._attr.stream_scheduler.on_done_condition.notify_all()
 
     def stream_join(self, timeout=None):
         """
         Wait for all currently pending expectations
         """
         if timeout is None:
-            timeout = self._stream_scheduler_timeout
-        with self._stream_scheduler_on_done_condition:
-            self._stream_scheduler_on_done_condition.wait_for(
+            timeout = self._attr.stream_scheduler.timeout
+        with self._attr.stream_scheduler.on_done_condition:
+            self._attr.stream_scheduler.on_done_condition.wait_for(
                 lambda: (
-                    not bool(self._stream_scheduler_pending_expectations) and
-                    not bool(self._stream_scheduler_expectation_queue)),
-                timeout=timeout
+                    not bool(self._attr.stream_scheduler.pending_expectations)
+                    and not bool(self._attr.stream_scheduler.expectation_queue)
+                ),
+                timeout=timeout,
             )
 
 
@@ -369,15 +396,12 @@ class SchedulerDecoratorContext:
             return
         namespace = dict(decorator.__dict__)
         self._decorated.__class__ = type(
-            name,
-            (decorator, type(self._decorated)),
-            namespace
+            name, (decorator, type(self._decorated)), namespace
         )
         decorator.__init__(self._decorated, *args, **kwds)
 
 
 class Scheduler(SchedulerDecoratorContext):
-
     def __init__(self, *args, **kwds):
         super().__init__(DefaultScheduler(*args, **kwds))
 
@@ -546,9 +570,7 @@ class FutureExpectation(ExpectationBase):
         return self
 
     def copy(self):
-        return super().base_copy(
-            self._future, self._status_checker
-        )
+        return super().base_copy(self._future, self._status_checker)
 
 
 class Expectation(ExpectationBase):
@@ -894,8 +916,7 @@ class CheckWaitStateExpectationMixin:
         self._success = self._checked
         if not self._success:
             scheduler._schedule(
-                self._wait_expectation,
-                monitor=self._wait_expectation.always_monitor
+                self._wait_expectation, monitor=self._wait_expectation.always_monitor
             )
         else:
             self.set_success()
@@ -937,9 +958,7 @@ class CheckWaitStateExpectationMixin:
 
     def unmatched_events(self):
         if self._checked:
-            return EventContext(
-                self._check_expectation.unmatched_events().events()
-            )
+            return EventContext(self._check_expectation.unmatched_events().events())
         else:
             return EventContext(self._wait_expectation.unmatched_events().events())
 
@@ -963,7 +982,9 @@ class CheckWaitStateExpectation(CheckWaitStateExpectationMixin, Expectation):
     pass
 
 
-class ArsdkCheckWaitStateExpectation(CheckWaitStateExpectationMixin, ArsdkExpectationBase):
+class ArsdkCheckWaitStateExpectation(
+    CheckWaitStateExpectationMixin, ArsdkExpectationBase
+):
     def _set_deprecated_statedict(self):
         super()._set_deprecated_statedict()
         if hasattr(self._check_expectation, "_set_deprecated_statedict"):
@@ -993,9 +1014,7 @@ class MultipleExpectationMixin:
         self.matched_expectations = IndexedSet()
 
     def copy(self):
-        other = super().base_copy(
-            list(map(lambda e: e.copy(), self.expectations))
-        )
+        other = super().base_copy(list(map(lambda e: e.copy(), self.expectations)))
         return other
 
     def append(self, expectation):
@@ -1025,9 +1044,7 @@ class MultipleExpectationMixin:
 
     def unmatched_events(self):
         return MultipleEventContext(
-            list(
-                map(lambda e: e.unmatched_events(), self.unmatched_expectations())
-            ),
+            list(map(lambda e: e.unmatched_events(), self.unmatched_expectations())),
             self._combine_method(),
         )
 
@@ -1054,10 +1071,7 @@ class MultipleExpectationMixin:
             default_marked_events = EventMarker.ignored
         return MultipleEventContext(
             list(
-                map(
-                    lambda e: e.marked_events(default_marked_events),
-                    self.expectations,
-                )
+                map(lambda e: e.marked_events(default_marked_events), self.expectations)
             ),
             self._combine_method(),
         )
@@ -1163,9 +1177,8 @@ class WhenAnyExpectationMixin:
     def check(self, *args, **kwds):
         for expectation in self.expectations:
             if (
-                (expectation.always_monitor or not expectation.success())
-                and expectation.check(*args, **kwds).success()
-            ):
+                expectation.always_monitor or not expectation.success()
+            ) and expectation.check(*args, **kwds).success():
                 self.matched_expectations.add(expectation)
                 self.set_success()
                 return self
@@ -1218,9 +1231,8 @@ class WhenAllExpectationsMixin:
     def check(self, *args, **kwds):
         for expectation in self.expectations:
             if (
-                (expectation.always_monitor or not expectation.success())
-                and expectation.check(*args, **kwds).success()
-            ):
+                expectation.always_monitor or not expectation.success()
+            ) and expectation.check(*args, **kwds).success():
                 self.matched_expectations.add(expectation)
 
         if len(self.expectations) == len(self.matched_expectations):
@@ -1270,8 +1282,7 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
         if not isinstance(received_event, ArsdkMessageEvent):
             return self
         if self._command_future is None or (
-            not self._command_future.done() or
-            not self._command_future.result()
+            not self._command_future.done() or not self._command_future.result()
         ):
             return self
         if self._no_expect:
@@ -1279,9 +1290,8 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             return self
         for expectation in self.expectations:
             if (
-                (expectation.always_monitor or not expectation.success())
-                and expectation.check(received_event).success()
-            ):
+                expectation.always_monitor or not expectation.success()
+            ) and expectation.check(received_event).success():
                 self.matched_expectations.add(expectation)
 
         if len(self.expectations) == len(self.matched_expectations):
@@ -1326,12 +1336,14 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             return "{} has not been sent yet".format(self.command_message.fullName)
         elif not self._command_future.done() or not self._command_future.result():
             return "{} has been sent but hasn't been acknowledged".format(
-                self.command_message.fullName)
+                self.command_message.fullName
+            )
         else:
-            ret = "{} has been sent and acknowledged.".format(self.command_message.fullName)
+            ret = "{} has been sent and acknowledged.".format(
+                self.command_message.fullName
+            )
             if not self._no_expect and self.expectations:
-                ret += " Command expectations status :\n{}".format(
-                    super().explain())
+                ret += " Command expectations status :\n{}".format(super().explain())
             return ret
 
 
@@ -1349,7 +1361,7 @@ class WhenSequenceExpectationsMixin:
         while self._current_expectation() is not None:
             self._scheduler._schedule(
                 self._current_expectation(),
-                monitor=self._current_expectation().always_monitor
+                monitor=self._current_expectation().always_monitor,
             )
             if not self._current_expectation().success():
                 break
@@ -1400,8 +1412,8 @@ class WhenSequenceExpectationsMixin:
         while (
             self._current_expectation() is not None
             and (
-                self._current_expectation().always_monitor or not
-                self._current_expectation().success()
+                self._current_expectation().always_monitor
+                or not self._current_expectation().success()
             )
             and self._current_expectation().check(*args, **kwds).success()
         ):
@@ -1427,5 +1439,7 @@ class WhenSequenceExpectations(WhenSequenceExpectationsMixin, MultipleExpectatio
     pass
 
 
-class ArsdkWhenSequenceExpectations(WhenSequenceExpectationsMixin, ArsdkMultipleExpectation):
+class ArsdkWhenSequenceExpectations(
+    WhenSequenceExpectationsMixin, ArsdkMultipleExpectation
+):
     pass
