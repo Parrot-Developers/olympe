@@ -264,7 +264,7 @@ class EventListener(metaclass=_EventListenerMeta):
     def __exit__(self, *args, **kwds):
         self.unsubscribe()
 
-    @listen_event(queue_size=10)
+    @listen_event(queue_size=Subscriber.default_queue_size)
     def default(self, event, scheduler):
         pass
 
