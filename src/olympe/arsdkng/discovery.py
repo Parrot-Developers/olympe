@@ -148,7 +148,7 @@ class Discovery(ABC):
     def __init__(self, backend):
         self._backend = backend
         self._thread_loop = self._backend._thread_loop
-        self._logging = self._backend._logging
+        self.logger = self._backend.logger
         self._devices = OrderedDict()
         self._device_queue = queue.Queue()
 
@@ -159,19 +159,19 @@ class Discovery(ABC):
     @callback_decorator()
     def _do_start(self):
         if self.discovery is not None:
-            self._logging.error("Discovery already running")
+            self.logger.error("Discovery already running")
             return True
         self.discovery = self._create_discovery()
         if self.discovery is None:
-            self._logging.error("Failed to create discovery object")
+            self.logger.error("Failed to create discovery object")
             return False
-        self._logging.debug("Net discovery object has been created")
+        self.logger.debug("Net discovery object has been created")
         res = self._start_discovery()
         if res != 0:
             self.stop()
-            self._logging.error("arsdk_discovery_start: {}".format(res))
+            self.logger.error("arsdk_discovery_start: {}".format(res))
             return False
-        self._logging.debug("Net discovery has been started")
+        self.logger.debug("Net discovery has been started")
         self._backend.add_device_handler(self)
         return True
 
@@ -206,7 +206,7 @@ class Discovery(ABC):
         try:
             return f.result_or_cancel(timeout=_DEFAULT_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            self._logging.warning("Discovery start timedout")
+            self.logger.warning("Discovery start timedout")
             return False
 
     def stop(self):
@@ -214,7 +214,7 @@ class Discovery(ABC):
         try:
             return f.result_or_cancel(timeout=_DEFAULT_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            self._logging.warning("Discovery stop timedout")
+            self.logger.warning("Discovery stop timedout")
             return False
 
     @callback_decorator()
@@ -222,24 +222,24 @@ class Discovery(ABC):
         self._backend.remove_device_handler(self)
 
         if self.discovery is None:
-            self._logging.debug("No discovery instance to be stopped")
+            self.logger.debug("No discovery instance to be stopped")
             return
 
         # stop currently running discovery
         res = self._stop_discovery()
         if res != 0:
-            self._logging.error("Error while stopping discovery: {}".format(res))
+            self.logger.error("Error while stopping discovery: {}".format(res))
         else:
-            self._logging.debug("Discovery has been stopped")
+            self.logger.debug("Discovery has been stopped")
 
         # then, destroy it
         res = self._destroy_discovery()
         if res != 0:
-            self._logging.error(
+            self.logger.error(
                 "Error while destroying discovery object: {}".format(res)
             )
         else:
-            self._logging.debug("Discovery object has been destroyed")
+            self.logger.debug("Discovery object has been destroyed")
 
         self.discovery = None
 
@@ -249,7 +249,7 @@ class Discovery(ABC):
         Detected devices depends on discovery parameters
         """
         device = Device.from_arsdk_device(self._backend, arsdk_device)
-        self._logging.info("New device has been detected: '{}'".format(device.name))
+        self.logger.info("New device has been detected: '{}'".format(device.name))
         self._devices[device.name] = device
         self._device_queue.put_nowait(device)
 
@@ -258,12 +258,12 @@ class Discovery(ABC):
         Callback received when a device disappear from discovery search
         """
         device = Device.from_arsdk_device(self._backend, arsdk_device)
-        self._logging.info("Device '{}' has been removed".format(device.name))
+        self.logger.info("Device '{}' has been removed".format(device.name))
         name = device.name
         if name == "__all__":
             device_names = list(self._devices.keys())
         elif name not in self._devices:
-            self._logging.error(
+            self.logger.error(
                 "Error while removing device from discovery: "
                 "{} is an unknown device".format(name)
             )
@@ -353,7 +353,7 @@ class DiscoveryNet(Discovery):
             ctypes.byref(discovery),
         )
         if res != 0:
-            self._logging.error("arsdk_discovery_net_new: {}".format(res))
+            self.logger.error("arsdk_discovery_net_new: {}".format(res))
             return None
         return discovery
 
@@ -442,17 +442,17 @@ class DiscoveryNetRaw(Discovery):
                 try:
                     res = sock.connect_ex((device.ip_addr, device.port))
                 except (socket.error, OSError):
-                    self._logging.debug("{} is unreachable".format(device.ip_addr))
+                    self.logger.debug("{} is unreachable".format(device.ip_addr))
                     return
                 if res != 0:
-                    self._logging.debug("{}:{} is closed".format(device.ip_addr, device.port))
+                    self.logger.debug("{}:{} is closed".format(device.ip_addr, device.port))
                     return
         # add this device to the "discovered" devices
         f = self._thread_loop.run_async(self._do_add_device, device)
         try:
             f.result_or_cancel(timeout=_DEFAULT_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            self._logging.error("raw discovery timedout for {}:{}".format(
+            self.logger.error("raw discovery timedout for {}:{}".format(
                 device.ip_addr, device.port))
 
     @callback_decorator()
@@ -461,9 +461,9 @@ class DiscoveryNetRaw(Discovery):
             self.discovery, device.as_arsdk_discovery_device_info()
         )
         if res != 0:
-            self._logging.error("arsdk_discovery_add_device {}".format(res))
+            self.logger.error("arsdk_discovery_add_device {}".format(res))
         else:
-            self._logging.debug(
+            self.logger.debug(
                 "Device '{}'/{} manually added to raw discovery".format(
                     device.name, device.ip_addr
                 )

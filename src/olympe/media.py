@@ -794,7 +794,7 @@ class _download_resource(Expectation):
         if self._download_dir is None:
             self._download_dir = self._media._download_dir
         if self._download_dir is None:
-            self._media._logging(
+            self._media.logger(
                 "Cannot download resource {}, "
                 "there is no download directory set".format(self._resource_id)
             )
@@ -830,14 +830,14 @@ class _download_resource(Expectation):
             resource_id=resource_id, with_md5=self._integrity_check
         )
         if self._resource is None:
-            self._media._logging.error(
+            self._media.logger.error(
                 "Unknown resource {}".format(resource_id))
             self.cancel()
             return
         try:
             self._resource_file = open(self._resource_path, "wb")
         except OSError as e:
-            self._media._logging.error(
+            self._media.logger.error(
                 "Failed to open {} for writing: {}".format(self._resource_path, e)
             )
             self.cancel()
@@ -879,7 +879,7 @@ class _download_resource(Expectation):
         self._sock.setblocking(False)
         self._resource_size = int(self._response.headers["Content-length"])
         if not self._thumbnail and self._resource_size != self._resource.size:
-            self._media._logging.warning(
+            self._media.logger.warning(
                 "HTTP response Content-length header for {} is not coherent "
                 "with the media resource size as returned by the media REST API, "
                 "expected {} and got {}".format(
@@ -902,7 +902,7 @@ class _download_resource(Expectation):
             # waiting for more data, let's register an asynchronous input event
             # callback on this socket
             events = PompEvent.IN | PompEvent.ERR | PompEvent.HUP
-            self._media._logging.info(
+            self._media.logger.info(
                 "Start downloading {} {}".format(
                     self._resource.resource_id, "thumbnail" if self._thumbnail else ""
                 )
@@ -920,7 +920,7 @@ class _download_resource(Expectation):
             # The following only close the duplicated socket fd on our side
             self._sock.close()
         except OSError:
-            self._media._logging.exception(
+            self._media.logger.exception(
                 "Failed to release socket {}".format(self._fd))
         # The original socket (that has been dup'ed) is still owned by the
         # urllib connection pool urllib will decide what to do with this
@@ -931,7 +931,7 @@ class _download_resource(Expectation):
     def _download_resource_cb(self, event):
         event = PompEvent(event)
         if event is not PompEvent.IN:
-            self._media._logging.error(
+            self._media.logger.error(
                 "Unexpected resource download event {} {}".format(
                     self._resource_id, event
                 )
@@ -947,7 +947,7 @@ class _download_resource(Expectation):
             except BlockingIOError:
                 break
             if not chunk:
-                self._media._logging.error(
+                self._media.logger.error(
                     "Unexpected end of resource download {} at {}% "
                     "missing {} bytes".format(
                         self._resource_id, self._downloaded_percent, remaining_bytes
@@ -968,7 +968,7 @@ class _download_resource(Expectation):
         percent = int(100 * (self._downloaded_size / self._resource_size))
         if percent > self._downloaded_percent:
             self._downloaded_percent = percent
-            self._media._logging.debug(
+            self._media.logger.debug(
                 "Downloading {} {} {}%".format(
                     self._resource.resource_id,
                     "thumbnail" if self._thumbnail else "",
@@ -985,13 +985,13 @@ class _download_resource(Expectation):
             with open(os.path.join(self._download_dir, resource_id + ".md5"), "w") as f:
                 f.write(md5_ref + " " + resource_id)
             if md5 != md5_ref:
-                self._media._logging.error(
+                self._media.logger.error(
                     "Download media integrity check failed for {}".format(resource_id)
                 )
                 self._media._pomp_loop_thread.remove_fd_from_loop(self._fd)
                 self.cancel()
                 return False
-        self._media._logging.info(
+        self._media.logger.info(
             "Download {} {} 100% done".format(
                 self._resource_id, "thumbnail" if self._thumbnail else ""
             )
@@ -1267,11 +1267,11 @@ class Media(AbstractScheduler):
         self._name = name
         self._device_name = device_name
         if self._name is not None:
-            self._logging = getLogger("olympe.{}.media".format(self._name))
+            self.logger = getLogger("olympe.{}.media".format(self._name))
         elif self._device_name is not None:
-            self._logging = getLogger("olympe.media.{}".format(self._device_name))
+            self.logger = getLogger("olympe.media.{}".format(self._device_name))
         else:
-            self._logging = getLogger("olympe.media")
+            self.logger = getLogger("olympe.media")
 
         # REST API endpoints
         self._media_api_url = "http://{}/api/v{}/media/medias".format(
@@ -1294,7 +1294,7 @@ class Media(AbstractScheduler):
         self._session = requests.Session()
         self._websocket = None
         self._websocket_fd = None
-        self._pomp_loop_thread = PompLoopThread(self._logging)
+        self._pomp_loop_thread = PompLoopThread(self.logger)
 
         self._pomp_loop_thread.register_cleanup(self._shutdown)
 
@@ -1333,10 +1333,10 @@ class Media(AbstractScheduler):
     def _shutdown(self):
         self._websocket_disconnect_cb()
         if not self._scheduler.remove_context("olympe.media"):
-            self._logging.info(
+            self.logger.info(
                 "olympe.media expectation context has already been removed"
             )
-        self._logging.info("olympe.media shutdown")
+        self.logger.info("olympe.media shutdown")
 
     @property
     def download_dir(self):
@@ -1377,18 +1377,18 @@ class Media(AbstractScheduler):
         if media_event.name == "media_created":
             media_id, media = _make_media(media_event.data["media"])
             if not media_id:
-                self._logging.error("Missing media_id in media_created event")
+                self.logger.error("Missing media_id in media_created event")
                 return
             self._media_state[media_id] = media
         elif media_event.name == "resource_created":
             _, resource = _make_resource(media_event.data["resource"])
             if not resource.media_id or not resource.resource_id:
-                self._logging.error(
+                self.logger.error(
                     "Missing media_id or resource_id in resource_created event"
                 )
                 return
             if resource.media_id not in self._media_state:
-                self._logging.error(
+                self.logger.error(
                     "ResourceInfo created with a (yet) unknown media_id"
                 )
                 return
@@ -1397,12 +1397,12 @@ class Media(AbstractScheduler):
             ] = resource
         elif media_event.name == "media_removed":
             if "media_id" not in media_event.data:
-                self._logging.error("Missing media_id in media removed event message")
+                self.logger.error("Missing media_id in media removed event message")
                 return
             self._media_state.pop(media_event.data["media_id"], None)
         elif media_event.name == "resource_removed":
             if "resource_id" not in media_event.data:
-                self._logging.error(
+                self.logger.error(
                     "Missing resource_id in resource removed event message"
                 )
                 return
@@ -1416,15 +1416,15 @@ class Media(AbstractScheduler):
             if self._indexing_state is IndexingState.indexed and (
                 not self._init_media_state()
             ):
-                self._logging.error("Indexed media initialization failed")
+                self.logger.error("Indexed media initialization failed")
         elif media_event.name == "resource_downloaded":
             try:
                 resource = self.resource_info(resource_id=media_event.resource_id)
             except Exception:
-                self._logging.exception("Unable to handle resource_downloaded event")
+                self.logger.exception("Unable to handle resource_downloaded event")
                 return
             if resource is None:
-                self._logging.error("Unable to handle resource_downloaded event")
+                self.logger.error("Unable to handle resource_downloaded event")
                 return
             media = self._media_state[resource.media_id]
             if not media_event.is_thumbnail:
@@ -1436,20 +1436,20 @@ class Media(AbstractScheduler):
                     resource, thumbnail_download_path=media_event.data["download_path"]
                 )
         else:
-            self._logging.error("Unknown event {}".format(media_event))
+            self.logger.error("Unknown event {}".format(media_event))
 
     def _websocket_exc_handler(method):
         def wrapper(self, *args, **kwds):
             try:
                 return method(self, *args, **kwds)
             except (TimeoutError, websocket.WebSocketTimeoutException):
-                self._logging.warning("Websocket timeout")
+                self.logger.warning("Websocket timeout")
             except (ConnectionError, websocket.WebSocketException) as e:
                 # If we lose the connection we must reinitialize our state
-                self._logging.error(str(e))
+                self.logger.error(str(e))
                 self._reset_state()
             except Exception as e:
-                self._logging.exception("Websocket callback unhandled exception")
+                self.logger.exception("Websocket callback unhandled exception")
                 self._reset_state()
 
         return wrapper
@@ -1484,15 +1484,15 @@ class Media(AbstractScheduler):
                 )
                 self._websocket_fd = self._websocket.fileno()
             except (TimeoutError, websocket.WebSocketTimeoutException):
-                self._logging.error("Websocket connection timeout")
+                self.logger.error("Websocket connection timeout")
                 return False
             except (ConnectionError, websocket.WebSocketException):
-                self._logging.exception("Websocket connection exception")
+                self.logger.exception("Websocket connection exception")
                 return False
 
         # Initialize the media state from the REST API
         if not self._init_media_state():
-            self._logging.warning("Media are not yet indexed")
+            self.logger.warning("Media are not yet indexed")
         else:
             # If init_media_state succeeded, media resources are already indexed
             # but the websocket won't notify us with the `indexing_state_changed`
@@ -1526,7 +1526,7 @@ class Media(AbstractScheduler):
         event = PompEvent(event)
         if event is not PompEvent.IN:
             # HUP or ERR events: we must reset our state
-            self._logging.warning("Websocket event {}".format(event))
+            self.logger.warning("Websocket event {}".format(event))
             self._reset_state()
             return
         # We have an input event on the websocket
@@ -1538,7 +1538,7 @@ class Media(AbstractScheduler):
         data = json.loads(data)
         event = MediaEvent(data["name"], data["data"])
         self._process_event(event)
-        self._logging.info(str(event))
+        self.logger.info(str(event))
 
     def _process_event(self, event):
         self._update_media_state(event)
@@ -1599,7 +1599,7 @@ class Media(AbstractScheduler):
                             )
                         return media.resources[resource_id]
         except KeyError:
-            self._logging.error(
+            self.logger.error(
                 "No such media/resource: media_id={}, resource_id={}".format(
                     media_id, resource_id
                 )
@@ -1617,7 +1617,7 @@ class Media(AbstractScheduler):
             try:
                 return self._media_state[media_id]
             except KeyError:
-                self._logging.error("No such media: media_id={}".format(media_id))
+                self.logger.error("No such media: media_id={}".format(media_id))
                 return None
         else:
             return self._media_state
@@ -1655,17 +1655,17 @@ class Media(AbstractScheduler):
         try:
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            self._logging.error(str(e))
+            self.logger.error(str(e))
             return None
         except Exception as e:
-            self._logging.error(str(e))
+            self.logger.error(str(e))
             return None
         data = response.json()
         media_state = OrderedDict()
         for media in data:
             media_id, media = _make_media(media)
             if not media_id:
-                self._logging.error("Missing media_id in webserver response")
+                self.logger.error("Missing media_id in webserver response")
                 continue
             media_state[media_id] = media
         return media_state
@@ -1680,7 +1680,7 @@ class Media(AbstractScheduler):
             # media dictionary is maintained up to date thanks to the websocket
             # events
             return self._media_state[media_id]
-        self._logging.warning(
+        self.logger.warning(
             "Missing media_id {} in olympe media database".format(media_id)
         )
         response = self._session.get(os.path.join(self._media_api_url, media_id))
@@ -1688,7 +1688,7 @@ class Media(AbstractScheduler):
         data = response.json()
         media_id, media = _make_media(data)
         if not media_id:
-            self._logging.error(
+            self.logger.error(
                 "Missing media_id {} in webserver response".format(media_id)
             )
             return None

@@ -113,7 +113,7 @@ class Future(concurrent.futures.Future):
                 else:
                     result.set_result(fn(self.result()))
             except Exception as e:
-                self.logging.exception(
+                self.logger.exception(
                     "Unhandled exception while chaining futures"
                 )
                 result.set_exception(e)
@@ -137,8 +137,8 @@ class PompLoopThread(threading.Thread):
     It performs all calls to pomp and arsdk-ng within the loop (except init and destruction)
     """
 
-    def __init__(self, logging):
-        self.logging = logging
+    def __init__(self, logger):
+        self.logger = logger
 
         self.running = False
         self.pomptimeout_ms = 100
@@ -207,7 +207,7 @@ class PompLoopThread(threading.Thread):
             try:
                 ret = func(*args, **kwds)
             except Exception as e:
-                self.logging.exception(
+                self.logger.exception(
                     "Unhandled exception in async task function"
                 )
                 future.set_exception(e)
@@ -243,7 +243,7 @@ class PompLoopThread(threading.Thread):
             try:
                 ret = f(*args, **kwds)
             except Exception as e:
-                self.logging.exception(
+                self.logger.exception(
                     "Unhandled exception in async task function"
                 )
                 self._unregister_future(future, ignore_error=True)
@@ -275,7 +275,7 @@ class PompLoopThread(threading.Thread):
                 try:
                     self._wait_and_process()
                 except RuntimeError as e:
-                    self.logging.error("Exception caught: {}".format(e))
+                    self.logger.error("Exception caught: {}".format(e))
 
                 self._run_task_list(self.async_pomp_task)
                 self._run_task_list(self.deferred_pomp_task)
@@ -306,7 +306,7 @@ class PompLoopThread(threading.Thread):
 
     def _add_fd_to_loop(self, fd, cb, fd_events, userdata=None):
         if cb is None:
-            self.logging.info(
+            self.logger.info(
                 "Cannot add fd '{}' to pomp loop without "
                 "a valid callback function".format(fd)
             )
@@ -338,7 +338,7 @@ class PompLoopThread(threading.Thread):
         self.c_fd_userdata.pop(fd, None)
         if self.pomp_fd_callbacks.pop(fd, None) is not None:
             if od.pomp_loop_remove(self.pomp_loop, fd) != 0:
-                self.logging.error("Cannot remove fd '{}' from pomp loop".format(fd))
+                self.logger.error("Cannot remove fd '{}' from pomp loop".format(fd))
                 return False
         return True
 
@@ -377,7 +377,7 @@ class PompLoopThread(threading.Thread):
         self.pomp_event_callbacks.pop(evt_id, None)
         if self.pomp_events.pop(evt_id, None) is not None:
             if od.pomp_evt_detach_from_loop(pomp_evt, self.pomp_loop) != 0:
-                self.logging.error('Cannot remove event "%s" from pomp loop' % evt_id)
+                self.logger.error('Cannot remove event "%s" from pomp loop' % evt_id)
 
     def _destroy_pomp_loop_fds(self):
         evts = list(self.pomp_events.values())[:]
@@ -389,7 +389,7 @@ class PompLoopThread(threading.Thread):
 
     def _create_pomp_loop(self):
 
-        self.logging.info("Creating pomp loop")
+        self.logger.info("Creating pomp loop")
         self.pomp_loop = od.pomp_loop_new()
 
         if self.pomp_loop is None:
@@ -400,17 +400,17 @@ class PompLoopThread(threading.Thread):
             res = od.pomp_loop_destroy(self.pomp_loop)
 
             if res != 0:
-                self.logging.error(
+                self.logger.error(
                     "Error while destroying pomp loop: {}".format(res))
                 return False
             else:
-                self.logging.info("Pomp loop has been destroyed")
+                self.logger.info("Pomp loop has been destroyed")
         self.pomp_loop = None
         return True
 
     def create_timer(self, callback):
 
-        self.logging.info("Creating pomp timer")
+        self.logger.info("Creating pomp timer")
 
         pomp_callback = od.pomp_timer_cb_t(lambda *args: callback(*args))
 
@@ -440,13 +440,13 @@ class PompLoopThread(threading.Thread):
         res = od.pomp_timer_destroy(pomp_timer)
 
         if res != 0:
-            self.logging.error(
+            self.logger.error(
                 "Error while destroying pomp loop timer: {}".format(res))
             return False
         else:
             del self.pomp_timers[id(pomp_timer)]
             del self.pomp_timer_callbacks[id(pomp_timer)]
-            self.logging.info("Pomp loop timer has been destroyed")
+            self.logger.info("Pomp loop timer has been destroyed")
 
         return True
 
@@ -471,7 +471,7 @@ class PompLoopThread(threading.Thread):
             try:
                 cleanup()
             except Exception:
-                self.logging.exception(
+                self.logger.exception(
                     "Unhandled exception in cleanup function"
                 )
         self.cleanup_functions = []
@@ -483,7 +483,7 @@ class PompLoopThread(threading.Thread):
             self._run_task_list(self.async_pomp_task)
             self._run_task_list(self.deferred_pomp_task)
             if count > 30:
-                self.logging.error('Deferred cleanup action are still pending after 3s')
+                self.logger.error('Deferred cleanup action are still pending after 3s')
                 break
             count += 1
 

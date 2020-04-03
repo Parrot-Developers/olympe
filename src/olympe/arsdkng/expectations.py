@@ -109,15 +109,15 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default.name = name
         self._attr.default.device_name = device_name
         if self._attr.default.name is not None:
-            self._attr.default.logging = getLogger(
+            self._attr.default.logger = getLogger(
                 "olympe.{}.scheduler".format(self._attr.default.name)
             )
         elif self._attr.default.device_name is not None:
-            self._attr.default.logging = getLogger(
+            self._attr.default.logger = getLogger(
                 "olympe.scheduler.{}".format(self._attr.default.device_name)
             )
         else:
-            self._attr.default.logging = getLogger("olympe.scheduler")
+            self._attr.default.logger = getLogger("olympe.scheduler")
 
         # Expectations internal state
         self._attr.default.contexts = OrderedDict()
@@ -133,7 +133,7 @@ class DefaultScheduler(AbstractScheduler):
             self._attr.default.expectations_timer, delay=200, period=15
         ):
             error_message = "Unable to launch piloting interface"
-            self._attr.default.logging.error(error_message)
+            self._attr.default.logger.error(error_message)
             raise RuntimeError(error_message)
 
         # Subscribers internal state
@@ -141,7 +141,7 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default.subscribers = []
         self._attr.default.running_subscribers = OrderedDict()
         self._attr.default.subscribers_thread_loop = PompLoopThread(
-            self._attr.default.logging
+            self._attr.default.logger
         )
         self._attr.default.subscribers_thread_loop.start()
 
@@ -301,11 +301,11 @@ class DefaultScheduler(AbstractScheduler):
                 try:
                     future.result(subscriber.timeout)
                 except Exception as e:
-                    self._attr.default.logging.exception(e)
+                    self._attr.default.logger.exception(e)
             self._attr.default.subscribers.remove(subscriber)
 
     def _subscriber_overrun(self, subscriber, event):
-        self._attr.default.logging.warning(
+        self._attr.default.logger.warning(
             "Subscriber {} event queue ({}) is overrun by {}".format(
                 subscriber, subscriber.queue_size, event
             )

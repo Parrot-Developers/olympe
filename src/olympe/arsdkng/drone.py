@@ -89,10 +89,10 @@ def ensure_connected(function):
     @functools.wraps(function)
     def wrapper(self, *args, **kwargs):
         if not self._device_conn_status.connected:
-            self.logging.info(
+            self.logger.info(
                 "Disconnection has been detected, reconnection will be done")
             if not self.connect():
-                self.logging.error("Cannot make connection")
+                self.logger.error("Cannot make connection")
                 return makeReturnTuple(
                     ErrorCodeDrone.ERROR_CONNECTION, "Cannot make connection"
                 )
@@ -135,9 +135,9 @@ class ControllerBase(AbstractScheduler):
         self._name = name
         self._device_name = None
         if self._name is not None:
-            self.logging = getLogger("olympe.{}.drone".format(name))
+            self.logger = getLogger("olympe.{}.drone".format(name))
         else:
-            self.logging = getLogger("olympe.drone")
+            self.logger = getLogger("olympe.drone")
         self._ip_addr_str = str(ip_addr)
         self._ip_addr = ip_addr.encode('utf-8')
 
@@ -222,7 +222,7 @@ class ControllerBase(AbstractScheduler):
         """
         Notify connection initiation.
         """
-        self.logging.info("Connecting to device: {}".format(
+        self.logger.info("Connecting to device: {}".format(
             od.string_cast(arsdk_device_info.contents.name)))
 
     @callback_decorator()
@@ -234,17 +234,17 @@ class ControllerBase(AbstractScheduler):
         if self._device_name is None:
             self._device_name = device_name
             if self._name is None:
-                self.logging = getLogger(
+                self.logger = getLogger(
                     "olympe.drone.{}".format(self._device_name))
-        self.logging.info("Connected to device: {}".format(device_name))
+        self.logger.info("Connected to device: {}".format(device_name))
         json_info = od.string_cast(arsdk_device_info.contents.json)
         try:
             self._controller_state.device_conn_status.device_infos["json"] = \
                 json.loads(json_info)
-            self.logging.info(
+            self.logger.info(
                 '%s' % pprint.pformat(self._controller_state.device_conn_status.device_infos))
         except ValueError:
-            self.logging.error(
+            self.logger.error(
                 'json contents cannot be parsed: {}'.format(json_info))
 
         self._controller_state.device_conn_status.connected = True
@@ -269,7 +269,7 @@ class ControllerBase(AbstractScheduler):
         """
          Notify disconnection.
         """
-        self.logging.info("Disconnected from device: {}".format(
+        self.logger.info("Disconnected from device: {}".format(
             od.string_cast(arsdk_device_info.contents.name)))
         self._controller_state.device_conn_status.connected = False
         if self._disconnect_future is not None:
@@ -285,7 +285,7 @@ class ControllerBase(AbstractScheduler):
         """
         reason_txt = od.string_cast(
             od.arsdk_conn_cancel_reason_str(reason))
-        self.logging.info(
+        self.logger.info(
             "Connection to device: {} has been canceled for reason: {}".format(
                 od.string_cast(arsdk_device_info.contents.name), reason_txt))
         if self._connect_future is not None:
@@ -301,7 +301,7 @@ class ControllerBase(AbstractScheduler):
          immediately. In this case, call arsdk_device_disconnect and the
          'disconnected' callback will be called.
         """
-        self.logging.info("Link status: {}".format(status))
+        self.logger.info("Link status: {}".format(status))
         # If link has been lost, we must start disconnection procedure
         if status == od.ARSDK_LINK_STATUS_KO:
             # the device has been disconnected
@@ -322,31 +322,31 @@ class ControllerBase(AbstractScheduler):
                     scope = "{}.{}".format(feature_name, class_name)
                 else:
                     scope = feature_name
-                self.logging.warning(
+                self.logger.warning(
                     "Unknown message id: {} in {}".format(msg_id, scope)
                 )
             else:
-                self.logging.warning(
+                self.logger.warning(
                     "Unknown message id {}".format(message_id))
             return
         message = self.messages[message_id]
         try:
             res, message_args = message._decode_args(command)
         except Exception as e:
-            self.logging.exception("Failed to decode message {}".format(message))
+            self.logger.exception("Failed to decode message {}".format(message))
             self._decoding_errors.append(e)
             return
 
         if res != 0:
             msg = ("Unable to decode callback, error: {} , id: {} , name: {}".
                    format(res, command.contents.id, message.FullName))
-            self.logging.error(msg)
+            self.logger.error(msg)
             self._decoding_errors.append(RuntimeError(msg))
 
         try:
             message_event = message._event_from_args(*message_args)
         except Exception as e:
-            self.logging.exception("Failed to decode message {}{}".format(
+            self.logger.exception("Failed to decode message {}{}".format(
                 message, message_args))
             self._decoding_errors.append(e)
             return
@@ -355,12 +355,12 @@ class ControllerBase(AbstractScheduler):
         self._update_states(message, message_args, message_event)
 
         # Format received callback as string
-        self.logging.log(message.loglevel, str(message_event))
+        self.logger.log(message.loglevel, str(message_event))
 
         # Handle drone connection_state events
         if self._is_skyctrl and message_id == drone_manager.connection_state.id:
             if message_event._args["state"] == drone_manager_enums.connection_state.connected:
-                self.logging.info("Skycontroller connected to drone")
+                self.logger.info("Skycontroller connected to drone")
                 all_states_settings_commands = [
                     common.Common.AllStates, common.Settings.AllSettings]
                 for all_states_settings_command in all_states_settings_commands:
@@ -384,7 +384,7 @@ class ControllerBase(AbstractScheduler):
                     )
                     self._media.async_connect()
             if message_event._args["state"] == drone_manager_enums.connection_state.disconnecting:
-                self.logging.info("Skycontroller disconnected from drone")
+                self.logger.info("Skycontroller disconnected from drone")
                 if self._media is not None:
                     self._media.shutdown()
                     self._media = None
@@ -411,9 +411,9 @@ class ControllerBase(AbstractScheduler):
             if not res.success():
                 msg = "Time synchronization failed for {}".format(
                     self._ip_addr)
-                self.logging.warning(msg)
+                self.logger.warning(msg)
             else:
-                self.logging.info("Synchronization of {} at {}".format(
+                self.logger.info("Synchronization of {} at {}".format(
                     self._ip_addr, date_time))
 
         res.add_done_callback(_on_sync_done)
@@ -451,7 +451,7 @@ class ControllerBase(AbstractScheduler):
         """
         if self._controller_state.device_conn_status.connected:
             # Each time this callback is received; piloting command should be send
-            self.logging.debug("Loop timer callback: {}".format(timer))
+            self.logger.debug("Loop timer callback: {}".format(timer))
             if self._controller_state.device_conn_status.connected:
                 self._send_piloting_command()
 
@@ -460,7 +460,7 @@ class ControllerBase(AbstractScheduler):
         """
         Function called when a dispose command callback has been received.
         """
-        self.logging.debug("Dispose command received")
+        self.logger.debug("Dispose command received")
 
     @callback_decorator()
     def _cmd_itf_send_status_cb(self, _interface, _command, status, done, userdata):
@@ -473,7 +473,7 @@ class ControllerBase(AbstractScheduler):
         """
         send_status_userdata = py_object_cast(userdata)
         send_command_future, message, args = send_status_userdata
-        self.logging.debug("Command send status: {} {}, done: {}".format(
+        self.logger.debug("Command send status: {} {}, done: {}".format(
             message.fullName, status, done))
         if done == 1:
             if status in (
@@ -482,7 +482,7 @@ class ControllerBase(AbstractScheduler):
                 send_command_future.set_result(True)
             else:
                 send_command_future.set_result(False)
-                self.logging.error(
+                self.logger.error(
                     "Command send status cancel/timeout: "
                     "{} {}, done: {}".format(message.fullName, status, done)
                 )
@@ -563,11 +563,11 @@ class ControllerBase(AbstractScheduler):
             ctypes.pointer(cmd_itf))
 
         if res != 0:
-            self.logging.error(
+            self.logger.error(
                 "Error while creating command interface: {}".format(res))
             cmd_itf = None
         else:
-            self.logging.info("Command interface has been created: itf=%s"
+            self.logger.info("Command interface has been created: itf=%s"
                               % self._cmd_itf)
 
         return cmd_itf
@@ -598,10 +598,10 @@ class ControllerBase(AbstractScheduler):
         res = od.arsdk_cmd_enc_argv(ctypes.pointer(cmd), ctypes.pointer(command_desc), argc, argv)
 
         if res != 0:
-            self.logging.error("Error while encoding command {}: {}".format(
+            self.logger.error("Error while encoding command {}: {}".format(
                 message.fullName, res))
         else:
-            self.logging.debug("Command {} has been encoded".format(message.fullName))
+            self.logger.debug("Command {} has been encoded".format(message.fullName))
 
         # cmd_itf must exist to send command
         if self._cmd_itf is None:
@@ -617,14 +617,14 @@ class ControllerBase(AbstractScheduler):
             self._cmd_itf, ctypes.pointer(cmd), self._send_status, send_status_userdata)
 
         if res != 0:
-            self.logging.error("Error while sending command: {}".format(res))
+            self.logger.error("Error while sending command: {}".format(res))
             return ErrorCodeDrone.ERROR_BAD_STATE
 
         mess = "{}{} has been sent to the device".format(message.fullName, tuple(args))
         if quiet:
-            self.logging.debug(mess)
+            self.logger.debug(mess)
         else:
-            self.logging.info(mess)
+            self.logger.info(mess)
 
         return send_command_future
 
@@ -669,10 +669,10 @@ class ControllerBase(AbstractScheduler):
 
         if ok:
             self._piloting = True
-            self.logging.info(
+            self.logger.info(
                 "Piloting interface has been correctly launched")
         else:
-            self.logging.error("Unable to launch piloting interface")
+            self.logger.error("Unable to launch piloting interface")
         return self._piloting
 
     @callback_decorator()
@@ -686,9 +686,9 @@ class ControllerBase(AbstractScheduler):
         if ok:
             # Reset piloting state value to False
             self._piloting = False
-            self.logging.info("Piloting interface stopped")
+            self.logger.info("Piloting interface stopped")
         else:
-            self.logging.error("Unable to stop piloting interface")
+            self.logger.error("Unable to stop piloting interface")
 
     @callback_decorator()
     def _connection_impl(self):
@@ -715,10 +715,10 @@ class ControllerBase(AbstractScheduler):
             self._thread_loop.pomp_loop
         )
         if res != 0:
-            self.logging.error("Error while connecting: {}".format(res))
+            self.logger.error("Error while connecting: {}".format(res))
             self._connect_future.set_result(False)
         else:
-            self.logging.info("Connection in progress...")
+            self.logger.info("Connection in progress...")
         return self._connect_future
 
     @callback_decorator()
@@ -757,11 +757,11 @@ class ControllerBase(AbstractScheduler):
         self._disconnect_future = f
         res = od.arsdk_device_disconnect(self._device.arsdk_device)
         if res != 0:
-            self.logging.error(
+            self.logger.error(
                 "Error while disconnecting from device: {} ({})".format(self._ip_addr, res))
             self._disconnect_future.set_result(False)
         else:
-            self.logging.info(
+            self.logger.info(
                 "disconnected from device: {}".format(self._ip_addr))
         return self._disconnect_future
 
@@ -814,15 +814,15 @@ class ControllerBase(AbstractScheduler):
             discovery = DiscoveryNet(self._backend, ip_addr=self._ip_addr)
             device = discovery.get_device()
             if device is None:
-                self.logging.info("Net discovery failed for {}".format(self._ip_addr))
-                self.logging.info("Trying 'NetRaw' discovery for {} ...".format(self._ip_addr))
+                self.logger.info("Net discovery failed for {}".format(self._ip_addr))
+                self.logger.info("Trying 'NetRaw' discovery for {} ...".format(self._ip_addr))
                 discovery.stop()
                 discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr)
                 device = discovery.get_device()
 
             if device is None:
                 msg = "Unable to discover the device: {}".format(self._ip_addr)
-                self.logging.error(msg)
+                self.logger.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, msg)
 
             # Save device related info
@@ -843,14 +843,14 @@ class ControllerBase(AbstractScheduler):
                 if not connected.result_or_cancel(timeout=5):
                     msg = "Unable to connect to the device: {}".format(
                         self._ip_addr)
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     self._thread_loop.run_later(self._on_device_removed)
                     return makeReturnTuple(
                         ErrorCodeDrone.ERROR_CONNECTION, msg)
             except FutureTimeoutError:
                 msg = "connection time out for device: {}".format(
                     self._ip_addr)
-                self.logging.error(msg)
+                self.logger.error(msg)
                 self._thread_loop.run_later(self._on_device_removed)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, msg)
 
@@ -861,7 +861,7 @@ class ControllerBase(AbstractScheduler):
                 if self._cmd_itf is None:
                     msg = "Unable to create command interface: {}".format(
                         self._ip_addr)
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     self.disconnect()
                     return makeReturnTuple(
                         ErrorCodeDrone.ERROR_CONNECTION, msg)
@@ -872,7 +872,7 @@ class ControllerBase(AbstractScheduler):
                 if self._pdraw is None:
                     msg = "Unable to create video streaming interface: {}".format(
                         self._ip_addr)
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     self.disconnect()
                     return makeReturnTuple(
                         ErrorCodeDrone.ERROR_CONNECTION, msg)
@@ -893,7 +893,7 @@ class ControllerBase(AbstractScheduler):
                 if not res.OK:
                     msg = "Unable get device state/settings: {} for {}".format(
                         command.fullName, self._ip_addr)
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     self.disconnect()
                     return makeReturnTuple(
                         ErrorCodeDrone.ERROR_CONNECTION, msg)
@@ -915,7 +915,7 @@ class ControllerBase(AbstractScheduler):
                     ).wait(_timeout=5)
                     if not all_states.success():
                         msg = "Unable get connected drone states and/or settings"
-                        self.logging.error(msg)
+                        self.logger.error(msg)
 
         return makeReturnTuple(
             ErrorCodeDrone.OK,
@@ -1007,7 +1007,7 @@ class ControllerBase(AbstractScheduler):
             explanation = expectations.explain()
             if explanation is not None:
                 message += ": {}".format(explanation)
-            self.logging.error(message)
+            self.logger.error(message)
             return makeReturnTuple(self.error_code_drones.ERROR_PARAMETER, message, None)
 
     def schedule(self, expectations, **kwds):
@@ -1065,19 +1065,19 @@ class ControllerBase(AbstractScheduler):
         if not self._device_conn_status.connected:
             return makeReturnTuple(ErrorCodeDrone.OK, 'Already disconnected')
 
-        self.logging.info("we are not disconnected yet")
+        self.logger.info("we are not disconnected yet")
         disconnected = self._thread_loop.run_async(self._disconnection_impl)
 
         # wait max 5 sec until disconnection gets done
         if disconnected.result_or_cancel(timeout=5):
             mess = "Disconnection with the device OK. IP: {}".format(
                 self._ip_addr)
-            self.logging.info(mess)
+            self.logger.info(mess)
             return makeReturnTuple(ErrorCodeDrone.OK, mess)
 
         mess = 'Cannot disconnect properly: {} {}'.format(
                self._device_conn_status.connected, self._discover)
-        self.logging.error(mess)
+        self.logger.error(mess)
 
         return makeReturnTuple(ErrorCodeDrone.ERROR_CONNECTION, mess)
 
@@ -1143,13 +1143,13 @@ class ControllerBase(AbstractScheduler):
         """
         # Check if disconnection callback was called
         if not self._device_conn_status.connected:
-            self.logging.info("Disconnection has been detected")
+            self.logger.info("Disconnection has been detected")
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_BAD_STATE,
                 "The device has been disconnected"
             )
         elif not self._is_skyctrl:
-            self.logging.info("connected to the drone")
+            self.logger.info("connected to the drone")
             return makeReturnTuple(ErrorCodeDrone.OK, "The device is connected")
         else:
             try:
@@ -1259,7 +1259,7 @@ class ControllerBase(AbstractScheduler):
         :rtype: ReturnTuple
         """
         if self._piloting:
-            self.logging.info("Piloting interface already launched")
+            self.logger.info("Piloting interface already launched")
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting interface already launched")
 
         f = self._thread_loop.run_async(self._start_piloting_impl)
@@ -1282,7 +1282,7 @@ class ControllerBase(AbstractScheduler):
         """
         # Check piloting interface is running
         if not self._piloting:
-            self.logging.info("Piloting interface already stopped")
+            self.logger.info("Piloting interface already stopped")
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting interface already stopped")
 
         f = self._thread_loop.run_async(self._stop_piloting_impl)
@@ -1321,7 +1321,7 @@ class ControllerBase(AbstractScheduler):
             return makeReturnTuple(ErrorCodeDrone.OK, "Piloting PCMD mode OK")
 
         else:
-            self.logging.error("You must launch start_piloting")
+            self.logger.error("You must launch start_piloting")
             return makeReturnTuple(
                 ErrorCodeDrone.ERROR_PILOTING_STATE,
                 "You must launch start_piloting")
@@ -1371,7 +1371,7 @@ class ControllerBase(AbstractScheduler):
         """
         if self._pdraw is None:
             msg = "Cannot start streaming while the drone is not connected"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if self._pdraw.is_legacy():
@@ -1380,11 +1380,11 @@ class ControllerBase(AbstractScheduler):
             try:
                 if not f.result_or_cancel(timeout=5):
                     msg = "Unable to enable legacy video streaming"
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
                 msg = "Unable to enable legacy video streaming (timeout)"
-                self.logging.error(msg)
+                self.logger.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         try:
@@ -1394,11 +1394,11 @@ class ControllerBase(AbstractScheduler):
                 media_name=media_name).result_or_cancel(timeout=5)
         except FutureTimeoutError:
             msg = "video stream play timedout"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         if not play_res:
             msg = "Failed to play video stream"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         return makeReturnTuple(
@@ -1412,7 +1412,7 @@ class ControllerBase(AbstractScheduler):
         """
         if self._pdraw is None:
             msg = "Cannot start streaming while the drone is not connected"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if self._pdraw.is_legacy():
@@ -1421,25 +1421,25 @@ class ControllerBase(AbstractScheduler):
             try:
                 if not f.result_or_cancel(timeout=5):
                     msg = "Unable to disable legacy video streaming"
-                    self.logging.error(msg)
+                    self.logger.error(msg)
                     return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             except FutureTimeoutError:
                 msg = "Unable to disable legacy video streaming (timeout)"
-                self.logging.error(msg)
+                self.logger.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         try:
             if not self._pdraw.pause().result_or_cancel(timeout=5):
                 msg = "Failed to pause video stream"
-                self.logging.error(msg)
+                self.logger.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
             if not self._pdraw.close().result_or_cancel(timeout=5):
                 msg = "Failed to close video stream"
-                self.logging.error(msg)
+                self.logger.error(msg)
                 return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         except FutureTimeoutError:
             msg = "Failed to stop video stream (timeout)"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         return makeReturnTuple(self.error_code_drones.OK, "Video stream paused")
@@ -1465,12 +1465,12 @@ class ControllerBase(AbstractScheduler):
 
         if self._pdraw is None:
             msg = "Cannot wait streaming state while the drone is not connected"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         if not self._pdraw.wait(state, timeout=timeout):
             msg = "Wait for streaming state {} timedout".format(state)
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
 
         return makeReturnTuple(
@@ -1499,7 +1499,7 @@ class ControllerBase(AbstractScheduler):
 
         if self._pdraw is None:
             msg = "Cannot set streaming output file while the drone is not connected"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         self._pdraw.set_output_files(h264_data_file,
                                      h264_meta_file,
@@ -1552,7 +1552,7 @@ class ControllerBase(AbstractScheduler):
 
         if self._pdraw is None:
             msg = "Cannot set streaming callbacks while the drone is not connected"
-            self.logging.error(msg)
+            self.logger.error(msg)
             return makeReturnTuple(ErrorCodeDrone.ERROR_BAD_STATE, msg)
         self._pdraw.set_callbacks(
             h264_cb=h264_cb,
@@ -1668,9 +1668,9 @@ class SkyController(ControllerBase):
          immediately. In this case, call arsdk_device_disconnect and the
          'disconnected' callback will be called.
         """
-        self.logging.info("Link status: {}".format(status))
+        self.logger.info("Link status: {}".format(status))
         if status == od.ARSDK_LINK_STATUS_KO:
             # FIXME: Link status KO seems to be an unrecoverable
             # random error with a SkyController when `drone_manager.forget`
             # is sent to the SkyController
-            self.logging.error("Link status KO")
+            self.logger.error("Link status KO")

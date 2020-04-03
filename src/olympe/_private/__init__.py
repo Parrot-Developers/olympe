@@ -109,10 +109,8 @@ class callback_decorator(decorator):
                 logger = self.kwds["logger"]
             elif not args:
                 logger = getLogger("olympe.callbacks")
-            elif hasattr(args[0], "_logging"):
-                logger = args[0]._logging
-            elif hasattr(args[0], "logging"):
-                logger = args[0].logging
+            elif hasattr(args[0], "logger"):
+                logger = args[0].logger
             else:
                 logger = getLogger("olympe.callbacks")
             logger.exception("Unhandled exception")

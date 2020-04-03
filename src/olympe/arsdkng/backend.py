@@ -46,11 +46,11 @@ class Backend(object):
     def __init__(self, name=None):
         self._name = name
         if self._name is not None:
-            self._logging = getLogger("olympe.{}.backend".format(self._name))
+            self.logger = getLogger("olympe.{}.backend".format(self._name))
         else:
-            self._logging = getLogger("olympe.backend")
+            self.logger = getLogger("olympe.backend")
         self._device_handler = []
-        self._thread_loop = PompLoopThread(self._logging)
+        self._thread_loop = PompLoopThread(self.logger)
         self._thread_loop.register_cleanup(self._destroy)
         self._thread_loop.start()
         (
@@ -93,7 +93,7 @@ class Backend(object):
         if res != 0:
             raise RuntimeError("arsdk_ctrl_set_device_cbs: {}".format(res))
 
-        self._logging.info("device callbacks have been added to arsdk_ctrl")
+        self.logger.info("device callbacks have been added to arsdk_ctrl")
 
         # Create the net backend
         cfg = od.struct_arsdkctrl_backend_net_cfg(
@@ -108,7 +108,7 @@ class Backend(object):
         if res != 0:
             raise RuntimeError("arsdkctrl_backend_net_new: {}".format(res))
 
-        self._logging.debug("New net backend has been created")
+        self.logger.debug("New net backend has been created")
 
         backend_net_socket_callback = od.arsdkctrl_backend_net_socket_cb_t(
             lambda *args: self._socket_cb(*args)
@@ -120,7 +120,7 @@ class Backend(object):
         if res_set_socket != 0:
             raise RuntimeError("arsdkctrl_backend_net_set_socket_cb: {}".format(res))
 
-        self._logging.debug("Set backend socket callback OK")
+        self.logger.debug("Set backend socket callback OK")
 
         return (
             arsdk_ctrl,
@@ -134,29 +134,29 @@ class Backend(object):
 
     @callback_decorator()
     def _destroy(self):
-        self._logging.debug("Destroying backend...")
+        self.logger.debug("Destroying backend...")
         if self._backend_net is not None:
 
             res = od.arsdkctrl_backend_net_destroy(self._backend_net)
 
             if res != 0:
-                self._logging.error("Error while destroying net backend: {}".format(res))
+                self.logger.error("Error while destroying net backend: {}".format(res))
             else:
                 self._backend_net = None
-                self._logging.debug("Net backend has been destroyed")
+                self.logger.debug("Net backend has been destroyed")
 
         if self._arsdk_ctrl is not None:
             res = od.arsdk_ctrl_destroy(self._arsdk_ctrl)
 
             if res != 0:
-                self._logging.error("Error while destroying arsdk_ctrl: {}".format(res))
+                self.logger.error("Error while destroying arsdk_ctrl: {}".format(res))
             else:
                 self._arsdk_ctrl = None
-                self._logging.info("Manager has been destroyed")
+                self.logger.info("Manager has been destroyed")
 
     @callback_decorator()
     def _socket_cb(self, backend_net, socket_fd, socket_kind, userdata):
-        self._logging.debug(
+        self.logger.debug(
             "backend_pointer {} socket_fd {} socket_kind {} userdate_pointer {}".format(
                 backend_net, socket_fd, socket_kind, userdata
             )
