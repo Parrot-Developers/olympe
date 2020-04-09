@@ -36,8 +36,7 @@ olympe.log.update_config(
 
 logger = getLogger(__name__)
 
-# Drone IP
-ANAFI_IP = "192.168.42.1"
+DRONE_IP = "192.168.42.1"
 
 
 class MediaEventListener(olympe.EventListener):
@@ -47,6 +46,8 @@ class MediaEventListener(olympe.EventListener):
         self._media_id = []
         self._downloaded_resources = []
         self._downloading = set()
+        self.remote_resource_count = 0
+        self.local_resource_count = 0
 
     @olympe.listen_event(media_created())
     def onMediaCreated(self, event, scheduler):
@@ -128,14 +129,14 @@ class MediaEventListener(olympe.EventListener):
                 return
 
         # Sanity check 3/3: local downloaded resources equals the number of remote resources
-        remote_resource_count = sum(map(
+        self.remote_resource_count = sum(map(
             lambda id_: len(self._media.resource_info(media_id=id_)), self._media_id))
-        local_resource_count = len(self._downloaded_resources)
-        if local_resource_count != remote_resource_count:
+        self.local_resource_count = len(self._downloaded_resources)
+        if self.local_resource_count != self.remote_resource_count:
             logger.error(
                 "Downloaded {} resources instead of {}".format(
-                    local_resource_count,
-                    remote_resource_count,
+                    self.local_resource_count,
+                    self.remote_resource_count,
                 )
             )
             super().unsubscribe()
@@ -170,7 +171,6 @@ def setup_photo_burst_mode(drone):
 
 
 def main(drone, media=None):
-    drone.connect()
     setup_photo_burst_mode(drone)
     if media is None:
         assert drone.media_autoconnect
@@ -182,26 +182,32 @@ def main(drone, media=None):
         logger.error("Media indexing timed out")
         return
     logger.info("media resources indexed")
-    with MediaEventListener(media):
+    with MediaEventListener(media) as media_listener:
         photo_saved = drone(photo_progress(result="photo_saved", _policy="wait"))
         drone(take_photo(cam_id=0)).wait()
         if not photo_saved.wait(_timeout=30).success():
             logger.error("Photo not saved: {}".format(photo_saved.explain()))
+    assert media_listener.remote_resource_count == 14
+    assert media_listener.local_resource_count == 14
 
 
 if __name__ == "__main__":
     # Here we want to demonstrate olympe.Media class usage as a standalone API
     # so we disable the drone object media autoconnection (we won't use
     # drone.media) and choose to instantiate the olympe.Media class ourselves
-    with olympe.Drone(ANAFI_IP, media_autoconnect=False, name="example_media_standalone") as drone:
-        media = olympe.Media(ANAFI_IP, name="example_media_standalone")
+    with olympe.Drone(DRONE_IP, media_autoconnect=False, name="example_media_standalone") as drone:
+        drone.connect()
+        media = olympe.Media(DRONE_IP, name="example_media_standalone")
         media.connect()
         main(drone, media)
         media.shutdown()
+        drone.disconnect()
 
     # By default, the drone instantiate an internal olympe.Media object (media_autoconnect=True
     # by default). This olympe.Media object is exposed through the Drone.media property. In this
     # case the connection to the remote media API endpoint is automatically handled by the olympe
     # drone controller class.
-    with olympe.Drone(ANAFI_IP, name="example_media_autoconnect") as drone:
+    with olympe.Drone(DRONE_IP, name="example_media_autoconnect") as drone:
+        drone.connect()
         main(drone)
+        drone.disconnect()

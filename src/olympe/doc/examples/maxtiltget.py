@@ -4,7 +4,10 @@ from __future__ import print_function  # python2/3 compatibility for the print f
 import olympe
 from olympe.messages.ardrone3.PilotingSettingsState import MaxTiltChanged
 
-drone = olympe.Drone("10.202.0.1")
-drone.connect()
-print("Drone MaxTilt = ", drone.get_state(MaxTiltChanged)["current"])
-drone.disconnect()
+DRONE_IP = "10.202.0.1"
+
+if __name__ == "__main__":
+    drone = olympe.Drone(DRONE_IP)
+    drone.connect()
+    print("Drone MaxTilt = ", drone.get_state(MaxTiltChanged)["current"])
+    drone.disconnect()

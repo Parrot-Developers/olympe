@@ -8,12 +8,12 @@ olympe.log.update_config({
     "handlers": {
         "olympe_log_file": {
             "class": "logging.FileHandler",
-            "formatter": "file_formatter",
+            "formatter": "default_formatter",
             "filename": "olympe.log"
         },
         "ulog_log_file": {
             "class": "logging.FileHandler",
-            "formatter": "file_formatter",
+            "formatter": "default_formatter",
             "filename": "ulog.log"
         },
     },
@@ -28,11 +28,14 @@ olympe.log.update_config({
     }
 })
 
-drone = olympe.Drone("10.202.0.1", name="toto")
-drone.connect()
-drone(TakeOff()).wait()
-drone.start_video_streaming()
-time.sleep(10)
-drone.stop_video_streaming()
-drone(Landing()).wait()
-drone.disconnect()
+DRONE_IP = "10.202.0.1"
+
+if __name__ == "__main__":
+    drone = olympe.Drone(DRONE_IP, name="toto")
+    drone.connect()
+    assert drone(TakeOff()).wait().success()
+    assert drone.start_video_streaming()
+    time.sleep(10)
+    assert drone.stop_video_streaming()
+    assert drone(Landing()).wait().success()
+    drone.disconnect()

@@ -15,6 +15,8 @@ from olympe.messages.ardrone3.PilotingState import (
 
 olympe.log.update_config({"loggers": {"olympe": {"level": "WARNING"}}})
 
+DRONE_IP = "10.202.0.1"
+
 
 def print_event(event):
     # Here we're just serializing an event object and truncate the result if necessary
@@ -43,6 +45,10 @@ class FlightListener(olympe.EventListener):
 
     # This set a default queue size for every listener method
     default_queue_size = 100
+
+    def __init__(self, *args, **kwds):
+        super().__init__(*args, **kwds)
+        self.has_observed_takeoff = False
 
     @olympe.listen_event(PositionChanged())
     def onPositionChanged(self, event, scheduler):
@@ -75,14 +81,14 @@ class FlightListener(olympe.EventListener):
 
     # You can also monitor a sequence of event using the complete Olympe DSL syntax
     @olympe.listen_event(
-        FlyingStateChanged(state="motor_ramping")
-        >> FlyingStateChanged(state="takingoff", _timeout=1.)
+        FlyingStateChanged(state="takingoff", _timeout=1.)
         >> FlyingStateChanged(state="hovering", _timeout=5.)
     )
     def onTakeOff(self, event, scheduler):
         # This method will be called once for each completed sequence of event
         # FlyingStateChanged: motor_ramping -> takingoff -> hovering
         print("The drone has taken off!")
+        self.has_observed_takeoff = True
 
     # The `default` listener method is only called when no other method
     # matched the event message The `olympe.listen_event` decorator usage
@@ -95,21 +101,24 @@ class FlightListener(olympe.EventListener):
         print_event(event)
 
 
-drone = olympe.Drone("10.202.0.1")
-# Explicit subscription to every event
-every_event_listener = EveryEventListener(drone)
-every_event_listener.subscribe()
-drone.connect()
-every_event_listener.unsubscribe()
+if __name__ == "__main__":
+    drone = olympe.Drone(DRONE_IP)
+    # Explicit subscription to every event
+    every_event_listener = EveryEventListener(drone)
+    every_event_listener.subscribe()
+    drone.connect()
+    every_event_listener.unsubscribe()
 
-# You can also subscribe/unsubscribe automatically using a with statement
-with FlightListener(drone):
-    for i in range(2):
-        drone(
-            FlyingStateChanged(state="hovering")
-            | (TakeOff() & FlyingStateChanged(state="hovering"))
-        ).wait()
-        drone(moveBy(10, 0, 0, 0)).wait()
-        drone(Landing()).wait()
-        drone(FlyingStateChanged(state="landed")).wait()
-drone.disconnect()
+    # You can also subscribe/unsubscribe automatically using a with statement
+    with FlightListener(drone) as flight_listener:
+        for i in range(2):
+            assert drone(
+                FlyingStateChanged(state="hovering")
+                | (TakeOff() & FlyingStateChanged(state="hovering"))
+            ).wait().success()
+            assert drone(moveBy(10, 0, 0, 0)).wait().success()
+            drone(Landing()).wait()
+            assert drone(FlyingStateChanged(state="landed")).wait().success()
+
+    assert flight_listener.has_observed_takeoff
+    drone.disconnect()

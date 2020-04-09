@@ -3,9 +3,12 @@
 import olympe
 from olympe.messages.ardrone3.Piloting import TakeOff, moveBy, Landing
 
-drone = olympe.Drone("10.202.0.1")
-drone.connect()
-drone(TakeOff()).wait()
-drone(moveBy(10, 0, 0, 0)).wait()
-drone(Landing()).wait()
-drone.disconnect()
+DRONE_IP = "10.202.0.1"
+
+if __name__ == "__main__":
+    drone = olympe.Drone(DRONE_IP)
+    drone.connect()
+    assert drone(TakeOff()).wait().success()
+    drone(moveBy(10, 0, 0, 0)).wait()
+    assert drone(Landing()).wait().success()
+    drone.disconnect()

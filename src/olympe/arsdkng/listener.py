@@ -260,6 +260,7 @@ class EventListener(metaclass=_EventListenerMeta):
 
     def __enter__(self):
         self.subscribe()
+        return self
 
     def __exit__(self, *args, **kwds):
         self.unsubscribe()

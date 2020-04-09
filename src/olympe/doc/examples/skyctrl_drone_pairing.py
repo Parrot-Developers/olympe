@@ -12,6 +12,7 @@ from olympe.messages.drone_manager import (
 
 olympe.log.update_config({"loggers": {"olympe": {"level": "INFO"}}})
 
+SKYCTRL_IP = "192.168.53.1"
 DRONE_SSID = os.environ.get("DRONE_SSID", "Anafi_PC_000000")
 DRONE_SECURITY_KEY = os.environ.get("DRONE_SECURITY_KEY", "")
 DRONE_SERIAL = os.environ.get("DRONE_SERIAL", "000000")
@@ -19,7 +20,7 @@ DRONE_SERIAL = os.environ.get("DRONE_SERIAL", "000000")
 
 class SkyControllerExample:
     def __init__(self):
-        self.skyctrl = olympe.SkyController("192.168.53.1")
+        self.skyctrl = olympe.SkyController(SKYCTRL_IP)
 
     def skyctrl_connect(self):
         self.skyctrl.connect()

@@ -1,7 +1,10 @@
 import argparse
 import cv2
 import sys
+import time
 from olympe import Pdraw, PDRAW_YUV_FORMAT_I420, PDRAW_YUV_FORMAT_NV12, PdrawState
+
+DRONE_IP = "10.202.0.1"
 
 
 def yuv_frame_cb(yuv_frame):
@@ -41,7 +44,7 @@ def main(argv):
         "-u",
         "--url",
         default="rtsp://10.202.0.1/live",
-        description=(
+        help=(
             "Media resource (rtsp:// or file://) URL.\n"
             "See olympe.Pdraw.play documentation"
         ),
@@ -51,8 +54,19 @@ def main(argv):
     pdraw = Pdraw()
     pdraw.set_callbacks(raw_cb=yuv_frame_cb)
     pdraw.play(url=args.url, media_name=args.media_name)
-    pdraw.wait(PdrawState.Playing, timeout=5)
-    pdraw.wait(PdrawState.Closed, timeout=90)
+    assert pdraw.wait(PdrawState.Playing, timeout=5)
+    if args.url.endswith("/live"):
+        # Let's see the live video streaming for 10 seconds
+        time.sleep(10)
+        pdraw.close()
+        timeout = 5
+    else:
+        # When replaying a video, the pdraw stream will be closed automatically
+        # at the end of the video
+        # For this is example, this is the replayed video maximal duration:
+        timeout = 90
+    assert pdraw.wait(PdrawState.Closed, timeout=timeout)
+    pdraw.dispose()
 
 
 if __name__ == "__main__":

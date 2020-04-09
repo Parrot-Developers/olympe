@@ -24,12 +24,14 @@ from olympe.messages.ardrone3.GPSSettingsState import GPSFixStateChanged
 
 olympe.log.update_config({"loggers": {"olympe": {"level": "WARNING"}}})
 
+DRONE_IP = "10.202.0.1"
+
 
 class StreamingExample(threading.Thread):
 
     def __init__(self):
         # Create the olympe.Drone object from its IP address
-        self.drone = olympe.Drone("10.202.0.1")
+        self.drone = olympe.Drone(DRONE_IP)
         self.tempd = tempfile.mkdtemp(prefix="olympe_streaming_test_")
         print("Olympe streaming example output dir: {}".format(self.tempd))
         self.h264_frame_stats = []

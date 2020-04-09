@@ -540,8 +540,13 @@ class all_media_removed(_MediaEventExpectationBase):
 
 
 class resource_created(_ResourceEventExpectation):
-    def __init__(self, resource_id=None, _timeout=None):
-        super().__init__("resource_created", resource_id=resource_id, _timeout=_timeout)
+    def __init__(self, resource_id=None, media_id=None, _timeout=None):
+        super().__init__(
+            "resource_created",
+            resource_id=resource_id,
+            media_id=media_id,
+            _timeout=_timeout
+        )
 
     def copy(self):
         return super().base_copy(self._id_value, self._timeout)
@@ -1000,6 +1005,7 @@ class _download_resource(Expectation):
                 "is_thumbnail": self._thumbnail,
             },
         )
+        self._resource = self._resource._replace(download_path=self._resource_path)
         self._media._process_event(event)
         self.set_success()
         return True
@@ -1034,6 +1040,14 @@ class download_resource(_download_resource):
             integrity_check=integrity_check,
             thumbnail=False,
         )
+
+    def __getattr__(self, name):
+        if self._resource is None:
+            raise AttributeError(
+                "'{}' has no attribute '{}'".format(self.__class__.__name__, name)
+            )
+        else:
+            return getattr(self._resource, name)
 
 
 class download_resource_thumbnail(_download_resource):
@@ -1084,6 +1098,7 @@ class download_media(MultipleDownloadMixin):
         self._download_dir = download_dir
         self._media_id = media_id
         self._integrity_check = integrity_check
+        self._media = None
         super().__init__()
 
     def copy(self):
@@ -1094,8 +1109,13 @@ class download_media(MultipleDownloadMixin):
     def _schedule(self, scheduler):
         super()._schedule(scheduler)
         media_context = scheduler.context("olympe.media")
-        media = media_context._get_media(self._media_id)
-        for resource_id in media.resources.keys():
+        media_context.subscribe(
+            lambda event, scheduler: scheduler.run(
+                self._on_resource_created, event, scheduler),
+            resource_created(media_id=self._media_id)
+        )
+        self._media = media_context._get_media(self._media_id)
+        for resource_id in list(self._media.resources.keys()):
             self.expectations.append(
                 download_resource(
                     resource_id,
@@ -1104,6 +1124,29 @@ class download_media(MultipleDownloadMixin):
                 )
             )
             scheduler._schedule(self.expectations[-1])
+
+    def __getattr__(self, name):
+        if self._media is None:
+            raise AttributeError(
+                "'{}' has no attribute '{}'".format(self.__class__.__name__, name)
+            )
+        else:
+            return getattr(self._media, name)
+
+    def _on_resource_created(self, event, scheduler):
+        if self.success() or self.cancelled():
+            return
+        for resource in self.expectations:
+            if resource._resource_id == event.resource_id:
+                return
+        self.expectations.append(
+            download_resource(
+                event.resource_id,
+                download_dir=self._download_dir,
+                integrity_check=self._integrity_check,
+            )
+        )
+        scheduler._schedule(self.expectations[-1])
 
 
 class download_media_thumbnail(MultipleDownloadMixin):

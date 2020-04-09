@@ -36,11 +36,12 @@ from __future__ import absolute_import
 
 import functools
 import pprint
+import time
 
 from abc import ABC, abstractmethod
 from aenum import Enum
 from boltons.setutils import IndexedSet
-from concurrent.futures import Future
+from concurrent.futures import Future, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import CancelledError as FutureCancelledError
 from collections import OrderedDict, deque
@@ -165,6 +166,11 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default.pomp_loop_thread.run_async(
             self._schedule, expectations, **kwds
         ).result()
+
+    def run(self, *args, **kwds):
+        return self._attr.default.pomp_loop_thread.run_async(
+            *args, **kwds
+        )
 
     @callback_decorator()
     def _schedule(self, expectation, **kwds):
@@ -1075,6 +1081,19 @@ class MultipleExpectationMixin:
             ),
             self._combine_method(),
         )
+
+    def as_completed(self, timeout=None):
+        end_time = None
+        if timeout is not None:
+            end_time = timeout + time.monotonic()
+        done = set()
+        while end_time is None or end_time > time.monotonic():
+            fs = OrderedDict([(e._future, e) for e in self.expectations if e not in done])
+            for f in as_completed(fs.keys(), timeout=timeout):
+                yield fs[f]
+                done.add(fs[f])
+            if len(done) == len(self.expectations):
+                break
 
 
 class MultipleExpectation(MultipleExpectationMixin, Expectation):
