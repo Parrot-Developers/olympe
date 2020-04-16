@@ -494,8 +494,11 @@ class ControllerBase(AbstractScheduler):
         self._pdraw = None
 
     def _create_pdraw_interface(self):
-        legacy_streaming = not od.arsdk_device_type__enumvalues[
-            self._device_type].startswith("ARSDK_DEVICE_TYPE_ANAFI")
+        legacy_streaming = not (
+            self._is_skyctrl or
+            od.arsdk_device_type__enumvalues[
+                self._device_type].startswith("ARSDK_DEVICE_TYPE_ANAFI")
+        )
         return Pdraw(
             name=self._name,
             device_name=self._device_name,
