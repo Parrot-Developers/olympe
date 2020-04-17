@@ -122,7 +122,8 @@ def _make_media(media):
         :py:class:`~olympe.MediaInfo` object
     :rtype: tuple(int, :py:class:`~olympe.MediaInfo`)
     """
-    media = MediaInfo(**media)
+    if isinstance(media, Mapping):
+        media = MediaInfo(**media)
     if not media.media_id:
         return None, media
     resources = media.resources
@@ -153,7 +154,8 @@ def _make_resource(resource):
         :py:class:`~olympe.ResourceInfo` object
     :rtype: tuple(int, :py:class:`~olympe.ResourceInfo`)
     """
-    resource = ResourceInfo(**resource)
+    if isinstance(resource, Mapping):
+        resource = ResourceInfo(**resource)
     if not resource.resource_id:
         return None, resource
     return resource.resource_id, resource
@@ -995,9 +997,11 @@ class _download_resource(Expectation):
             )
         )
         self._media._pomp_loop_thread.remove_fd_from_loop(self._fd)
+        self._resource = self._resource._replace(download_path=self._resource_path)
         event = MediaEvent(
             "resource_downloaded",
             {
+                "resource": self._resource,
                 "media_id": self._resource.media_id,
                 "resource_id": self._resource.resource_id,
                 "md5": self._resource.md5,
@@ -1005,7 +1009,6 @@ class _download_resource(Expectation):
                 "is_thumbnail": self._thumbnail,
             },
         )
-        self._resource = self._resource._replace(download_path=self._resource_path)
         self._media._process_event(event)
         self.set_success()
         return True
@@ -1117,11 +1120,11 @@ class download_media(MultipleDownloadMixin):
         self._media = media_context._get_media(self._media_id)
         for resource_id in list(self._media.resources.keys()):
             self.expectations.append(
-                download_resource(
-                    resource_id,
+                (lambda id_: download_resource(
+                    id_,
                     download_dir=self._download_dir,
                     integrity_check=self._integrity_check,
-                )
+                ))(resource_id)
             )
             scheduler._schedule(self.expectations[-1])
 

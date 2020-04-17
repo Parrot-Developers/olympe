@@ -245,7 +245,7 @@ class DefaultScheduler(AbstractScheduler):
                     self._attr.default.running_subscribers[id(subscriber)] = future
                     future.add_done_callback(
                         functools.partial(
-                            lambda subsriber, _: self._attr.default.running_subscribers.pop(
+                            lambda subscriber, _: self._attr.default.running_subscribers.pop(
                                 id(subscriber)
                             ),
                             subscriber,

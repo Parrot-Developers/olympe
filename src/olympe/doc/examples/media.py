@@ -11,9 +11,7 @@ from olympe.media import (
     indexing_state,
     delete_media,
     download_media,
-    download_resource,
     download_media_thumbnail,
-    download_resource_thumbnail,
     MediaEvent,
 )
 from olympe.messages.camera import (
@@ -45,7 +43,6 @@ class MediaEventListener(olympe.EventListener):
         self._media = media
         self._media_id = []
         self._downloaded_resources = []
-        self._downloading = set()
         self.remote_resource_count = 0
         self.local_resource_count = 0
 
@@ -58,26 +55,17 @@ class MediaEventListener(olympe.EventListener):
         # `media_created` event does not include a full listing of all the future
         # resources of this media. The `resource_created` event will be sent
         # by the drone for the remaining resources.
-        # For this reason, we have to download the resources included in this
-        # `media_created` event (here we use `download_media` but we could have used
-        # `download_resource` for every resources included in this event) and we'll
-        # also have to download the resources included in future `resource_created`
-        # events associated with this media.
+        # However, the "download_media" and "download_media_thumbnail" will do
+        # the right thing and download for you any subsequent resources associated
+        # to this media id automatically.
         self._media(
             download_media_thumbnail(event.media_id) &
             download_media(event.media_id)
         )
-        for resource_id in event.media.resources:
-            self._downloading.add(resource_id)
 
     @olympe.listen_event(resource_created())
     def onResourceCreated(self, event, scheduler):
         logger.info("resource_created {}".format(event.resource_id))
-        self._media(
-            download_resource_thumbnail(event.resource_id) &
-            download_resource(event.resource_id)
-        )
-        self._downloading.add(event.resource_id)
 
     @olympe.listen_event(media_removed())
     def onMediaRemoved(self, event, scheduler):
@@ -89,11 +77,14 @@ class MediaEventListener(olympe.EventListener):
 
     @olympe.listen_event(resource_downloaded())
     def onResourceDownloaded(self, event, scheduler):
-        if not event.is_thumbnail:
-            logger.info("resource_downloaded {} {}".format(event.resource_id, event.is_thumbnail))
-            self._downloading.remove(event.resource_id)
-            self._downloaded_resources.append(
-                self._media.resource_info(resource_id=event.resource_id))
+        if event.is_thumbnail:
+            return
+        logger.info("resource_downloaded {} {}".format(
+            event.resource_id,
+            event.data["download_path"],
+        ))
+        self._downloaded_resources.append(
+            self._media.resource_info(resource_id=event.resource_id))
 
     @olympe.listen_event()
     def default(self, event, scheduler):
@@ -102,15 +93,7 @@ class MediaEventListener(olympe.EventListener):
 
     def unsubscribe(self):
         self._media.wait_for_pending_downloads()
-        # Sanity check 1/3: no pending downloads.
-        # If any integrity check has failed we will stop right here
-        if self._downloading:
-            logger.error("Downloading resources {} is still in progress".format(
-                ",".join(sorted(self._downloading))))
-            super().unsubscribe()
-            return
-
-        # Sanity check 2/3: md5 checksum
+        # Sanity check 1/2: md5 checksum
         # The integrity check has already been performed by Olympe
         # For this example the following step demonstrate how to perform the media
         # integrity check afterward using the "md5summ --check *.md5" command.
@@ -128,7 +111,7 @@ class MediaEventListener(olympe.EventListener):
                 super().unsubscribe()
                 return
 
-        # Sanity check 3/3: local downloaded resources equals the number of remote resources
+        # Sanity check 2/2: local downloaded resources equals the number of remote resources
         self.remote_resource_count = sum(map(
             lambda id_: len(self._media.resource_info(media_id=id_)), self._media_id))
         self.local_resource_count = len(self._downloaded_resources)
@@ -187,8 +170,10 @@ def main(drone, media=None):
         drone(take_photo(cam_id=0)).wait()
         if not photo_saved.wait(_timeout=30).success():
             logger.error("Photo not saved: {}".format(photo_saved.explain()))
-    assert media_listener.remote_resource_count == 14
-    assert media_listener.local_resource_count == 14
+    assert media_listener.remote_resource_count == 14, "remote resource count = {}".format(
+        media_listener.remote_resource_count)
+    assert media_listener.local_resource_count == 14, "local resource count = {}".format(
+        media_listener.local_resource_count)
 
 
 if __name__ == "__main__":
