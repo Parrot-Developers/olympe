@@ -249,12 +249,12 @@ class VideoFrame:
                 return self._frame_pointer, self._frame_size
             frame = frame.contents
             self._frame_pointer = ctypes.cast(
-                frame._1.yuv.plane[0],
+                frame.pdraw_video_frame_0.yuv.plane[0],
                 ctypes.POINTER(ctypes.c_ubyte)
             )
             # assume I420 or NV12 3/2 ratio
-            height = frame._1.yuv.height
-            width = frame._1.yuv.width
+            height = frame.pdraw_video_frame_0.yuv.height
+            width = frame.pdraw_video_frame_0.yuv.width
             self._frame_size = int(3 * height * width / 2)
         return self._frame_pointer, self._frame_size
 
@@ -274,8 +274,8 @@ class VideoFrame:
             if not frame:
                 return self._frame_array
             frame = frame.contents
-            height = frame._1.yuv.height
-            width = frame._1.yuv.width
+            height = frame.pdraw_video_frame_0.yuv.height
+            width = frame.pdraw_video_frame_0.yuv.width
             # assume I420 or NV12 3/2 ratio
             shape = (int(3 * height / 2), width)
         self._frame_array = np.ctypeslib.as_array(
@@ -837,18 +837,18 @@ class Pdraw(object):
         self.logger.info("_media_added id : {}".format(id_))
 
         # store the information if supported media type, otherwise exit
-        if (media_info.contents._2.video.format !=
+        if (media_info.contents.pdraw_media_info_0.video.format !=
                 od.PDRAW_VIDEO_MEDIA_FORMAT_YUV and
-                media_info.contents._2.video.format !=
+                media_info.contents.pdraw_media_info_0.video.format !=
                 od.PDRAW_VIDEO_MEDIA_FORMAT_H264):
             self.logger.warning(
                 'Ignoring media id {} (type {})'.format(
-                    id_, media_info.contents._2.video.format))
+                    id_, media_info.contents.pdraw_media_info_0.video.format))
             return
-        self.streams[id_]['type'] = int(media_info.contents._2.video.format)
-        if (media_info.contents._2.video.format ==
+        self.streams[id_]['type'] = int(media_info.contents.pdraw_media_info_0.video.format)
+        if (media_info.contents.pdraw_media_info_0.video.format ==
                 od.PDRAW_VIDEO_MEDIA_FORMAT_H264):
-                header = media_info.contents._2.video._2.h264
+                header = media_info.contents.pdraw_media_info_0.video.pdraw_video_info_0.h264
                 header = H264Header(
                     bytearray(header.sps),
                     int(header.spslen),
