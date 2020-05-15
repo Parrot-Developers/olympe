@@ -115,6 +115,12 @@ def _replace_namedtuple(nt, **kwds):
         return nt
 
 
+def _namedtuple_from_mapping(mapping, namedtuple_type):
+    return namedtuple_type(
+        **{k: mapping[k] for k in namedtuple_type._fields if k in mapping}
+    )
+
+
 def _make_media(media):
     """
     :param media: a media object dictionary
@@ -123,7 +129,7 @@ def _make_media(media):
     :rtype: tuple(int, :py:class:`~olympe.MediaInfo`)
     """
     if isinstance(media, Mapping):
-        media = MediaInfo(**media)
+        media = _namedtuple_from_mapping(media, MediaInfo)
     if not media.media_id:
         return None, media
     resources = media.resources
@@ -139,7 +145,8 @@ def _make_media(media):
         if media.type in MediaType._value2member_map_:
             media = _replace_namedtuple(media, type=MediaType(media.type))
         if isinstance(media.gps, Mapping):
-            media = _replace_namedtuple(media, gps=GPS(**media.gps))
+            gps = _namedtuple_from_mapping(media.gps, GPS)
+            media = _replace_namedtuple(media, gps=gps)
         if media.photo_mode in PhotoMode._value2member_map_:
             media = _replace_namedtuple(media, photo_mode=PhotoMode(media.photo_mode))
         if media.panorama_type in PanoramaType._value2member_map_:
@@ -157,7 +164,7 @@ def _make_resource(resource):
     :rtype: tuple(int, :py:class:`~olympe.ResourceInfo`)
     """
     if isinstance(resource, Mapping):
-        resource = ResourceInfo(**resource)
+        resource = _namedtuple_from_mapping(resource, ResourceInfo)
     if not resource.resource_id:
         return None, resource
     return resource.resource_id, resource
@@ -232,6 +239,7 @@ ResourceInfo = namedtuple(
         "replay_url",
         "thermal",
         "md5",
+        "storage",
         "download_path",
         "thumbnail_download_path",
     ],
@@ -1754,7 +1762,7 @@ class Media(AbstractScheduler):
         response = self._session.get(os.path.join(self._md5_api_url, resource_id))
         response.raise_for_status()
         data = response.json()
-        return ResourceInfo(**data)
+        return _namedtuple_from_mapping(data, ResourceInfo)
 
     def _delete_resource(self, resource_id):
         """
