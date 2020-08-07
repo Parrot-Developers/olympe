@@ -95,6 +95,13 @@ Messages Reference Documentation
     arsdkng_mediastore
 
 .. toctree::
+    :caption: Move feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_move
+
+.. toctree::
     :caption: Piloting Style feature
     :maxdepth: 1
     :titlesonly:
