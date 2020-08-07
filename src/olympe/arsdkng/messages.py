@@ -401,6 +401,10 @@ class ArsdkMessageMeta(type):
             # FIXME: workaround missing MAP_ITEMS in camera.xml
             cls.callback_type = ArsdkMessageCallbackType.MAP
             cls.key_name = "cam_id"
+        elif "gimbal_id" in cls.args_name:
+            # FIXME: workaround missing MAP_ITEMS in gimbal.xml
+            cls.callback_type = ArsdkMessageCallbackType.MAP
+            cls.key_name = "cam_id"
         elif ("list_flags" in cls.args_bitfield and
               cls.args_bitfield["list_flags"] == list_flags._bitfield_type_):
             cls.callback_type = ArsdkMessageCallbackType.LIST
