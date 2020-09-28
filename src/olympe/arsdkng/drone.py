@@ -327,7 +327,7 @@ class ControllerBase(AbstractScheduler):
                 )
             else:
                 self.logger.warning(
-                    "Unknown message id {}".format(message_id))
+                    "Unknown message id 0x{:08x}".format(message_id))
             return
         message = self.messages[message_id]
         try:

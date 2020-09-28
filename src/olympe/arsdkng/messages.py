@@ -1317,8 +1317,8 @@ class ArsdkMessages(object):
         self.ByName[message.FullName] = message
         self.by_id[message.id] = message
         self.by_id_name[message.id_name] = message
-        feature_id = message.id & 0xFF000000 >> 24
-        class_id = message.id & 0x00FF0000 >> 16
+        feature_id = (message.id & 0xFF000000) >> 24
+        class_id = (message.id & 0x00FF0000) >> 16
         self._feature_name_by_id[(feature_id, class_id)] = (
             message.feature_name, message.class_name)
         if message.prefix not in self.by_prefix:
@@ -1347,8 +1347,8 @@ class ArsdkMessages(object):
                     yield prefix, message_name, message, argname
 
     def unknown_message_info(self, message_id):
-        feature_id = message_id & 0xFF000000 >> 24
-        class_id = message_id & 0x00FF0000 >> 16
+        feature_id = (message_id & 0xFF000000) >> 24
+        class_id = (message_id & 0x00FF0000) >> 16
         msg_id = message_id & 0x0000FFFF
         feature_name, class_name = self._feature_name_by_id.get(
             (feature_id, class_id),
