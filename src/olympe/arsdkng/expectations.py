@@ -223,6 +223,7 @@ class DefaultScheduler(AbstractScheduler):
     def destroy(self):
         self.stop()
         self._attr.default.subscribers_thread_loop.stop()
+        self._attr.default.subscribers_thread_loop.destroy()
 
     @callback_decorator()
     def _notify_subscribers(self, event):

@@ -365,9 +365,11 @@ class Pdraw(object):
             self.logger = getLogger("olympe.pdraw")
 
         if pdraw_thread_loop is None:
+            self.own_pdraw_thread_loop = True
             self.pdraw_thread_loop = PompLoopThread(self.logger)
             self.pdraw_thread_loop.start()
         else:
+            self.own_pdraw_thread_loop = False
             self.pdraw_thread_loop = pdraw_thread_loop
 
         self.callbacks_thread_loop = PompLoopThread(self.logger)
@@ -546,6 +548,9 @@ class Pdraw(object):
         self.pdraw = od.POINTER_T(od.struct_pdraw)()
         if self.pdraw_thread_loop.stop():
             self.logger.info("pdraw thread loop stopped")
+        if self.own_pdraw_thread_loop:
+            self.pdraw_thread_loop.destroy()
+        self.callbacks_thread_loop.destroy()
         return True
 
     def _open_single_stream(self):

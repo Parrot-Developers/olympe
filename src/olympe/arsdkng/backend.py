@@ -153,6 +153,8 @@ class Backend(object):
             else:
                 self._arsdk_ctrl = None
                 self.logger.info("Manager has been destroyed")
+        self._thread_loop.stop()
+        self._thread_loop.destroy()
 
     @callback_decorator()
     def _socket_cb(self, backend_net, socket_fd, socket_kind, userdata):

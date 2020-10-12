@@ -78,7 +78,8 @@ class Future(concurrent.futures.Future):
             id(self), ignore_error=True))
 
     def __del__(self):
-        self._loop._unregister_future(id(self), ignore_error=True)
+        if self._loop:
+            self._loop._unregister_future(id(self), ignore_error=True)
 
     def set_from(self, source):
         if source.cancelled():
@@ -117,7 +118,7 @@ class Future(concurrent.futures.Future):
                     "Unhandled exception while chaining futures"
                 )
                 result.set_exception(e)
-            except:
+            except:  # noqa
                 result.cancel()
 
         self.add_done_callback(callback)
@@ -126,7 +127,7 @@ class Future(concurrent.futures.Future):
     def result_or_cancel(self, timeout=None):
         try:
             return self.result(timeout=timeout)
-        except:
+        except:  # noqa
             self.cancel()
             raise
 
@@ -165,7 +166,10 @@ class PompLoopThread(threading.Thread):
     def destroy(self):
         # stop the thread
         self.stop()
-        self._remove_event_from_loop(self.wakeup_evt)
+        if self.wakeup_evt is not None:
+            self._remove_event_from_loop(self.wakeup_evt)
+            od.pomp_evt_destroy(self.wakeup_evt)
+            self.wakeup_evt = None
 
         # remove all fds from the loop
         self._destroy_pomp_loop_fds()
@@ -229,13 +233,13 @@ class PompLoopThread(threading.Thread):
 
     def _wake_up_event_cb(self, pomp_evt, _userdata):
         """
-        Callback received when a pomp_evt is triggered.
+        Called when a wakeup pomp_evt is triggered.
         """
         # the pomp_evt is acknowledged by libpomp
 
     def _run_task_list(self, task_list):
         """
-        execute all pending functions located in the task list
+        Execute all pending functions located in the task list
         this is done in the order the list has been filled in
         """
         while len(task_list):

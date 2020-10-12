@@ -1386,6 +1386,7 @@ class Media(AbstractScheduler):
         """
         # _shutdown is called by the pomp loop registered cleanup method
         self._pomp_loop_thread.stop()
+        self._pomp_loop_thread.destroy()
 
     def _shutdown(self):
         self._websocket_disconnect_cb()
