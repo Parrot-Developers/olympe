@@ -1576,9 +1576,12 @@ class Media(AbstractScheduler):
     def _websocket_disconnect_cb(self):
         try:
             if self._websocket:
+                if self._websocket_fd is not None:
+                    self._pomp_loop_thread.remove_fd_from_loop(self._websocket_fd)
                 self._websocket.close()
         finally:
             self._websocket = None
+            self._websocket_fd = None
 
     @_websocket_exc_handler
     def _websocket_event_cb(self, fd, event, userdata):
