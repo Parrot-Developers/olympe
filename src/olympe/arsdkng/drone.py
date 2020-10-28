@@ -785,13 +785,15 @@ class ControllerBase(AbstractScheduler):
         """
         explicit destructor
         """
-        self._thread_loop.unregister_cleanup(self.destroy)
+        if self._thread_loop is not None:
+            self._thread_loop.unregister_cleanup(self.destroy)
+            self._thread_loop.stop()
+            self._on_device_removed()
+            self._thread_loop = None
         self._destroy_pdraw()
         if self._media is not None:
             self._media.shutdown()
             self._media = None
-        self._thread_loop.stop()
-        self._on_device_removed()
         self._scheduler.destroy()
         self._backend.destroy()
 
