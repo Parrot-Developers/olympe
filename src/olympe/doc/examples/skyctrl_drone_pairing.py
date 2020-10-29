@@ -26,9 +26,8 @@ class SkyControllerExample:
         self.skyctrl.connect()
 
     def update_drones(self):
-        discover_results = self.skyctrl(discover_drones()).wait(_timeout=20)
-        if not discover_results.success():
-            print("Update drone discovery timedout")
+        discover_results = self.skyctrl(discover_drones()).wait(_timeout=10)
+        assert discover_results.success(), "Update drone discovery timedout"
         drone_list_items = discover_results.received_events()
         known_drones = OrderedDict()
         visible_drones = OrderedDict()
