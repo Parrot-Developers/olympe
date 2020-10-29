@@ -1442,14 +1442,15 @@ class Media(AbstractScheduler):
         def wrapper(self, *args, **kwds):
             try:
                 return method(self, *args, **kwds)
-            except (TimeoutError, websocket.WebSocketTimeoutException):
+            except (TimeoutError, websocket.WebSocketTimeoutException, socket.timeout):
                 self.logger.warning("Websocket timeout")
             except (ConnectionError, websocket.WebSocketException) as e:
                 # If we lose the connection we must reinitialize our state
                 self.logger.error(str(e))
                 self._reset_state()
             except Exception as e:
-                self.logger.exception("Websocket callback unhandled exception")
+                self.logger.exception(
+                    f"Websocket callback unhandled exception: {e}")
                 self._reset_state()
 
         return wrapper
