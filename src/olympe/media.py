@@ -128,6 +128,8 @@ def _make_media(media):
         return None, media
     resources = media.resources
     media = _replace_namedtuple(media, resources=OrderedDict())
+    if resources is None:
+        return media.media_id, media
     for resource in resources:
         resource_id, resource = _make_resource(resource)
         if not resource_id:
@@ -360,13 +362,24 @@ class _MediaCommand(MediaEvent):
 
 
 class _MediaEventExpectationBase(Expectation):
-    def __init__(self, event_name, id_field=None, id_value=None, _timeout=None, **kwds):
+    def __init__(
+            self,
+            event_name,
+            id_field=None,
+            id_value=None,
+            data_context=None,
+            _timeout=None,
+            **kwds):
         super().__init__()
         self.set_timeout(_timeout)
-        self._expected_event = MediaEvent(event_name, {**{id_field: id_value}, **kwds})
+        data = {**{id_field: id_value}, **kwds}
+        if data_context is not None:
+            data = {data_context: data}
+        self._expected_event = MediaEvent(event_name, data)
         self._event_name = event_name
         self._id_field = id_field
         self._id_value = id_value
+        self._data_context = data_context
         self._received_events = []
         self._matched_event = None
 
@@ -386,16 +399,24 @@ class _MediaEventExpectationBase(Expectation):
         if (self._id_field is None or self._id_value is None):
             self._matched_event = media_event
             self.set_success()
-        elif media_event.data[self._id_field] == self._id_value:
-            for name, value in self._expected_event.data.items():
+            return self
+        received_data = self._get_data(media_event)
+        expected_data = self._get_data(self._expected_event)
+        if received_data[self._id_field] == self._id_value:
+            for name, value in expected_data.items():
                 if value is not None and (
-                        name not in media_event.data or
-                        media_event.data[name] != value):
+                        name not in received_data or
+                        received_data[name] != value):
                     break
             else:
                 self._matched_event = media_event
                 self.set_success()
         return self
+
+    def _get_data(self, media_event):
+        if self._data_context is None:
+            return media_event.data
+        return media_event.data[self._data_context]
 
     def expected_events(self):
         return EventContext([self._expected_event])
@@ -431,11 +452,12 @@ class _MediaEventExpectationBase(Expectation):
 
 
 class _MediaEventExpectation(_MediaEventExpectationBase):
-    def __init__(self, event_name, media_id=None, _timeout=None, **kwds):
+    def __init__(self, event_name, data_context=None, media_id=None, _timeout=None, **kwds):
         return super().__init__(
             event_name,
             id_field="media_id",
             id_value=media_id,
+            data_context=data_context,
             _timeout=_timeout,
             **kwds
         )
@@ -445,11 +467,12 @@ class _MediaEventExpectation(_MediaEventExpectationBase):
 
 
 class _ResourceEventExpectation(_MediaEventExpectationBase):
-    def __init__(self, event_name, resource_id=None, _timeout=None, **kwds):
+    def __init__(self, event_name, data_context=None, resource_id=None, _timeout=None, **kwds):
         return super().__init__(
             event_name,
             id_field="resource_id",
             id_value=resource_id,
+            data_context=data_context,
             _timeout=_timeout,
             **kwds
         )
@@ -519,7 +542,12 @@ class _ResourceCheckStateExpectation(_CheckStateExpectation):
 
 class media_created(_MediaEventExpectation):
     def __init__(self, media_id=None, _timeout=None):
-        super().__init__("media_created", media_id=media_id, _timeout=_timeout)
+        super().__init__(
+            "media_created",
+            data_context="media",
+            media_id=media_id,
+            _timeout=_timeout
+        )
 
     def copy(self):
         return super().base_copy(self._id_value, self._timeout)
@@ -545,6 +573,7 @@ class resource_created(_ResourceEventExpectation):
     def __init__(self, resource_id=None, media_id=None, _timeout=None):
         super().__init__(
             "resource_created",
+            data_context="resource",
             resource_id=resource_id,
             media_id=media_id,
             _timeout=_timeout
