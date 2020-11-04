@@ -764,6 +764,11 @@ class _RESTExpectation(Expectation):
             return EventContext()
 
 
+class _RESTDeleteResourceExpectation(_RESTExpectation):
+    def __init__(self, resource_id):
+        super().__init__("delete_resource", "_delete_resource", resource_id=resource_id)
+
+
 class _RESTDeleteMediaExpectation(_RESTExpectation):
     def __init__(self, media_id):
         super().__init__("delete_media", "_delete_media", media_id=media_id)
@@ -1203,6 +1208,18 @@ class download_media_thumbnail(MultipleDownloadMixin):
             scheduler._schedule(self.expectations[-1])
 
 
+def delete_resource(resource_id, _timeout=None, _no_expect=False):
+    if _no_expect:
+        return _RESTDeleteResourceExpectation(resource_id=resource_id)
+    else:
+        return WhenAllExpectations(
+            [
+                _RESTDeleteResourceExpectation(resource_id=resource_id),
+                resource_removed(resource_id=resource_id, _timeout=_timeout),
+            ]
+        )
+
+
 def delete_media(media_id, _timeout=None, _no_expect=False):
     if _no_expect:
         return _RESTDeleteMediaExpectation(media_id=media_id)
@@ -1304,6 +1321,9 @@ class Media(AbstractScheduler):
 
         # REST API endpoints
         self._media_api_url = "http://{}/api/v{}/media/medias".format(
+            self._hostname, self._version
+        )
+        self._resource_api_url = "http://{}/api/v{}/media/resources".format(
             self._hostname, self._version
         )
         self._resources_url = "http://{}/data/media".format(self._hostname)
@@ -1735,6 +1755,15 @@ class Media(AbstractScheduler):
         response.raise_for_status()
         data = response.json()
         return ResourceInfo(**data)
+
+    def _delete_resource(self, resource_id):
+        """
+        Request the deletion of a single resource through the REST API
+        HTTP DELETE /api/v<version>/media/resources/<resource_id>
+        """
+        response = self._session.delete(os.path.join(self._resource_api_url, resource_id))
+        response.raise_for_status()
+        return True
 
     def _delete_media(self, media_id):
         """
