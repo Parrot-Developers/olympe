@@ -135,6 +135,11 @@ class ReturnTuple(
             del ReturnTuple._iterlen[id(self)]
 
 
+def _pickle_helper(*args, **kwargs):
+    # pickle seems to need a module function to do its thing
+    return ReturnTuple(*args, **kwargs)
+
+
 def makeReturnTuple(*args):
     """
     This is a helper function used to convert a list (ex: [ErrorCodeDrone.OK, "message"])
