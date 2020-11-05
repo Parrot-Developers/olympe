@@ -960,6 +960,8 @@ class ArsdkMessage(with_metaclass(ArsdkMessageMeta)):
         return ArsdkMessageEvent(cls, args)
 
     def last_event(self, key=None):
+        if self._last_event is None:
+            return None
         if key is None:
             return self._last_event
         else:

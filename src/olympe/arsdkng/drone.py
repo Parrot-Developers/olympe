@@ -1206,7 +1206,12 @@ class ControllerBase(AbstractScheduler):
             key = None
         else:
             key = expectation.expected_args[message.key_name]
-        last_event = self.get_last_event(message, key=key)
+        try:
+            last_event = self.get_last_event(message, key=key)
+        except KeyError:
+            return False
+        if last_event is None:
+            return False
         return expectation.check(last_event).success()
 
     def query_state(self, query):
