@@ -44,7 +44,7 @@ from boltons.setutils import IndexedSet
 from concurrent.futures import Future, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import CancelledError as FutureCancelledError
-from collections import OrderedDict, deque
+from collections import OrderedDict, defaultdict, deque
 from logging import getLogger
 from olympe._private import (
     callback_decorator,
@@ -139,7 +139,7 @@ class DefaultScheduler(AbstractScheduler):
         # Subscribers internal state
         self._attr.default.subscribers_lock = threading.Lock()
         self._attr.default.subscribers = []
-        self._attr.default.running_subscribers = OrderedDict()
+        self._attr.default.running_subscribers = defaultdict(list)
         self._attr.default.subscribers_thread_loop = PompLoopThread(
             self._attr.default.logger
         )
@@ -243,13 +243,13 @@ class DefaultScheduler(AbstractScheduler):
                     future = self._attr.default.subscribers_thread_loop.run_async(
                         subscriber.process
                     )
-                    self._attr.default.running_subscribers[id(subscriber)] = future
+                    self._attr.default.running_subscribers[id(subscriber)].append(future)
                     future.add_done_callback(
                         functools.partial(
-                            lambda subscriber, _: self._attr.default.running_subscribers.pop(
+                            lambda subscriber, future, _: self._attr.default.running_subscribers[
                                 id(subscriber)
-                            ),
-                            subscriber,
+                            ].remove(future),
+                            subscriber, future
                         )
                     )
 
@@ -297,8 +297,8 @@ class DefaultScheduler(AbstractScheduler):
         :type subscriber: Subscriber
         """
         with self._attr.default.subscribers_lock:
-            future = self._attr.default.running_subscribers.pop(id(subscriber), None)
-            if future is not None:
+            futures = self._attr.default.running_subscribers.pop(id(subscriber), [])
+            for future in futures:
                 try:
                     future.result(subscriber.timeout)
                 except Exception as e:
