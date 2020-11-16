@@ -370,7 +370,7 @@ class ArsdkMessageMeta(type):
         cls.aliases = []
         if cls.FullName in ARSDK_OLYMPE_CMD_MAP.keys():
             mapped_value = ARSDK_OLYMPE_CMD_MAP[cls.FullName]
-            if isinstance(mapped_value, str) and mapped_value is not "":
+            if isinstance(mapped_value, str) and mapped_value != "":
                 cls.aliases = [cls.Full_Name, mapped_value]
             else:
                 cls.aliases = [cls.Full_Name]
