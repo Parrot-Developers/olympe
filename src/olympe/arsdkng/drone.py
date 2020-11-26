@@ -351,6 +351,13 @@ class ControllerBase(AbstractScheduler):
             self._decoding_errors.append(e)
             return
 
+        if message.message_type is messages.ArsdkMessageType.CMD:
+            msg = (f"a commande message has been received "
+                   f"from the drone: {message_event}")
+            self.logger.error(msg)
+            self._decoding_errors.append(RuntimeError(msg))
+            return
+
         # Save the states and settings in a dictionary
         self._update_states(message, message_args, message_event)
 
