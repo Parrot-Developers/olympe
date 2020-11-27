@@ -338,7 +338,7 @@ class ControllerBase(AbstractScheduler):
             return
 
         if res != 0:
-            msg = ("Unable to decode callback, error: {} , id: {} , name: {}".
+            msg = ("Unable to decode event, error: {} , id: {} , name: {}".
                    format(res, command.contents.id, message.FullName))
             self.logger.error(msg)
             self._decoding_errors.append(RuntimeError(msg))
@@ -361,7 +361,7 @@ class ControllerBase(AbstractScheduler):
         # Save the states and settings in a dictionary
         self._update_states(message, message_args, message_event)
 
-        # Format received callback as string
+        # Format received events as string
         self.logger.log(message.loglevel, str(message_event))
 
         # Handle drone connection_state events
@@ -449,25 +449,13 @@ class ControllerBase(AbstractScheduler):
 
     @callback_decorator()
     def _piloting_timer_cb(self, timer, _user_data):
-        """
-         Notify link status. At connection completion, it is assumed to be
-         initially OK. If called with KO, user is responsible to take action.
-         It can either wait for link to become OK again or disconnect
-         immediately. In this case, call arsdk_device_disconnect and the
-         'disconnected' callback will be called.
-        """
+        self.logger.debug("piloting timer callback: {}".format(timer))
         if self._controller_state.device_conn_status.connected:
-            # Each time this callback is received; piloting command should be send
-            self.logger.debug("Loop timer callback: {}".format(timer))
-            if self._controller_state.device_conn_status.connected:
-                self._send_piloting_command()
+            self._send_piloting_command()
 
     @callback_decorator()
     def _dispose_cmd_cb(self, _interface, _user_data):
-        """
-        Function called when a dispose command callback has been received.
-        """
-        self.logger.debug("Dispose command received")
+        self.logger.debug("Dispose callback")
 
     @callback_decorator()
     def _cmd_itf_send_status_cb(self, _interface, _command, status, done, userdata):
