@@ -1,0 +1,20 @@
+version: '3.5'
+
+# olympe uses QT which uses X11 to display the streaming video
+# that means DISPLAY must be imported, and its value can't be known ahead of time
+# also, "xhost +" must be run before doing compose up so that the container process can become an X11 client without dealing with X11 session security
+
+# tail -F is used on a file that does not exist but it will retry forever to read it, which keeps the container running while doing nothing
+# so then you can docker-compose exec  into it
+
+services:
+    olympe:
+        image: olympe
+        command: tail -F forever  # prevent the container from exiting 
+        network_mode: "host"  # this is required for pycharm and to avoid networking problems
+        environment:
+            - DISPLAY   # required for Parrot QT app
+        security_opt:
+            - seccomp:unconfined  # required because X11 security is frustrating
+
+
