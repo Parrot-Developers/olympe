@@ -466,22 +466,28 @@ class ControllerBase(AbstractScheduler):
          2 -> ARSDK_CMD_ITF_SEND_STATUS_TIMEOUT,
          3 -> ARSDK_CMD_ITF_SEND_STATUS_CANCELED,
         """
+        status_repr = od.arsdk_cmd_itf_send_status__enumvalues.get(
+            status, status)
+        done = bool(done)
         send_status_userdata = py_object_cast(userdata)
         send_command_future, message, args = send_status_userdata
-        self.logger.debug("Command send status: {} {}, done: {}".format(
-            message.fullName, status, done))
-        if done == 1:
-            if status in (
-                    od.ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
-                    od.ARSDK_CMD_ITF_SEND_STATUS_SENT):
-                send_command_future.set_result(True)
-            else:
-                send_command_future.set_result(False)
-                self.logger.error(
-                    "Command send status cancel/timeout: "
-                    "{} {}, done: {}".format(message.fullName, status, done)
-                )
-            del self._send_status_userdata[id(send_command_future)]
+        self.logger.debug(
+            f"Command send status: {message.fullName} "
+            f"{status_repr}, done: {done}"
+        )
+        if not done:
+            return
+        if status in (
+                od.ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
+                od.ARSDK_CMD_ITF_SEND_STATUS_SENT):
+            send_command_future.set_result(True)
+        else:
+            send_command_future.set_result(False)
+            self.logger.error(
+                "Command send status cancel/timeout: "
+                f"{message.fullName} {status_repr}, done: {done}"
+            )
+        del self._send_status_userdata[id(send_command_future)]
 
     def _destroy_pdraw(self):
         if self._pdraw is not None:
