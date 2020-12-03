@@ -130,7 +130,7 @@ class Backend(object):
         )
 
     def destroy(self):
-        self._thread_loop.run_later(self._destroy)
+        self._thread_loop.stop()
 
     @callback_decorator()
     def _destroy(self):
@@ -153,6 +153,7 @@ class Backend(object):
             else:
                 self._arsdk_ctrl = None
                 self.logger.info("Manager has been destroyed")
+        self._thread_loop.unregister_cleanup(self._destroy, ignore_error=True)
         self._thread_loop.stop()
         self._thread_loop.destroy()
 

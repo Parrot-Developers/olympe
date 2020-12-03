@@ -372,7 +372,7 @@ class Pdraw(object):
             self.own_pdraw_thread_loop = False
             self.pdraw_thread_loop = pdraw_thread_loop
 
-        self.callbacks_thread_loop = PompLoopThread(self.logger)
+        self.callbacks_thread_loop = PompLoopThread(self.logger, parent=self.pdraw_thread_loop)
         self.callbacks_thread_loop.start()
         self.buffer_queue_size = buffer_queue_size
         self.pomp_loop = self.pdraw_thread_loop.pomp_loop
@@ -507,8 +507,17 @@ class Pdraw(object):
             self._state_wait_events[state].append(event)
         return event.wait(timeout=timeout)
 
-    @callback_decorator()
     def dispose(self):
+        self.pdraw_thread_loop.run_later(self._dispose)
+
+    @callback_decorator()
+    def _dispose(self):
+        self.pdraw_thread_loop.unregister_cleanup(self.dispose, ignore_error=True)
+        return self.pdraw_thread_loop.run_async(
+            self._dispose_impl)
+
+    @callback_decorator()
+    def _dispose_impl(self):
         # cleanup some FDs from the callbacks thread loop that might have been lost
         for stream in self.streams.values():
             if stream['video_queue_event'] is not None:
@@ -516,42 +525,55 @@ class Pdraw(object):
                 self.callbacks_thread_loop.remove_event_from_loop(
                     stream['video_queue_event'])
                 stream['video_queue_event'] = None
-        if self.callbacks_thread_loop.stop():
-            self.logger.info("pdraw callbacks thread loop stopped")
-        return self.pdraw_thread_loop.run_async(
-            self._dispose_impl)
-
-    @callback_decorator()
-    def _dispose_impl(self):
         f = self.close().then(
-            lambda _: self._destroy(), deferred=True)
+            lambda _: self._stop(), deferred=True)
         return f
 
     @callback_decorator()
-    def _destroy(self):
+    def _stop(self):
+        if self.callbacks_thread_loop.stop():
+            self.logger.info("pdraw callbacks thread loop stopped")
+        # cleanup some FDs from the callbacks thread loop that might have been lost
+        for stream in self.streams.values():
+            if stream['video_queue_event'] is not None:
+                self.logger.warning("cleanup leftover pdraw callbacks eventfds")
+                self.callbacks_thread_loop.remove_event_from_loop(
+                    stream['video_queue_event'])
+                stream['video_queue_event'] = None
+        return True
+
+    def _destroy_pdraw(self):
+        ret = True
         if self.pdraw:
             self.logger.info("destroying pdraw...")
             res = od.pdraw_destroy(self.pdraw)
             if res != 0:
                 self.logger.error("cannot destroy pdraw {}".format(res))
+                ret = False
             else:
                 self.logger.info("pdraw destroyed")
         if self.yuv_packed_buffer_pool:
             self.logger.info("destroying yuv buffer pool...")
             res = od.vbuf_pool_destroy(self.yuv_packed_buffer_pool)
             if res != 0:
+                ret = False
                 self.logger.error(
                     "cannot destroy yuv packed buffer pool: {}".format(res))
             else:
                 self.logger.info("yuv buffer pool destroyed")
         self.yuv_packed_buffer_pool = od.POINTER_T(od.struct_vbuf_pool)()
         self.pdraw = od.POINTER_T(od.struct_pdraw)()
+        return ret
+
+    @callback_decorator()
+    def _destroy(self):
+        ret = self._destroy_pdraw()
         if self.pdraw_thread_loop.stop():
             self.logger.info("pdraw thread loop stopped")
         if self.own_pdraw_thread_loop:
             self.pdraw_thread_loop.destroy()
         self.callbacks_thread_loop.destroy()
-        return True
+        return ret
 
     def _open_single_stream(self):
         """
@@ -628,8 +650,9 @@ class Pdraw(object):
         """
         if self.state in (PdrawState.Opened, PdrawState.Paused, PdrawState.Playing, PdrawState.Error):
             self.logger.debug("pdraw closing from the {} state".format(self.state))
-            self._close_resp_future = Future(self.pdraw_thread_loop)
-            self._close_resp_future.add_done_callback(self._on_close_resp_done)
+            if self._close_resp_future.done():
+                self._close_resp_future = Future(self.pdraw_thread_loop)
+                self._close_resp_future.add_done_callback(self._on_close_resp_done)
             f = self._close_resp_future
             self.state = PdrawState.Closing
             self.pdraw_thread_loop.run_async(self._close_stream)
@@ -667,25 +690,31 @@ class Pdraw(object):
 
         if res != 0:
             self.logger.error(
-                "Error while closing pdraw stream: {}".format(res))
+                "Error while closing pdraw demuxer: {}".format(res))
             self.state = PdrawState.Error
             return False
         else:
-            self.logger.info("Closing pdraw stream OK")
+            self.logger.info("Closing pdraw demuxer OK")
 
         return True
 
     @callback_decorator()
     def _on_close_resp_done(self, close_resp_future):
-        if close_resp_future.cancelled():
-            # FIXME: workaround pdraw closing timeout
-            # This random issue is quiet hard to reproduce
-            self.logger.error("Closing Pdraw timedout")
-            if self.pdraw:
-                self.pdraw_thread_loop.run_later(od.pdraw_destroy, self.pdraw)
-            self.pdraw = od.POINTER_T(od.struct_pdraw)()
-            self.state = PdrawState.Error
-            self.logger.error("Pdraw has been closed")
+        if not close_resp_future.cancelled():
+            return
+
+        close_resp_future.cancel()
+        self.logger.error("Closing pdraw demuxer timedout")
+
+        if self.state not in (PdrawState.Closed, PdrawState.Stopped, PdrawState.Error):
+            return
+
+        # FIXME: workaround pdraw closing timeout
+        # This random issue is quiet hard to reproduce
+        self.logger.error("destroying pdraw...")
+        if self.pdraw:
+            self.pdraw_thread_loop.run_later(self._destroy)
+        self.state = PdrawState.Closed
 
     def _open_resp(self, pdraw, status, userdata):
         self.logger.debug("_open_resp called")
@@ -738,7 +767,8 @@ class Pdraw(object):
         self.logger.info("_ready_to_play({}) called".format(ready))
         self._is_ready_to_play = bool(ready)
         if self._is_ready_to_play:
-            self._play_resp_future = Future(self.pdraw_thread_loop)
+            if self._play_resp_future.done():
+                self._play_resp_future = Future(self.pdraw_thread_loop)
             self._play_impl()
             if self.start_callback is not None:
                 self.callbacks_thread_loop.run_async(self.start_callback)
@@ -1231,7 +1261,9 @@ class Pdraw(object):
         if self.state in (PdrawState.Created, PdrawState.Closed):
             f = self.pdraw_thread_loop.run_async(self._open_stream)
         else:
-            f = self._play_resp_future = Future(self.pdraw_thread_loop)
+            if self._play_resp_future.done():
+                self._play_resp_future = Future(self.pdraw_thread_loop)
+            f = self._play_resp_future
             self.pdraw_thread_loop.run_async(self._play_impl)
         return f
 
@@ -1259,7 +1291,8 @@ class Pdraw(object):
             self._pause_resp_future.set_result(False)
             return self._pause_resp_future
 
-        self._pause_resp_future = Future(self.pdraw_thread_loop)
+        if self._pause_resp_future.done():
+            self._pause_resp_future = Future(self.pdraw_thread_loop)
         if self.state is PdrawState.Playing:
             self.pdraw_thread_loop.run_async(self._pause_impl)
         elif self.state in (PdrawState.Closed, PdrawState.Opened):

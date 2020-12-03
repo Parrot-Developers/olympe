@@ -276,6 +276,7 @@ class Discovery(ABC):
 
     @callback_decorator()
     def _destroy(self):
+        self._thread_loop.unregister_cleanup(self._destroy, ignore_error=True)
         self._do_stop()
 
     def destroy(self):

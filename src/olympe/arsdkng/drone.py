@@ -787,10 +787,9 @@ class ControllerBase(AbstractScheduler):
         explicit destructor
         """
         if self._thread_loop is not None:
-            self._thread_loop.unregister_cleanup(self.destroy)
+            self._thread_loop.unregister_cleanup(self.destroy, ignore_error=True)
             self._thread_loop.stop()
             self._on_device_removed()
-            self._thread_loop = None
         self._destroy_pdraw()
         if self._media is not None:
             self._media.shutdown()

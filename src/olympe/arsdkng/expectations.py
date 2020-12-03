@@ -141,7 +141,7 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default.subscribers = []
         self._attr.default.running_subscribers = defaultdict(list)
         self._attr.default.subscribers_thread_loop = PompLoopThread(
-            self._attr.default.logger
+            self._attr.default.logger, parent=pomp_loop_thread,
         )
         self._attr.default.subscribers_thread_loop.start()
 

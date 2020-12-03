@@ -1389,6 +1389,7 @@ class Media(AbstractScheduler):
         self._pomp_loop_thread.destroy()
 
     def _shutdown(self):
+        self._pomp_loop_thread.unregister_cleanup(self._shutdown)
         self._websocket_disconnect_cb()
         if not self._scheduler.remove_context("olympe.media"):
             self.logger.info(
