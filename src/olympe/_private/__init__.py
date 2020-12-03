@@ -44,7 +44,7 @@ from logging import getLogger
 from math import isclose
 
 
-from .return_tuple import ReturnTuple, makeReturnTuple
+from .return_tuple import ReturnTuple, makeReturnTuple  # noqa
 
 
 def py_object_cast(c_pointer):
@@ -89,6 +89,7 @@ class decorator(metaclass=FuncDecoratorMeta):
     def kwds(self):
         return self._kwds
 
+    @functools.lru_cache(maxsize=None)
     def __get__(self, obj, owner=None):
         return functools.wraps(self._f)(
             lambda *args, **kwds: self._method_call(obj, *args, **kwds)
