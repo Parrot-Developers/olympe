@@ -1172,12 +1172,14 @@ class Pdraw(object):
 
         for mediatype, cb in ((od.PDRAW_VIDEO_MEDIA_FORMAT_H264, h264_cb),
                               (od.PDRAW_VIDEO_MEDIA_FORMAT_YUV, raw_cb)):
-            self.frame_callbacks[mediatype] = callback_decorator(self.logger)(cb)
+            self.frame_callbacks[mediatype] = callback_decorator(
+                logger=self.logger)(cb)
         for mediatype, cb in ((od.PDRAW_VIDEO_MEDIA_FORMAT_H264, flush_h264_cb),
                               (od.PDRAW_VIDEO_MEDIA_FORMAT_YUV, flush_raw_cb)):
-            self.flush_callbacks[mediatype] = callback_decorator(self.logger)(cb)
-        self.start_callback = callback_decorator(self.logger)(start_cb)
-        self.end_callback = callback_decorator(self.logger)(end_cb)
+            self.flush_callbacks[mediatype] = callback_decorator(
+                logger=self.logger)(cb)
+        self.start_callback = callback_decorator(logger=self.logger)(start_cb)
+        self.end_callback = callback_decorator(logger=self.logger)(end_cb)
 
     def _open_output_files(self):
         self.logger.debug('opening video output files')
