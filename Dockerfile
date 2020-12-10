@@ -72,7 +72,12 @@ sourced=1 \
 m=olympe 
 
 # finally install package(s) I need for my project
-RUN which pip3 && pip3 --version && pip3 install pyzmq protobuf
+RUN which pip3 && pip3 --version && pip3 install pyzmq protobuf piexif
 
+# fix very annoying bug - olympe websockets don't work due to a missing constant
+# diff -u packages/olympe/src/olympe/media.py media.py  >patch-media.patch
 USER root
+COPY patch-media.patch /home/olympe/code/parrot-groundsdk
+RUN patch -u packages/olympe/src/olympe/media.py -i patch-media.patch
+
 

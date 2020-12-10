@@ -1,0 +1,10 @@
+--- packages/olympe/src/olympe/media.py	2020-11-20 09:13:14.000000000 -0500
++++ packages/olympe/src/olympe/media.py 2020-12-07 14:10:35.138433447 -0500
+@@ -232,6 +232,7 @@
+         "md5",
+         "download_path",
+         "thumbnail_download_path",
++        "storage",
+     ],
+ )
+ 
