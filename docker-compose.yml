@@ -10,11 +10,19 @@ version: '3.5'
 services:
     olympe:
         image: olympe
-        command: tail -F forever  # prevent the container from exiting 
-        network_mode: "host"  # this is required for pycharm and to avoid networking problems
+        command: tail -F forever
+        network_mode: "host"
+        #env_file: env.list
         environment:
-            - DISPLAY   # required for Parrot QT app
+            - DISPLAY 
         security_opt:
-            - seccomp:unconfined  # required because X11 security is frustrating
+            - seccomp:unconfined
+        #devices:
+            #- /dev/pts/4:/dev/ttyS102
+        privileged: true
+        volumes:
+            - /media/sf_d_drive/djohnson/FROST-D/Matlab/droneserver:/droneserver
+            - /dev:/dev
+#- /media/sf_d_drive/djohnson/FROST-D/parrot:/parrot
 
 
