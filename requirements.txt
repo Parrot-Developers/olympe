@@ -1,4 +1,4 @@
-aenum
+aenum==2.2.6
 boltons
 colorlog
 faulthandler; python_version <= '2.7'
