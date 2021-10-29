@@ -1,33 +1,6 @@
-# -*- coding: UTF-8 -*-
-
-import collections.abc
-import copy
 import logging
-import logging.config
+import logness
 import ulog
-
-
-_config = {
-    "version": 1,
-    "formatters": {
-        "color_formatter": {
-            "()": "colorlog.ColoredFormatter",
-            "format": (
-                "%(asctime)s %(log_color)s[%(levelname)s] "
-                "%(reset)s\t%(name)s - %(funcName)s - %(message)s"
-            ),
-        },
-        "default_formatter": {
-            "format": (
-                "%(asctime)s [%(levelname)s] %(name)s - %(funcName)s - %(message)s"
-            )
-        },
-    },
-    "handlers": {
-        "console": {"class": "colorlog.StreamHandler", "formatter": "color_formatter"}
-    },
-    "loggers": {"olympe": {"level": "INFO", "handlers": ["console"]}},
-}
 
 
 def _configure_ulog_bridge():
@@ -38,54 +11,44 @@ def _configure_ulog_bridge():
     ulog.enable_bridge(ulog_logger, forward=False)
 
 
-def get_config(config):
-    """
-    Returns the current logging configuration dictionary as previously set or
-    updated by :py:func:`~olympe.log.set_config` or
-    :py:func:`~olympe.log.update_config` respectively.
+# backward compatibility
+update_config = logness.update_config
 
-    See: `Logging config dictionary schema <https://docs.python.org/3/library/logging.config.html#logging-config-dictschema>`_
-    """
-    global _config
-    return _config
-
-
-def set_config(config):
-    """
-    Set the current logging configuration dictionary
-
-    See: `Logging config dictionary schema <https://docs.python.org/3/library/logging.config.html#logging-config-dictschema>`_
-
-    """
-    global _config
-    logging.config.dictConfig(config)
-    _configure_ulog_bridge()
-    _config = config
+logness.update_config(
+    {
+        "loggers": {
+            "olympe": {
+                "level": "INFO",
+                "handlers": ["console"]
+            },
+            "ulog": {
+                "handlers": ["console"],
+                "level": "ERROR",
+            },
+        },
+    },
+    on_update=_configure_ulog_bridge
+)
 
 
-def _update_dict_recursive(res, update):
-    for k, v in update.items():
-        if isinstance(v, collections.abc.Mapping):
-            res[k] = _update_dict_recursive(res.get(k, {}), v)
+class LogMixin:
+    def __init__(self, name, device_name, scope):
+        self._name = name
+        self._device_name = device_name
+        self._logger_scope = scope
+        self.update_logger()
+
+    def set_device_name(self, device_name):
+        self._device_name = device_name
+        self.update_logger()
+
+    def update_logger(self):
+        if self._name is not None:
+            self.logger = logging.getLogger(f"olympe.{self._name}.{self._logger_scope}")
         else:
-            res[k] = v
-    return res
-
-
-def update_config(update):
-    """
-    Update (recursively) the current logging condiguration dictionary.
-
-    See: `Logging config dictionary schema <https://docs.python.org/3/library/logging.config.html#logging-config-dictschema>`_
-
-    """
-    global _config
-    new_config = copy.deepcopy(_config)
-    _update_dict_recursive(new_config, update)
-    logging.config.dictConfig(new_config)
-    _configure_ulog_bridge()
-    _config = new_config
-
-
-# set the default log configuration on import
-set_config(_config)
+            if self._device_name is not None:
+                self.logger = logging.getLogger(
+                    f"olympe.{self._logger_scope}.{self._device_name}")
+            else:
+                self.logger = logging.getLogger(f"olympe.{self._logger_scope}")
+        return self.logger

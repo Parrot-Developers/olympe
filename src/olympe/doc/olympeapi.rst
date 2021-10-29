@@ -7,19 +7,14 @@ Olympe API Reference Documentation
     .. automethod:: connect
     .. automethod:: disconnect
     .. automethod:: connection_state
-    .. automethod:: start_video_streaming
-    .. automethod:: stop_video_streaming
-    .. automethod:: set_streaming_output_files
-    .. automethod:: set_streaming_callbacks
     .. automethod:: __call__
-    .. automethod:: help
     .. automethod:: get_state
     .. automethod:: check_state
     .. automethod:: query_state
     .. automethod:: subscribe
     .. automethod:: unsubscribe
     .. automethod:: start_piloting
-    .. automethod:: piloting_pcmd(roll, pitch, yaw, gaz, piloting_time)
+    .. automethod:: piloting(roll, pitch, yaw, gaz, piloting_time)
     .. automethod:: stop_piloting
 
 .. autoclass:: olympe.EventListener()
@@ -37,7 +32,7 @@ Olympe API Reference Documentation
     .. automethod:: set_output_files
     .. automethod:: set_callbacks
     .. automethod:: get_session_metadata
-    .. autoattribute:: state
+    .. autoproperty:: state
     .. automethod:: wait
 
 .. autoclass:: olympe.Media()
@@ -50,7 +45,7 @@ Olympe API Reference Documentation
     .. automethod:: resource_info
     .. automethod:: list_media
     .. automethod:: list_resources
-    .. automethod:: indexing_state
+    .. autoproperty:: indexing_state
     .. automethod:: __call__
     .. automethod:: subscribe
     .. automethod:: unsubscribe
@@ -92,8 +87,6 @@ Olympe API Reference Documentation
     .. autoattribute:: Error
 
 
-.. autoclass:: olympe.ReturnTuple()
-
 .. autoclass:: olympe.Expectation
 
     .. automethod:: received_events
@@ -101,7 +94,4 @@ Olympe API Reference Documentation
     .. automethod:: unmatched_events
     .. automethod:: explain
 
-.. autofunction:: olympe.log.get_config
-.. autofunction:: olympe.log.set_config
 .. autofunction:: olympe.log.update_config
-

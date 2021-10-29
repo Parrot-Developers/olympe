@@ -1,6 +1,5 @@
-# -*- coding: UTF-8 -*-
-
 import olympe
+import os
 import time
 from olympe.messages.ardrone3.Piloting import TakeOff, Landing
 
@@ -28,14 +27,22 @@ olympe.log.update_config({
     }
 })
 
-DRONE_IP = "10.202.0.1"
+DRONE_IP = os.environ.get("DRONE_IP", "10.202.0.1")
+DRONE_RTSP_PORT = os.environ.get("DRONE_RTSP_PORT")
 
-if __name__ == "__main__":
+
+def test_log():
     drone = olympe.Drone(DRONE_IP, name="toto")
     drone.connect()
+    if DRONE_RTSP_PORT is not None:
+        drone.streaming.server_addr = f"{DRONE_IP}:{DRONE_RTSP_PORT}"
     assert drone(TakeOff()).wait().success()
-    assert drone.start_video_streaming()
+    assert drone.streaming.play()
     time.sleep(10)
-    assert drone.stop_video_streaming()
+    assert drone.streaming.stop()
     assert drone(Landing()).wait().success()
     drone.disconnect()
+
+
+if __name__ == "__main__":
+    test_log()

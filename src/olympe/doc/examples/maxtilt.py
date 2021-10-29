@@ -1,12 +1,11 @@
-# -*- coding: UTF-8 -*-
-
-from __future__ import print_function  # python2/3 compatibility for the print function
 import olympe
+import os
 from olympe.messages.ardrone3.PilotingSettings import MaxTilt
 
-DRONE_IP = "10.202.0.1"
+DRONE_IP = os.environ.get("DRONE_IP", "10.202.0.1")
 
-if __name__ == "__main__":
+
+def test_maxtilt():
     drone = olympe.Drone(DRONE_IP)
     drone.connect()
     maxTiltAction = drone(MaxTilt(10)).wait()
@@ -26,3 +25,7 @@ if __name__ == "__main__":
         # If ".wait()" is called on the ``maxTiltAction`` this shouldn't happen
         print("MaxTilt(0) is still in progress")
     drone.disconnect()
+
+
+if __name__ == "__main__":
+    test_maxtilt()

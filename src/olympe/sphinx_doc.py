@@ -2,15 +2,16 @@
 
 # Olympe sphinx-doc extension configuration file
 
-from sphinx.ext.autodoc import FunctionDocumenter, ModuleLevelDocumenter
+from sphinx.ext.autodoc import Documenter, FunctionDocumenter, ModuleLevelDocumenter
 from sphinx.ext.autodoc import ClassDocumenter
-from sphinx.domains.python import PyModulelevel, PyClasslike
+from sphinx.domains.python import PyFunction, PyClasslike
 from sphinx.util.logging import getLogger
 from docutils.parsers.rst import Directive, directives
+from typing import Any
 
 try:
-    from olympe.arsdkng.messages import ArsdkMessage, ArsdkMessageType
-    from olympe.arsdkng.enums import ArsdkEnum, ArsdkBitfield
+    from olympe.arsdkng.messages import ArsdkMessageBase, ArsdkMessageType
+    from olympe.arsdkng.enums import ArsdkEnum, ArsdkBitfield, ArsdkProtoEnum
     olympe_available = True
 except Exception:
     olympe_available = False
@@ -26,13 +27,23 @@ class ArsdkMessageDocumenter(FunctionDocumenter):
 
     @classmethod
     def can_document_member(cls, member, membername, isattr, parent):
-        return isinstance(member, ArsdkMessage)
+        return isinstance(member, ArsdkMessageBase)
+
+    def get_object_members(self, want_all):
+        return False, list(
+            (name, msg)
+            for name, msg in getattr(self.object, "nested_messages", {}).items()
+            if name != "SelectedFieldsEntry"
+        )
+
+    def document_members(self, all_members):
+        Documenter.document_members(self, all_members)
 
     def add_directive_header(self, sig):
-        self.directivetype = (
-            "arsdk_cmd_message" if self.object.message_type is ArsdkMessageType.CMD else
-            "arsdk_event_message"
-        )
+        self.directivetype = {
+            ArsdkMessageType.CMD: "arsdk_cmd_message",
+            ArsdkMessageType.EVT: "arsdk_event_message",
+        }.get(self.object.message_type, "arsdk_message")
         ModuleLevelDocumenter.add_directive_header(self, sig)
 
     def format_args(self):
@@ -43,7 +54,7 @@ class ArsdkMessageDocumenter(FunctionDocumenter):
             args += ["_no_expect"]
             args_default.update(_timeout=self.object.timeout)
             args_default.update(_no_expect=False)
-        else:
+        elif self.object.message_type is ArsdkMessageType.EVT:
             args += ["_policy"]
             args_default.update(_policy="'check_wait'")
         args += ["_float_tol"]
@@ -65,7 +76,12 @@ class ArsdkEnumDocumenter(ClassDocumenter):
 
     @classmethod
     def can_document_member(cls, member, membername, isattr, parent):
-        return isinstance(member, (ArsdkEnum.__class__, ArsdkEnum))
+        return isinstance(member, (
+            ArsdkEnum.__class__,
+            ArsdkEnum,
+            ArsdkProtoEnum.__class__,
+            ArsdkProtoEnum,
+        ))
 
     def add_directive_header(self, sig):
         self.directivetype = "arsdk_enum"
@@ -76,7 +92,7 @@ class ArsdkEnumDocumenter(ClassDocumenter):
 
     def document_members(self, all_members=False):
         sourcename = self.get_sourcename()
-        if isinstance(self.object, ArsdkEnum.__class__):
+        if isinstance(self.object, (ArsdkEnum.__class__, ArsdkProtoEnum.__class__)):
             for value in self.object:
                 self.add_line("    :{}: {} ({})".format(
                     value._name_, value.__doc__, value._value_), sourcename)
@@ -87,8 +103,7 @@ class ArsdkEnumDocumenter(ClassDocumenter):
 class DummyOptionSpec(object):
     """An option_spec allows any options."""
 
-    def __getitem__(self, key):
-                # type: (Any) -> Any
+    def __getitem__(self, key: Any) -> Any:
         return lambda x: x
 
 
@@ -114,59 +129,72 @@ class ArsdkFeatureDirective(Directive):
         return result
 
 
-class PyArsdkCmdMessageDirective(PyModulelevel):
+class PyArsdkMessageDirectiveBase(PyFunction):
+    pass
+
+
+class PyArsdkCmdMessageDirective(PyArsdkMessageDirectiveBase):
     """
     Description of an arsdk command message directive
     """
 
     allow_nesting = True
 
-    def needs_arglist(self):
-        # type: () -> bool
+    def needs_arglist(self) -> bool:
         return True
 
-    def get_signature_prefix(self, sig):
-                # type: (unicode) -> unicode
+    def get_signature_prefix(self, sig: str) -> str:
         return "command message"
 
-    def get_index_text(self, modname, name_cls):
-                # type: (unicode, unicode) -> unicode
+    def get_index_text(self, modname: str, name_cls: str) -> str:
         return "command_message"
 
 
-class PyArsdkEventMessageDirective(PyModulelevel):
+class PyArsdkEventMessageDirective(PyArsdkMessageDirectiveBase):
     """
-    Description of an arsdk command message directive
+    Description of an arsdk event message directive
     """
 
     allow_nesting = True
 
-    def needs_arglist(self):
-        # type: () -> bool
+    def needs_arglist(self) -> bool:
         return True
 
-    def get_signature_prefix(self, sig):
-                # type: (unicode) -> unicode
+    def get_signature_prefix(self, sig: str) -> str:
         return "event message"
 
-    def get_index_text(self, modname, name_cls):
-                # type: (unicode, unicode) -> unicode
+    def get_index_text(self, modname, name_cls: str) -> str:
         return "event_message"
+
+
+class PyArsdkMessageDirective(PyArsdkMessageDirectiveBase):
+    """
+    Description of an arsdk message directive
+    """
+
+    allow_nesting = True
+
+    def needs_arglist(self) -> bool:
+        return True
+
+    def get_signature_prefix(self, sig: str) -> str:
+        return "message"
+
+    def get_index_text(self, modname: str, name_cls: str) -> str:
+        return "message"
 
 
 class PyArsdkEnumDirective(PyClasslike):
     """
-    Description of an arsdk command message directive
+    Description of an arsdk enum directive
     """
 
     allow_nesting = True
 
-    def get_signature_prefix(self, sig):
-                # type: (unicode) -> unicode
+    def get_signature_prefix(self, sig: str) -> str:
         return "enum"
 
-    def get_index_text(self, modname, name_cls):
-                # type: (unicode, unicode) -> unicode
+    def get_index_text(self, modname: str, name_cls: str) -> str:
         return "enum"
 
 
@@ -184,5 +212,6 @@ def setup(app):
     app.add_directive("auto_arsdkfeature", ArsdkFeatureDirective)
     app.add_directive_to_domain("py", "arsdk_cmd_message", PyArsdkCmdMessageDirective)
     app.add_directive_to_domain("py", "arsdk_event_message", PyArsdkEventMessageDirective)
+    app.add_directive_to_domain("py", "arsdk_message", PyArsdkMessageDirective)
     app.add_directive_to_domain("py", "arsdk_enum", PyArsdkEnumDirective)
     app.connect("autodoc-skip-member", arsdk_skip_member)

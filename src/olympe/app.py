@@ -1,7 +1,6 @@
 #!/usr/bin/env python
-# -*- coding: UTF-8 -*-
 
-#  Copyright (C) 2019 Parrot Drones SAS
+#  Copyright (C) 2019-2021 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions
@@ -31,23 +30,26 @@
 #  SUCH DAMAGE.
 
 
-from __future__ import unicode_literals
-from __future__ import print_function
-
 import argparse
 import os
 import sys
 
 import olympe
-from sphinx.cmd.build import main as sphinx_build
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '-v', '--version',
         action="store_true",
         help=u'Displays version'
+    )
+
+    parser.add_argument(
+        '--ip',
+        help="Drone IP address"
     )
 
     parser.add_argument(
@@ -62,10 +64,11 @@ if __name__ == "__main__":
         help="Documentation context path"
     )
 
-    ns = parser.parse_args()
+    ns = parser.parse_args(argv)
     args = vars(ns)
 
     if args['doc_out_directory']:
+        from sphinx.cmd.build import main as sphinx_build
         cmd = ["-b", "html"]
         if args["doc_context"]:
             cmd += ["-D", "custom_html_context_path={}".format(args["doc_context"])]
@@ -76,3 +79,13 @@ if __name__ == "__main__":
     if 'version' in args and args['version']:
         print(olympe.VERSION_STRING)
         sys.exit(0)
+
+    import IPython
+    user_ns = dict(olympe=olympe)
+    if args["ip"]:
+        user_ns["drone"] = olympe.Drone(args["ip"])
+    IPython.embed(user_ns=user_ns)
+
+
+if __name__ == "__main__":
+    main()

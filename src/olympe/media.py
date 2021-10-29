@@ -1,5 +1,3 @@
-# -*- coding: UTF-8 -*-
-
 #  Copyright (C) 2020 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
@@ -29,21 +27,20 @@
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 
-from collections import Mapping, namedtuple, OrderedDict
+from collections import namedtuple, OrderedDict
+from collections.abc import Mapping
 from logging import getLogger
-from olympe._private import callback_decorator
-from olympe._private.pomp_loop_thread import PompLoopThread, PompEvent
-from olympe.arsdkng.events import Event, EventContext
-from olympe.arsdkng.expectations import (
+from .utils import callback_decorator, timestamp_now
+from .utils.pomp_loop_thread import PompLoopThread, PompEvent
+from .event import Event, EventContext
+from .expectations import (
     CheckWaitStateExpectation,
     ExpectPolicy,
     Expectation,
-    AbstractScheduler,
-    StreamSchedulerMixin,
-    Scheduler,
     MultipleExpectation,
     WhenAllExpectations,
 )
+from .scheduler import AbstractScheduler, StreamSchedulerMixin, Scheduler
 import aenum
 import hashlib
 import json
@@ -61,6 +58,7 @@ MediaInfo = namedtuple(
         "datetime",
         "size",
         "run_id",
+        "custom_id",
         "resources",
         "duration",
         "thumbnail",
@@ -142,17 +140,17 @@ def _make_media(media):
             getLogger("olympe.media").error("Missing resource_id in webserver response")
             continue
         media.resources[resource_id] = resource
-        if media.type in MediaType._value2member_map_:
-            media = _replace_namedtuple(media, type=MediaType(media.type))
-        if isinstance(media.gps, Mapping):
-            gps = _namedtuple_from_mapping(media.gps, GPS)
-            media = _replace_namedtuple(media, gps=gps)
-        if media.photo_mode in PhotoMode._value2member_map_:
-            media = _replace_namedtuple(media, photo_mode=PhotoMode(media.photo_mode))
-        if media.panorama_type in PanoramaType._value2member_map_:
-            media = _replace_namedtuple(
-                media, panorama_type=PanoramaType(media.panorama_type)
-            )
+    if media.type in MediaType._value2member_map_:
+        media = _replace_namedtuple(media, type=MediaType(media.type))
+    if isinstance(media.gps, Mapping):
+        gps = _namedtuple_from_mapping(media.gps, GPS)
+        media = _replace_namedtuple(media, gps=gps)
+    if media.photo_mode in PhotoMode._value2member_map_:
+        media = _replace_namedtuple(media, photo_mode=PhotoMode(media.photo_mode))
+    if media.panorama_type in PanoramaType._value2member_map_:
+        media = _replace_namedtuple(
+            media, panorama_type=PanoramaType(media.panorama_type)
+        )
     return media.media_id, media
 
 
@@ -167,6 +165,11 @@ def _make_resource(resource):
         resource = _namedtuple_from_mapping(resource, ResourceInfo)
     if not resource.resource_id:
         return None, resource
+    if resource.format in ResourceFormat._value2member_map_:
+        resource = _replace_namedtuple(resource, format=ResourceFormat(resource.format))
+    if isinstance(resource.gps, Mapping):
+        gps = _namedtuple_from_mapping(resource.gps, GPS)
+        resource = _replace_namedtuple(resource, gps=gps)
     return resource.resource_id, resource
 
 
@@ -194,7 +197,7 @@ class PhotoMode(MediaEnumBase):
     single = "SINGLE", "single shot mode"
     bracketing = (
         "BRACKETING",
-        "bracketing mode (take a burst of 3 or 5 frames with a " "different exposure)",
+        "bracketing mode (take a burst of 3 or 5 frames with a different exposure)",
     )
     burst = "BURST", "burst mode (take burst of frames)"
     panorama = (
@@ -204,7 +207,7 @@ class PhotoMode(MediaEnumBase):
     )
     timelapse = (
         "TIMELAPSE",
-        "timelapse mode (take successive set of photos at a " "specific frequency)",
+        "timelapse mode (take successive set of photos at a specific frequency)",
     )
     gpslapse = (
         "GPSLAPSE",
@@ -218,6 +221,13 @@ class PanoramaType(MediaEnumBase):
     horizontal_180 = "HORIZONTAL_180", "degrees on the horizontal plane"
     vertical_180 = "VERTICAL_180", "degrees on the vertical plane"
     spherical = "SPHERICAL", "360 degrees on the horizontal and vertical planes"
+
+
+class ResourceFormat(MediaEnumBase):
+    _init_ = "value __doc__"
+    dng = "DNG", "the resource is a dng photo"
+    jpg = "JPG", "the resource is a jpg photo"
+    mp4 = "MP4", "the resource is an mp4 video"
 
 
 ResourceInfo = namedtuple(
@@ -234,6 +244,7 @@ ResourceInfo = namedtuple(
         "height",
         "duration",
         "thumbnail",
+        "signature",
         "gps",
         "video_mode",
         "replay_url",
@@ -246,7 +257,35 @@ ResourceInfo = namedtuple(
 )
 
 ResourceInfo.__new__.__defaults__ = (None,) * len(ResourceInfo._fields)
-ResourceInfo.__doc__ = "Namedtuple class " + ResourceInfo.__doc__
+ResourceInfo.__doc__ = (
+    "Namedtuple class "
+    + ResourceInfo.__doc__
+    + """
+  - media_id (str): unique id of the media
+  - resource_id (str): unique id of the resource
+  - type ( :py:class:`~olympe.media.MediaType`): type of the resource
+  - format ( :py:class:`~olympe.media.ResourceFormat`): format of the resource
+  - datetime (str) :iso8601 datetime of the media
+  - size (int): size (in bytes) of the media (total size of all its resources)
+  - duration (int): duration (in milliseconds) of the video media (total
+    duration of all its resources)
+  - url (str): relative url to be used in a GET request to download the resource
+  - thumbnail (str): relative url to be used in a GET request to download the
+    resource thumbnail (if available)
+  - signature (str): resource signature (optional)
+  - gps (:py:class:`~olympe.media.GPS`): gps coordinates of the media (if
+    available)
+  - width (int): width (in pixels) of the resource
+  - height (int): height (in pixels) of the resource
+  - replay_url (str): media rtsp replay url (prefixed by `rtsp://drone.ip.address:rtsp_port/`)
+  - thermal (bool): media includes resources with thermal metadata (if value is
+    true)
+  - md5 (str): media md5 checksum (if resource is photo)
+  - video_mode (str): video mode of the resource (if available and resource is a video)
+  - storage (str): storage where the resource is located
+
+"""
+)
 
 
 class IndexingState(MediaEnumBase):
@@ -258,7 +297,7 @@ class IndexingState(MediaEnumBase):
     )
     indexing = (
         "INDEXING",
-        "media indexing is in progress (media requests will result in " "541 error)",
+        "media indexing is in progress (media requests will result in 541 error)",
     )
     indexed = "INDEXED", "media are indexed (media requests are possible)"
 
@@ -340,28 +379,28 @@ class MediaEvent(Event):
     def __str__(self):
         args = ""
         if self._media_id:
-            args += ", media_id={}".format(self._media_id)
+            args += f", media_id={self._media_id}"
         if self._resource_id:
-            args += ", resource_id={}".format(self._resource_id)
+            args += f", resource_id={self._resource_id}"
         if self._is_thumbnail:
-            args += ", is_thumbnail={}".format(self._is_thumbnail)
+            args += f", is_thumbnail={self._is_thumbnail}"
         if "media" in self._data:
             media = self._data["media"]
             if "photo_mode" in media:
-                args += ", photo_mode={}".format(media["photo_mode"])
+                args += f", photo_mode='{media['photo_mode']}'"
             if "panorama_type" in media:
-                args += ", panorama_type={}".format(media["panorama_type"])
+                args += f", panorama_type='{media['panorama_type']}'"
         elif "resource" in self._data:
             resource = self._data["resource"]
             if "height" in resource:
-                args += ", height={}".format(resource["height"])
+                args += f", height={resource['height']}"
             if "width" in resource:
-                args += ", width={}".format(resource["width"])
+                args += f", width={resource['width']}"
             if "duration" in resource:
-                args += ", duration={}".format(resource["duration"])
+                args += f", duration={resource['duration']}"
             if "replay_url" in resource:
-                args += ", replay_url={}".format(resource["replay_url"])
-        return "{}(name={}{})".format(self._type, self._name, args)
+                args += f", replay_url='{resource['replay_url']}'"
+        return f"{self._type}(name={self._name}{args})"
 
 
 class _MediaCommand(MediaEvent):
@@ -371,13 +410,14 @@ class _MediaCommand(MediaEvent):
 
 class _MediaEventExpectationBase(Expectation):
     def __init__(
-            self,
-            event_name,
-            id_field=None,
-            id_value=None,
-            data_context=None,
-            _timeout=None,
-            **kwds):
+        self,
+        event_name,
+        id_field=None,
+        id_value=None,
+        data_context=None,
+        _timeout=None,
+        **kwds,
+    ):
         super().__init__()
         self.set_timeout(_timeout)
         data = {**{id_field: id_value}, **kwds}
@@ -404,7 +444,7 @@ class _MediaEventExpectationBase(Expectation):
         if media_event.name != self._event_name:
             return self
         self._received_events.append(media_event)
-        if (self._id_field is None or self._id_value is None):
+        if self._id_field is None or self._id_value is None:
             self._matched_event = media_event
             self.set_success()
             return self
@@ -413,8 +453,8 @@ class _MediaEventExpectationBase(Expectation):
         if received_data[self._id_field] == self._id_value:
             for name, value in expected_data.items():
                 if value is not None and (
-                        name not in received_data or
-                        received_data[name] != value):
+                    name not in received_data or received_data[name] != value
+                ):
                     break
             else:
                 self._matched_event = media_event
@@ -460,14 +500,16 @@ class _MediaEventExpectationBase(Expectation):
 
 
 class _MediaEventExpectation(_MediaEventExpectationBase):
-    def __init__(self, event_name, data_context=None, media_id=None, _timeout=None, **kwds):
+    def __init__(
+        self, event_name, data_context=None, media_id=None, _timeout=None, **kwds
+    ):
         return super().__init__(
             event_name,
             id_field="media_id",
             id_value=media_id,
             data_context=data_context,
             _timeout=_timeout,
-            **kwds
+            **kwds,
         )
 
     def copy(self):
@@ -475,14 +517,16 @@ class _MediaEventExpectation(_MediaEventExpectationBase):
 
 
 class _ResourceEventExpectation(_MediaEventExpectationBase):
-    def __init__(self, event_name, data_context=None, resource_id=None, _timeout=None, **kwds):
+    def __init__(
+        self, event_name, data_context=None, resource_id=None, _timeout=None, **kwds
+    ):
         return super().__init__(
             event_name,
             id_field="resource_id",
             id_value=resource_id,
             data_context=data_context,
             _timeout=_timeout,
-            **kwds
+            **kwds,
         )
 
     def copy(self):
@@ -551,10 +595,7 @@ class _ResourceCheckStateExpectation(_CheckStateExpectation):
 class media_created(_MediaEventExpectation):
     def __init__(self, media_id=None, _timeout=None):
         super().__init__(
-            "media_created",
-            data_context="media",
-            media_id=media_id,
-            _timeout=_timeout
+            "media_created", data_context="media", media_id=media_id, _timeout=_timeout
         )
 
     def copy(self):
@@ -584,7 +625,7 @@ class resource_created(_ResourceEventExpectation):
             data_context="resource",
             resource_id=resource_id,
             media_id=media_id,
-            _timeout=_timeout
+            _timeout=_timeout,
         )
 
     def copy(self):
@@ -727,15 +768,21 @@ def indexing_state(state, _timeout=None, _policy="check_wait"):
 
 
 class _RESTExpectation(Expectation):
-    def __init__(self, rest_name, rest_method, **rest_args):
+    def __init__(self, rest_name, rest_method, *, _timeout=None, **rest_args):
         super().__init__()
+        self.set_timeout(_timeout)
         self._rest_name = rest_name
         self._rest_method = rest_method
         self._rest_args = rest_args
         self._expected_event = _MediaCommand(self._rest_name, rest_args)
 
     def copy(self):
-        return super().base_copy(self._rest_name, self._rest_method, **self._rest_args)
+        return super().base_copy(
+            self._rest_name,
+            self._rest_method,
+            _timeout=self._timeout,
+            **self._rest_args,
+        )
 
     def check(self, *args, **kwds):
         return self
@@ -746,7 +793,7 @@ class _RESTExpectation(Expectation):
             media = scheduler.context("olympe.media")
             rest_method = getattr(media, self._rest_method)
             try:
-                if rest_method(**self._rest_args) is not None:
+                if rest_method(timeout=self._timeout, **self._rest_args) is not None:
                     self.set_success()
                 else:
                     self.cancel()
@@ -773,18 +820,25 @@ class _RESTExpectation(Expectation):
 
 
 class _RESTDeleteResourceExpectation(_RESTExpectation):
-    def __init__(self, resource_id):
-        super().__init__("delete_resource", "_delete_resource", resource_id=resource_id)
+    def __init__(self, resource_id, _timeout=None):
+        super().__init__(
+            "delete_resource",
+            "_delete_resource",
+            resource_id=resource_id,
+            _timeout=_timeout,
+        )
 
 
 class _RESTDeleteMediaExpectation(_RESTExpectation):
-    def __init__(self, media_id):
-        super().__init__("delete_media", "_delete_media", media_id=media_id)
+    def __init__(self, media_id, _timeout=None):
+        super().__init__(
+            "delete_media", "_delete_media", media_id=media_id, _timeout=_timeout
+        )
 
 
 class _RESTDeleteAllMediaExpectation(_RESTExpectation):
-    def __init__(self):
-        super().__init__("delete_all_media", "_delete_all_media")
+    def __init__(self, _timeout=None):
+        super().__init__("delete_all_media", "_delete_all_media", _timeout=_timeout)
 
 
 class _download_resource(Expectation):
@@ -792,9 +846,15 @@ class _download_resource(Expectation):
     always_monitor = True
 
     def __init__(
-        self, resource_id, download_dir=None, integrity_check=None, thumbnail=False
+        self,
+        resource_id,
+        download_dir=None,
+        integrity_check=None,
+        thumbnail=False,
+        _timeout=None,
     ):
         super().__init__()
+        self.set_timeout(_timeout)
         self._download_dir = download_dir
         self._resource_id = resource_id
         self._integrity_check = integrity_check
@@ -844,7 +904,6 @@ class _download_resource(Expectation):
             return
         if self._thumbnail:
             self._download_dir = os.path.join(self._download_dir, "thumbnails")
-        self._resource_path = os.path.join(self._download_dir, self._resource_id)
 
         if self._integrity_check is None:
             self._integrity_check = self._media._integrity_check or False
@@ -869,22 +928,18 @@ class _download_resource(Expectation):
 
         # Getting the md5 might need a blocking HTTP request here
         self._resource = self._media.resource_info(
-            resource_id=resource_id, with_md5=self._integrity_check
+            resource_id=resource_id,
+            with_md5=self._integrity_check,
         )
         if self._resource is None:
-            self._media.logger.error(
-                "Unknown resource {}".format(resource_id))
+            self._media.logger.error("Unknown resource {}".format(resource_id))
             self.cancel()
             return
-        try:
-            self._resource_file = open(self._resource_path, "wb")
-        except OSError as e:
+        if self.timedout():
             self._media.logger.error(
-                "Failed to open {} for writing: {}".format(self._resource_path, e)
+                "Resource download {} timedout".format(resource_id)
             )
-            self.cancel()
             return
-
         # The python-requests API is blocking but we want to support multiple
         # opened HTTP connection progressing in parallel (for example: one or
         # more long running media download and a sequence of small HTTP
@@ -912,12 +967,45 @@ class _download_resource(Expectation):
             self._response, chunks = self._media._stream_thumbnail(
                 resource_id=resource_id, chunk_size=4096
             )
+
+        if self._response is None:
+            self._media.logger.error(
+                "Resource download request failed for {} ".format(resource_id)
+            )
+            return
+
+        if self.timedout():
+            self._media.logger.error(
+                "Resource download {} timedout".format(resource_id)
+            )
+            return
+
+        if self._thumbnail:
+            self._resource_path = os.path.join(
+                self._download_dir, os.path.basename(self._resource.thumbnail)
+            )
+        else:
+            self._resource_path = os.path.join(
+                self._download_dir, os.path.basename(self._resource.url)
+            )
+
+        try:
+            self._resource_file = open(self._resource_path, "wb")
+        except OSError as e:
+            self._media.logger.error(
+                "Failed to open {} for writing: {}".format(self._resource_path, e)
+            )
+            self.cancel()
+            return
+
         # We will have to restitute this socket unharmed to the urllib3
         # connection pool but in the meantime we will set it as non-blocking
-        self._fd = self._response.raw.fileno()
-        self._sock = socket.fromfd(
-            self._fd, family=socket.AF_INET, type=socket.SOCK_STREAM
-        )
+        try:
+            self._fd = self._response.raw.fileno()
+        except AttributeError:
+            self._media.logger.error("Resource download {} failed".format(resource_id))
+            return
+        self._sock = self._response.raw._fp.fp.raw._sock
         self._sock.setblocking(False)
         self._resource_size = int(self._response.headers["Content-length"])
         if not self._thumbnail and self._resource_size != self._resource.size:
@@ -955,6 +1043,11 @@ class _download_resource(Expectation):
                 events,
             )
 
+            if self._deadline is not None:
+                self._media._pomp_loop_thread.run_delayed(
+                    self._deadline - timestamp_now(), self._download_timer_cb
+                )
+
     def _release_conn(self):
         try:
             # Restore the original socket blocking behavior
@@ -962,12 +1055,21 @@ class _download_resource(Expectation):
             # The following only close the duplicated socket fd on our side
             self._sock.close()
         except OSError:
-            self._media.logger.exception(
-                "Failed to release socket {}".format(self._fd))
+            self._media.logger.exception("Failed to release socket {}".format(self._fd))
         # The original socket (that has been dup'ed) is still owned by the
         # urllib connection pool urllib will decide what to do with this
         # connection and this is not our business
-        self._response.raw.release_conn()
+        self._response.close()
+
+    @callback_decorator()
+    def _download_timer_cb(self):
+        if not self.done():
+            self._media.logger.error(
+                "Resource download {} timedout".format(self._resource.resource_id)
+            )
+            self._media._pomp_loop_thread.remove_fd_from_loop(self._fd)
+            self._release_conn()
+            self.set_timedout()
 
     @callback_decorator()
     def _download_resource_cb(self, event):
@@ -1078,12 +1180,15 @@ class _download_resource(Expectation):
 
 
 class download_resource(_download_resource):
-    def __init__(self, resource_id, download_dir=None, integrity_check=None):
+    def __init__(
+        self, resource_id, download_dir=None, integrity_check=None, _timeout=None
+    ):
         super().__init__(
             resource_id,
             download_dir=download_dir,
             integrity_check=integrity_check,
             thumbnail=False,
+            _timeout=_timeout,
         )
 
     def __getattr__(self, name):
@@ -1096,12 +1201,15 @@ class download_resource(_download_resource):
 
 
 class download_resource_thumbnail(_download_resource):
-    def __init__(self, resource_id, download_dir=None, integrity_check=None):
+    def __init__(
+        self, resource_id, download_dir=None, integrity_check=None, _timeout=None
+    ):
         super().__init__(
             resource_id,
             download_dir=download_dir,
             integrity_check=integrity_check,
             thumbnail=True,
+            _timeout=_timeout,
         )
 
 
@@ -1110,9 +1218,10 @@ class MultipleDownloadMixin(MultipleExpectation):
     always_monitor = True
 
     def timedout(self):
-        if super().timedout():
-            return True
-        elif any(map(lambda e: e.timedout(), self.expectations)):
+        if super().timedout() or any(map(lambda e: e.timedout(), self.expectations)):
+            for e in self.expectations:
+                if not e.done():
+                    e.set_timedout()
             self.set_timedout()
         return super().timedout()
 
@@ -1139,36 +1248,43 @@ class MultipleDownloadMixin(MultipleExpectation):
 
 
 class download_media(MultipleDownloadMixin):
-    def __init__(self, media_id, download_dir=None, integrity_check=None):
+    def __init__(
+        self, media_id, download_dir=None, integrity_check=None, _timeout=None
+    ):
         self._download_dir = download_dir
         self._media_id = media_id
         self._integrity_check = integrity_check
         self._media = None
         super().__init__()
+        self.set_timeout(_timeout)
 
     def copy(self):
         return super().base_copy(
-            self._download_dir, self._media_id, self._integrity_check
+            self._download_dir, self._media_id, self._integrity_check, self._timeout
         )
 
     def _schedule(self, scheduler):
-        super()._schedule(scheduler)
         media_context = scheduler.context("olympe.media")
         media_context.subscribe(
             lambda event, scheduler: scheduler.run(
-                self._on_resource_created, event, scheduler),
-            resource_created(media_id=self._media_id)
+                self._on_resource_created, event, scheduler
+            ),
+            resource_created(media_id=self._media_id),
         )
         self._media = media_context._get_media(self._media_id)
         for resource_id in list(self._media.resources.keys()):
             self.expectations.append(
-                (lambda id_: download_resource(
-                    id_,
-                    download_dir=self._download_dir,
-                    integrity_check=self._integrity_check,
-                ))(resource_id)
+                (
+                    lambda id_: download_resource(
+                        id_,
+                        download_dir=self._download_dir,
+                        integrity_check=self._integrity_check,
+                        _timeout=self._timeout,
+                    )
+                )(resource_id)
             )
             scheduler._schedule(self.expectations[-1])
+        super()._schedule(scheduler)
 
     def __getattr__(self, name):
         if self._media is None:
@@ -1195,13 +1311,14 @@ class download_media(MultipleDownloadMixin):
 
 
 class download_media_thumbnail(MultipleDownloadMixin):
-    def __init__(self, media_id, download_dir=None):
+    def __init__(self, media_id, download_dir=None, _timeout=None):
         self._download_dir = download_dir
         self._media_id = media_id
         super().__init__()
+        self.set_timeout(_timeout)
 
     def copy(self):
-        return super().base_copy(self._download_dir, self._media_id)
+        return super().base_copy(self._download_dir, self._media_id, self._timeout)
 
     def _schedule(self, scheduler):
         super()._schedule(scheduler)
@@ -1210,7 +1327,7 @@ class download_media_thumbnail(MultipleDownloadMixin):
         for resource_id in media.resources.keys():
             self.expectations.append(
                 download_resource_thumbnail(
-                    resource_id, download_dir=self._download_dir
+                    resource_id, download_dir=self._download_dir, _timeout=self._timeout
                 )
             )
             scheduler._schedule(self.expectations[-1])
@@ -1218,11 +1335,15 @@ class download_media_thumbnail(MultipleDownloadMixin):
 
 def delete_resource(resource_id, _timeout=None, _no_expect=False):
     if _no_expect:
-        return _RESTDeleteResourceExpectation(resource_id=resource_id)
+        return _RESTDeleteResourceExpectation(
+            resource_id=resource_id, _timeout=_timeout
+        )
     else:
         return WhenAllExpectations(
             [
-                _RESTDeleteResourceExpectation(resource_id=resource_id),
+                _RESTDeleteResourceExpectation(
+                    resource_id=resource_id, _timeout=_timeout
+                ),
                 resource_removed(resource_id=resource_id, _timeout=_timeout),
             ]
         )
@@ -1230,11 +1351,11 @@ def delete_resource(resource_id, _timeout=None, _no_expect=False):
 
 def delete_media(media_id, _timeout=None, _no_expect=False):
     if _no_expect:
-        return _RESTDeleteMediaExpectation(media_id=media_id)
+        return _RESTDeleteMediaExpectation(media_id=media_id, _timeout=_timeout)
     else:
         return WhenAllExpectations(
             [
-                _RESTDeleteMediaExpectation(media_id=media_id),
+                _RESTDeleteMediaExpectation(media_id=media_id, _timeout=_timeout),
                 media_removed(media_id=media_id, _timeout=_timeout),
             ]
         )
@@ -1242,10 +1363,13 @@ def delete_media(media_id, _timeout=None, _no_expect=False):
 
 def delete_all_media(_timeout=None, _no_expect=False):
     if _no_expect:
-        return _RESTDeleteAllMediaExpectation()
+        return _RESTDeleteAllMediaExpectation(_timeout=_timeout)
     else:
         return WhenAllExpectations(
-            [_RESTDeleteAllMediaExpectation(), all_media_removed(_timeout=_timeout)]
+            [
+                _RESTDeleteAllMediaExpectation(_timeout=_timeout),
+                all_media_removed(_timeout=_timeout),
+            ]
         )
 
 
@@ -1306,6 +1430,9 @@ class Media(AbstractScheduler):
     # connections.
     pool_maxsize = 3
 
+    # HTTP connection or data read timeout
+    timeout = 5.0
+
     def __init__(
         self,
         hostname,
@@ -1328,17 +1455,11 @@ class Media(AbstractScheduler):
             self.logger = getLogger("olympe.media")
 
         # REST API endpoints
-        self._media_api_url = "http://{}/api/v{}/media/medias".format(
-            self._hostname, self._version
-        )
-        self._resource_api_url = "http://{}/api/v{}/media/resources".format(
-            self._hostname, self._version
-        )
-        self._resources_url = "http://{}/data/media".format(self._hostname)
-        self._thumbnails_api_url = "http://{}/data/thumbnails".format(self._hostname)
-        self._md5_api_url = "http://{}/api/v{}/media/md5".format(
-            self._hostname, self._version
-        )
+        self._base_url = f"http://{self._hostname}"
+        self._api_url = f"{self._base_url}/api/v{self._version}"
+        self._media_api_url = f"{self._api_url}/media/medias"
+        self._resource_api_url = f"{self._api_url}/media/resources"
+        self._md5_api_url = f"{self._api_url}/media/md5"
         self._websocket_url = "ws://{}/api/v{}/media/notifications".format(
             self._hostname, self._version
         )
@@ -1367,16 +1488,16 @@ class Media(AbstractScheduler):
         )
         self._pomp_loop_thread.start()
 
-    def async_connect(self):
+    def async_connect(self, **kwds):
         return self._pomp_loop_thread.run_async(self._websocket_connect_cb)
 
     def async_disconnect(self):
         return self._pomp_loop_thread.run_async(self._websocket_disconnect_cb)
 
-    def connect(self, timeout=5):
-        return self.async_connect().result_or_cancel(timeout=timeout)
+    def connect(self, *, timeout=5, **kwds):
+        return self.async_connect(**kwds).result_or_cancel(timeout=timeout)
 
-    def disconnect(self, timeout=5):
+    def disconnect(self, *, timeout=5):
         return self.async_disconnect().result_or_cancel(timeout=timeout)
 
     def shutdown(self):
@@ -1387,6 +1508,7 @@ class Media(AbstractScheduler):
         # _shutdown is called by the pomp loop registered cleanup method
         self._pomp_loop_thread.stop()
         self._pomp_loop_thread.destroy()
+        return True
 
     def _shutdown(self):
         self._pomp_loop_thread.unregister_cleanup(self._shutdown)
@@ -1447,9 +1569,7 @@ class Media(AbstractScheduler):
                 )
                 return
             if resource.media_id not in self._media_state:
-                self.logger.error(
-                    "ResourceInfo created with a (yet) unknown media_id"
-                )
+                self.logger.error("ResourceInfo created with a (yet) unknown media_id")
                 return
             self._media_state[resource.media_id].resources[
                 resource.resource_id
@@ -1501,15 +1621,17 @@ class Media(AbstractScheduler):
         def wrapper(self, *args, **kwds):
             try:
                 return method(self, *args, **kwds)
+            except websocket.WebSocketConnectionClosedException:
+                self.logger.info("Websocket already closed")
+                self._reset_state()
             except (TimeoutError, websocket.WebSocketTimeoutException, socket.timeout):
                 self.logger.warning("Websocket timeout")
             except (ConnectionError, websocket.WebSocketException) as e:
                 # If we lose the connection we must reinitialize our state
-                self.logger.error(str(e))
+                self.logger.error(f"{type(e)}: {e}")
                 self._reset_state()
             except Exception as e:
-                self.logger.exception(
-                    f"Websocket callback unhandled exception: {e}")
+                self.logger.exception(f"Websocket callback unhandled exception: {e}")
                 self._reset_state()
 
         return wrapper
@@ -1540,15 +1662,27 @@ class Media(AbstractScheduler):
         if self._websocket is None:
             try:
                 self._websocket = websocket.create_connection(
-                    self._websocket_url, timeout=2.0
+                    self._websocket_url,
+                    timeout=0.1,
+                    enable_multithread=False,
+                    skip_utf8_validation=True,
                 )
                 self._websocket_fd = self._websocket.fileno()
             except (TimeoutError, websocket.WebSocketTimeoutException):
                 self.logger.error("Websocket connection timeout")
                 return False
-            except (ConnectionError, websocket.WebSocketException):
-                self.logger.exception("Websocket connection exception")
+            except (ConnectionError, websocket.WebSocketException, OSError) as e:
+                self.logger.error(f"Websocket connection error {e}")
                 return False
+
+        if not self._pomp_loop_thread.has_fd(self._websocket_fd):
+            # The connection is established: register a websocket event handler
+            events = PompEvent.IN | PompEvent.ERR | PompEvent.HUP
+            self._pomp_loop_thread.add_fd_to_loop(
+                self._websocket_fd,
+                lambda *args, **kwds: self._websocket_event_cb(*args, **kwds),
+                events,
+            )
 
         # Initialize the media state from the REST API
         if not self._init_media_state():
@@ -1563,14 +1697,6 @@ class Media(AbstractScheduler):
             )
             self._process_event(event)
 
-        if not self._pomp_loop_thread.has_fd(self._websocket_fd):
-            # The connection is established: register a websocket event handler
-            events = PompEvent.IN | PompEvent.ERR | PompEvent.HUP
-            self._pomp_loop_thread.add_fd_to_loop(
-                self._websocket_fd,
-                lambda *args, **kwds: self._websocket_event_cb(*args, **kwds),
-                events,
-            )
         return True
 
     @_websocket_exc_handler
@@ -1593,7 +1719,11 @@ class Media(AbstractScheduler):
             self._reset_state()
             return
         # We have an input event on the websocket
-        data = self._websocket.recv()
+        data = None
+        try:
+            data = self._websocket.recv()
+        except websocket.WebSocketTimeoutException:
+            self.logger.error("Websocket.recv timedout")
         if not data:
             # No new event this time
             return
@@ -1625,7 +1755,9 @@ class Media(AbstractScheduler):
         """
         return self._indexing_state
 
-    def resource_info(self, media_id=None, resource_id=None, with_md5=False):
+    def resource_info(
+        self, media_id=None, resource_id=None, with_md5=False, with_signature=False
+    ):
         """
         Returns a list resources info associated to a `media_id` or a specific
         resource info associated to a `resource_id`.
@@ -1650,6 +1782,18 @@ class Media(AbstractScheduler):
                     media.resources[resource_id] = _replace_namedtuple(
                         media.resources[resource_id],
                         md5=self._get_resource_md5(resource_id).md5,
+                    )
+                if media.resources[resource_id].signature and with_signature:
+                    media.resources[resource_id] = _replace_namedtuple(
+                        media.resources[resource_id],
+                        signature=self._get_resource_signature(
+                            media.resources[resource_id]
+                        ).signature,
+                    )
+                else:
+                    media.resources[resource_id] = _replace_namedtuple(
+                        media.resources[resource_id],
+                        signature=None,
                     )
                 return media.resources[resource_id]
             else:
@@ -1689,7 +1833,10 @@ class Media(AbstractScheduler):
         """
         Returns a list of all available media id
         """
-        return list(self._media_state.keys())
+        if self._media_state is not None:
+            return list(self._media_state.keys())
+        else:
+            return list()
 
     def list_resources(self, media_id=None):
         """
@@ -1709,21 +1856,38 @@ class Media(AbstractScheduler):
                 for resource_id in media.resources.keys()
             )
 
+    def last_media(self):
+        try:
+            return list(sorted(self._media_state.items(), key=lambda t: t[0]))[-1][1]
+        except IndexError:
+            return None
+
+    def last_media_id(self):
+        last_media = self.last_media()
+        if last_media is None:
+            return "-1"
+        return last_media.media_id
+
+    def next_media_id(self):
+        return str(int(self.last_media_id()) + 1)
+
     def _get_all_media(self):
         """
         Returns an array of media objects from the REST API
         HTTP GET /api/v<version>/media/medias
         """
-        response = self._session.get(self._media_api_url)
+        response = self._session.get(self._media_api_url, timeout=self.timeout)
         try:
             response.raise_for_status()
+            data = response.json()
         except requests.exceptions.RequestException as e:
             self.logger.error(str(e))
             return None
         except Exception as e:
             self.logger.error(str(e))
             return None
-        data = response.json()
+        finally:
+            response.close()
         media_state = OrderedDict()
         for media in data:
             media_id, media = _make_media(media)
@@ -1746,8 +1910,13 @@ class Media(AbstractScheduler):
         self.logger.warning(
             "Missing media_id {} in olympe media database".format(media_id)
         )
-        response = self._session.get(os.path.join(self._media_api_url, media_id))
-        response.raise_for_status()
+        try:
+            response = self._session.get(
+                os.path.join(self._media_api_url, media_id), timeout=self.timeout
+            )
+            response.raise_for_status()
+        finally:
+            response.close()
         data = response.json()
         media_id, media = _make_media(data)
         if not media_id:
@@ -1764,63 +1933,121 @@ class Media(AbstractScheduler):
         from the REST API
         HTTP GET /api/v<version>/media/md5/<resource_id>
         """
-        response = self._session.get(os.path.join(self._md5_api_url, resource_id))
-        response.raise_for_status()
-        data = response.json()
+        response = self._session.get(
+            os.path.join(self._md5_api_url, resource_id), timeout=self.timeout
+        )
+        try:
+            response.raise_for_status()
+            data = response.json()
+        finally:
+            response.close()
         return _namedtuple_from_mapping(data, ResourceInfo)
 
-    def _delete_resource(self, resource_id):
+    def _get_resource_signature(self, resource):
+        """
+        Returns a (media_id, resource_id, signature) namedtuple for the give resource
+        """
+        try:
+            response = self._session.get(resource.signature, timeout=self.timeout)
+            response.raise_for_status()
+            signature = response.text()
+        finally:
+            response.close()
+        data = dict(
+            media_id=resource.media_id,
+            resource_id=resource.resource_id,
+            signature=signature,
+        )
+        return _namedtuple_from_mapping(data, ResourceInfo)
+
+    def _delete_resource(self, resource_id, timeout=None):
         """
         Request the deletion of a single resource through the REST API
         HTTP DELETE /api/v<version>/media/resources/<resource_id>
         """
-        response = self._session.delete(os.path.join(self._resource_api_url, resource_id))
-        response.raise_for_status()
+        if timeout is None:
+            timeout = self.timeout
+        try:
+            response = self._session.delete(
+                os.path.join(self._resource_api_url, resource_id), timeout=timeout
+            )
+            response.raise_for_status()
+        finally:
+            response.close()
         return True
 
-    def _delete_media(self, media_id):
+    def _delete_media(self, media_id, timeout=None):
         """
         Request the deletion of a single media through the REST API
         HTTP DELETE /api/v<version>/media/medias/<media_id>
         """
-        response = self._session.delete(os.path.join(self._media_api_url, media_id))
-        response.raise_for_status()
+        if timeout is None:
+            timeout = self.timeout
+        try:
+            response = self._session.delete(
+                os.path.join(self._media_api_url, media_id), timeout=timeout
+            )
+            response.raise_for_status()
+        finally:
+            response.close()
         return True
 
-    def _delete_all_media(self):
+    def _delete_all_media(self, timeout=None):
         """
         Request the deletion of all media through the REST API
         HTTP DELETE /api/v<version>/media/medias
         """
-        response = self._session.delete(self._media_api_url)
-        response.raise_for_status()
+        if timeout is None:
+            timeout = self.timeout
+        try:
+            response = self._session.delete(self._media_api_url, timeout=timeout)
+            response.raise_for_status()
+        finally:
+            response.close()
         return True
 
-    def _do_stream_resource(self, url, chunk_size):
+    def _do_stream_resource(self, url, chunk_size, timeout=None):
         """
         Downloads a remote resource in chunk and returns the associated
         generator object
         """
-        response = self._session.get(url, stream=True)
-        response.raise_for_status()
+        if timeout is None:
+            timeout = self.timeout
+        response = self._session.get(url, stream=True, timeout=timeout)
+        try:
+            response.raise_for_status()
+        except Exception:
+            response.close()
         return response, response.iter_content(chunk_size=chunk_size)
 
-    def _stream_resource(self, resource_id, chunk_size=4096):
+    def _stream_resource(self, resource_id, chunk_size=4096, timeout=None):
         """
         Get a remote resource in chunk and returns the associated
         generator object
         """
+        resource_info = self.resource_info(resource_id=resource_id)
+        if resource_info is None or not resource_info.url:
+            return None, None
+
         return self._do_stream_resource(
-            os.path.join(self._resources_url, resource_id), chunk_size=chunk_size
+            f"{self._base_url}{resource_info.url}",
+            chunk_size=chunk_size,
+            timeout=timeout,
         )
 
-    def _stream_thumbnail(self, resource_id, chunk_size):
+    def _stream_thumbnail(self, resource_id, chunk_size=4096, timeout=None):
         """
         Get a remote resource thumbnail in chunk and returns the associated
         generator object
         """
+        resource_info = self.resource_info(resource_id=resource_id)
+        if resource_info is None or not resource_info.thumbnail:
+            return None, None
+
         return self._do_stream_resource(
-            os.path.join(self._thumbnails_api_url, resource_id), chunk_size=chunk_size
+            f"{self._base_url}{resource_info.thumbnail}",
+            chunk_size=chunk_size,
+            timeout=timeout,
         )
 
     @property

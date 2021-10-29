@@ -1,6 +1,4 @@
-# -*- coding: UTF-8 -*-
-
-#  Copyright (C) 2019 Parrot Drones SAS
+#  Copyright (C) 2019-2021 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions
@@ -30,40 +28,21 @@
 #  SUCH DAMAGE.
 
 
-from __future__ import unicode_literals
-from __future__ import absolute_import
-from future.builtins import str, bytes
-from future.builtins import int
-try:
-    # Python 2
-    from __builtin__ import str as builtin_str
-except ImportError:
-    # Python 3
-    from builtins import str as builtin_str
-    long = int
+from builtins import str as builtin_str
 
-import os
-try:
-    # Python 2
-    import textwrap3 as textwrap
-except ImportError:
-    # Python 3
-    import textwrap
+import re
+import textwrap
 
-from aenum import OrderedEnum, IntEnum
+from aenum import EnumMeta, OrderedEnum
 from collections import OrderedDict
 from itertools import starmap
-from six import with_metaclass
 
+from olympe.arsdkng.proto import ArsdkProto
 from olympe.arsdkng.xml import ArsdkXml
-from olympe._private import string_from_arsdkxml
+from olympe.utils import string_from_arsdkxml, get_mapping
 
-if not os.environ.get('OLYMPE_DEPRECATED_INTENUM', 'false') == 'true':
-    _DeprecatedIntEnums = False
-    _EnumBase = OrderedEnum
-else:
-    _EnumBase = IntEnum
-    _DeprecatedIntEnums = True
+
+_EnumBase = OrderedEnum
 
 
 class ArsdkBitfieldMeta(type):
@@ -93,10 +72,10 @@ class ArsdkBitfieldMeta(type):
 
     @property
     def _feature_name_(cls):
-        return ArsdkEnums.get()._enums_feature[cls._enum_type_]
+        return ArsdkEnums.get(cls._enum_type_.root)._enums_feature[cls._enum_type_]
 
 
-class ArsdkBitfield(with_metaclass(ArsdkBitfieldMeta)):
+class ArsdkBitfield(metaclass=ArsdkBitfieldMeta):
     """
     A python base class to represent arsdk bitfield types.
     All bitfields types are derived from this class.
@@ -183,14 +162,14 @@ class ArsdkBitfield(with_metaclass(ArsdkBitfieldMeta)):
     def __iter__(self):
         return iter(self._enums)
 
+    def __len__(self):
+        return len(self._enums)
+
     def to_int(self):
         r = 0
         for enum in self._enums:
             r += 2 ** enum.value
         return r
-
-    if _DeprecatedIntEnums:
-        __int__ = to_int
 
     def __invert__(self):
         return self.__class__([enum for enum in self._enum_type_ if enum not in self._enums])
@@ -230,14 +209,14 @@ class ArsdkEnumMeta(_EnumBase.__class__):
     _classes = OrderedDict()
     _aliases = OrderedDict()
 
-    def __new__(mcls, name, bases, ns):
+    def __new__(mcls, name, bases, ns, **kwds):
         """
         Creates an ArsdkEnum type and its associated bitfield type.
         All equivalent enum types are derived from a common based enum class.
         Two enum types are considered equal if they define the same labels.
         """
         if ArsdkEnumMeta._base is None:
-            cls = _EnumBase.__class__.__new__(mcls, builtin_str(name), (_EnumBase,), ns)
+            cls = _EnumBase.__class__.__new__(mcls, builtin_str(name), (_EnumBase,), ns, **kwds)
             ArsdkEnumMeta._base = cls
         else:
             # Arsdk enums may have aliases.
@@ -282,7 +261,8 @@ class ArsdkEnumMeta(_EnumBase.__class__):
                 mcls._aliases[alias_key] = alias_base
             else:
                 alias_base = mcls._aliases[alias_key]
-            cls = _EnumBase.__class__.__new__(mcls, builtin_str(name), (alias_base,), ns)
+            kwds.pop("root", None)
+            cls = _EnumBase.__class__.__new__(mcls, builtin_str(name), (alias_base,), ns, **kwds)
             mcls._classes[class_key] = cls
         return cls
 
@@ -300,14 +280,14 @@ class ArsdkEnumMeta(_EnumBase.__class__):
 
     @property
     def _feature_name_(cls):
-        return ArsdkEnums.get()._enums_feature[cls]
+        return ArsdkEnums.get(cls._root_)._enums_feature[cls]
 
     @property
     def _source_(cls):
-        return ArsdkEnums.get()._enums_source[cls]
+        return ArsdkEnums.get(cls._root_)._enums_source[cls]
 
 
-class ArsdkEnum(with_metaclass(ArsdkEnumMeta)):
+class ArsdkEnum(metaclass=ArsdkEnumMeta):
     """
     A python class to represent arsdk enum types
     All enum types are derived from this class.
@@ -324,6 +304,9 @@ class ArsdkEnum(with_metaclass(ArsdkEnumMeta)):
 
     def to_str(self):
         return self._name_
+
+    def pretty(self):
+        return f"'{self.to_str()}'"
 
     def _to_bitfield(self):
         return self.__class__._bitfield_type_([self])
@@ -352,37 +335,86 @@ class ArsdkEnum(with_metaclass(ArsdkEnumMeta)):
             return []
 
     def __eq__(self, other):
-        if not _DeprecatedIntEnums:
-            if other.__class__ in self.aliases():
-                return self._value_ == other._value_
-            else:
-                return NotImplemented
+        if other.__class__ in self.aliases():
+            return self._value_ == other._value_
         else:
-            return super(ArsdkEnum, self).__eq__(other)
+            return NotImplemented
 
     def __ne__(self, other):
-        if not _DeprecatedIntEnums:
-            if other.__class__ in self.aliases():
-                return self._value_ != other._value_
-            else:
-                return NotImplemented
+        if other.__class__ in self.aliases():
+            return self._value_ != other._value_
         else:
-            return super(ArsdkEnum, self).__ne__(other)
+            return NotImplemented
 
     def __hash__(self):
         return self._value_
 
-    if _DeprecatedIntEnums:
-        # This is needed for json serialization support.
-        # IntEnum and stdlib json are currently not working properly
-        # See: https://bugs.python.org/issue18264
-        def __str__(self):
-            return ('"olympe.enums.' + self.__class__._feature_name_ +
-                    '.' + self.__class__.__name__ + '.' + self._name_ + '"')
 
-        def __int__(self):
-            # Needed for python3 json stdlib
-            return self
+class ArsdkProtoEnumMeta(EnumMeta):
+    @property
+    def _feature_name_(cls):
+        return ArsdkEnums.get(cls._root_)._enums_feature[cls]
+
+    @property
+    def _source_(cls):
+        return ArsdkEnums.get(cls._root_)._enums_source[cls]
+
+
+class ArsdkProtoEnum(OrderedEnum, metaclass=ArsdkProtoEnumMeta):
+    @classmethod
+    def from_str(cls, value):
+        if value == '':
+            raise ValueError("Empty string cannot be converted to {}".format(cls.__name__))
+        try:
+            return cls[value]
+        except KeyError as e:
+            raise ValueError("{} is not an enum label of {}".format(str(e), cls.__name__))
+
+    def to_str(self):
+        return self._name_
+
+    def to_upper_str(self):
+        for name, value in self.__class__.__members__.items():
+            if value is self and name.isupper():
+                return name
+        return self.to_str()
+
+    def __hash__(self):
+        return hash(f"{self.__class__.__name__}.{self.to_upper_str()}")
+
+    def __eq__(self, other):
+        if other == self._name_:
+            return True
+        if other == self._value_:
+            return True
+        if other == self.to_upper_str():
+            return True
+        return False
+
+    def __ne__(self, other):
+        return not (self == other)
+
+    # This is needed for json serialization support.
+    # IntEnum and stdlib json are currently not working properly
+    # See: https://bugs.python.org/issue18264
+    def __str__(self):
+        return (f'"olympe.enums.{self.__class__._feature_name}'
+                f'.{self.__class__.__name__}.{self._name_}"')
+
+    def pretty(self):
+        return f"'{self.to_str()}'"
+
+    def __int__(self):
+        # Needed for python3 json stdlib
+        return self
+
+    @property
+    def _feature_name(cls):
+        return ArsdkEnums.get(cls._root_)._enums_feature[cls]
+
+    @property
+    def _source(cls):
+        return ArsdkEnums.get(cls._root_)._enums_source[cls]
 
 
 class list_flags(ArsdkEnum):
@@ -392,46 +424,63 @@ class list_flags(ArsdkEnum):
     First, Last, Empty, Remove = range(4)
 
 
-class ArsdkEnums(object):
+list_flags._root_ = "olympe"
 
-    _single = None
+
+class ArsdkEnums:
+
+    _store = {}
 
     @classmethod
-    def get(cls):
-        if cls._single is None:
-            cls._single = cls()
-        return cls._single
+    def get(cls, root):
+        ret = cls._store.get(root)
+        if ret is None:
+            ret = ArsdkEnums(root)
+        return ret
 
-    def __init__(self, arsdkparser_context=None):
+    def __init__(self, root):
         """
         ArsdkEnums constructor
-        @type arsdkparser_context: arsdkparser.ArParserCtx
         """
-        self._ctx = arsdkparser_context
-        if self._ctx is None:
-            self._ctx = ArsdkXml.get().ctx
-        self._enums = OrderedDict()
+        self._root = root
+        self.__class__._store[root] = self
+        self._ctx = ArsdkXml.get(root).ctx
+        self._proto = ArsdkProto.get(root)
         self._bitfields = OrderedDict()
         self._by_feature = OrderedDict()
         self._enums_feature = OrderedDict()
         self._enums_source = OrderedDict()
+        list_flags_values = "\n".join(
+            map(lambda v: (v._name_ + " = " + str(v._value_)), list_flags))
+        self._enums_source[list_flags] = textwrap.dedent(
+            f"""
+            class list_flags(ArsdkEnum):
+                {list_flags_values}
+
+
+            list_flags._root_ = {self._root}
+            """
+        )
         for feature in self._ctx.features:
-            FeatureName = feature.name[0].upper() + feature.name[1:]
-            self._enums[FeatureName] = OrderedDict()
-            self._bitfields[FeatureName] = OrderedDict()
-            self._by_feature[feature.name] = OrderedDict()
-            for classe_name in feature.classesByName:
-                self._by_feature[feature.name][classe_name] = OrderedDict()
+            if feature.name not in self._bitfields:
+                self._bitfields[feature.name] = OrderedDict()
+            if feature.name not in self._by_feature:
+                self._by_feature[feature.name] = OrderedDict()
+            for class_name in feature.classesByName:
+                if class_name not in self._by_feature[feature.name]:
+                    self._by_feature[feature.name][class_name] = OrderedDict()
             for enum in feature.enums:
-                self._add_enum(FeatureName, feature, enum)
-            self._enums[FeatureName]["list_flags"] = list_flags
-            self._bitfields[FeatureName]["list_flags_Bitfield"] = list_flags._bitfield_type_
+                self._add_enum(feature, enum)
+            self._bitfields[feature.name]["list_flags_Bitfield"] = list_flags._bitfield_type_
             self._by_feature[feature.name]["list_flags"] = list_flags
             self._by_feature[feature.name]["list_flags_Bitfield"] = list_flags._bitfield_type_
 
-        for feature in self._enums.values():
+        for feature in self._by_feature.values():
             for enum in feature.values():
-                if len(enum.aliases()) > 1 and "Enum aliases" not in enum.__doc__:
+                if (
+                        isinstance(enum, ArsdkEnum.__class__) and
+                        len(enum.aliases()) > 1 and
+                        "Enum aliases" not in enum.__doc__):
                     try:
                         doc = "\n    - ".join(map(
                             lambda a: ":py:class:`olympe.enums.{}.{}`".format(
@@ -446,46 +495,123 @@ class ArsdkEnums(object):
                         enum.__doc__ = enum.__doc__ + doc
                     except KeyError:
                         pass
+        for feature_name, feature in self._proto.features.items():
+            for enum in feature.enums:
+                self._add_proto_enum(enum)
 
-    def _add_enum(self, FeatureName, feature, enumObj):
+        for feature_name, feature in self._proto.features.items():
+            for service in feature.services:
+                for enum_desc in service.enums:
+                    self._add_proto_enum(enum_desc)
+
+        for feature_name, feature in self._proto.features.items():
+            for service in feature.services:
+                for message_desc in service.messages:
+                    self._bitfields.setdefault(feature_name, OrderedDict())
+                    self._by_feature.setdefault(feature_name, OrderedDict())
+
+    def _add_enum(self, feature, enumObj):
         values = OrderedDict()
         for enumValObj in enumObj.values:
             values[enumValObj.name] = enumValObj.value
-        enum = ArsdkEnum(enumObj.name, names=values)
+        enum_class = None
+        name = enumObj.name
+        for class_name in feature.classesByName:
+            prefix = class_name + "_"
+            if name.startswith(prefix):
+                name = enumObj.name[len(prefix):]
+                enum_class = class_name
+                break
+        enum = ArsdkEnum(name, names=values)
         enum.__doc__ = string_from_arsdkxml(enumObj.doc)
+        enum._root_ = self._root
         for enumvalue, enumvalueobj in zip(enum, enumObj.values):
             enumvalue.__doc__ = string_from_arsdkxml(enumvalueobj.doc)
         bitfield = enum._bitfield_type_
         self._enums_feature[enum] = feature.name
+        values = "\n".join(
+            map(lambda v: (v._name_ + " = " + str(v._value_)), enum))
         self._enums_source[enum] = textwrap.dedent(
-            """
-            class {}(ArsdkEnum):
-                {}
-                {}
-            """.format(enumObj.name, '"""{}"""'.format(enum.__doc__), "\n".join(
-                map(lambda v: (v._name_ + " = " + str(v._value_)), enum)))
-        )
-        self._enums[FeatureName][enum.__name__] = enum
-        self._bitfields[FeatureName][bitfield.__name__] = bitfield
-        self._by_feature[feature.name][enum.__name__] = enum
-        self._by_feature[feature.name][bitfield.__name__] = bitfield
-        for class_name in feature.classesByName:
-            prefix = class_name + "_"
-            if enum.__name__.startswith(prefix):
-                enum.__name__ = enum.__name__[len(prefix):]
-                self._enums[FeatureName][enum.__name__] = enum
-                self._by_feature[feature.name][class_name][enum.__name__] = enum
-                self._by_feature[feature.name][class_name][bitfield.__name__] = bitfield
-                break
+            f"""
+            class {enumObj.name}(ArsdkEnum):
+                {enum.__doc__}
+                {values}
 
-    def __getitem__(self, FeatureName):
-        return self._enums[FeatureName]
+
+            {enumObj.name}._root_ = {self._root}
+            """
+        )
+        self._bitfields[feature.name][bitfield.__name__] = bitfield
+        self._by_feature[feature.name][enum.__name__] = enum
+        if enum_class is not None:
+            self._by_feature[feature.name][enum_class + "_" + enum.__name__] = enum
+            self._by_feature[feature.name][enum_class + "_" + bitfield.__name__] = bitfield
+            self._by_feature[feature.name][enum_class][enum.__name__] = enum
+            self._by_feature[feature.name][enum_class][bitfield.__name__] = bitfield
+
+    def _add_proto_enum(self, enum_desc):
+        feature_name = enum_desc.feature_name
+        path = enum_desc.path.split(".")
+        feature_path = feature_name.split(".")
+        context = self._by_feature
+        for part in feature_path:
+            if part not in context:
+                context[part] = OrderedDict()
+            context = context[part]
+        context = get_mapping(self._by_feature, feature_path)
+        for part in path[:-1]:
+            if part not in context:
+                context[part] = OrderedDict()
+            context = context[part]
+        values = {k: v.index for k, v in enum_desc.enum.values_by_name.items()}
+        # Add short form enum aliases for convenience
+        # For example: CameraMode.photo for CameraMode.CAMERA_MODE_PHOTO
+        aliases = {}
+        for name, value in values.items():
+            camel_name = ''.join(word.title() for word in name.split('_'))
+            if camel_name.startswith(enum_desc.name):
+                enum_case_snake_case = re.sub(r"([A-Z])([a-z])", "\1_\2", enum_desc.name).upper()
+                alias = name[len(enum_case_snake_case):].lower()
+                aliases[alias] = value
+        if len(aliases) == len(values):
+            # Put the short aliases first so that the long-form is actually an Enum value alias
+            # This is only important for enum values representation
+            aliases.update(values)
+            values = aliases
+        enum = ArsdkProtoEnum(
+            enum_desc.name,
+            names=values
+        )
+        enum.__doc__ = ""
+        enum._root_ = self._root
+        self._enums_source[enum] = textwrap.dedent(
+            f"""
+            class {enum_desc.name}(ArsdkProtoEnum):
+                {enum.__doc__}
+                {values}
+
+
+            {enum_desc.name}._root_ = {self._root}
+            """
+        )
+        self._enums_feature[enum] = feature_name
+        for enumvalue in enum:
+            enumvalue.__doc__ = ""
+        if enum_desc.doc:
+            enum.__doc__ = enum_desc.doc.doc
+            for enumvalue, value_doc in zip(enum, enum_desc.doc.values_doc):
+                enumvalue.__doc__ = value_doc.doc
+        context[enum_desc.name] = enum
+        return enum
+
+    def __getitem__(self, feature_name):
+        return self._by_feature[feature_name]
 
     def walk(self):
-        for FeatureName, feature in self._enums.items():
+        for feature_name, feature in self._by_feature.items():
             for enum_name, enum in feature.items():
                 for enum_label, enum_value in enum.__members__.items():
-                    yield FeatureName, enum_name, enum_label, enum_value
+                    yield feature_name, enum_name, enum_label, enum_value
 
 
 if __name__ == '__main__':
@@ -502,16 +628,13 @@ if __name__ == '__main__':
     class TestEnums(unittest.TestCase):
 
         def test_enum(self):
-            for i, name in enumerate(['LANDED', 'LANDING', 'TAKING_OFF', 'HOVERING', 'FLYING']):
-                if not _DeprecatedIntEnums:
-                    # no implicit int conversion (for the greater good)
-                    with self.assertRaises(TypeError):
-                        self.assertEqual(int(FlyingState(i)), i)
-                    with self.assertRaises(TypeError):
-                        self.assertEqual(int(FlyingState[name]), i)
-                else:
-                        self.assertEqual(int(FlyingState(i)), i)
-                        self.assertEqual(int(FlyingState[name]), i)
+            for i, name in enumerate(
+                    ['LANDED', 'LANDING', 'TAKING_OFF', 'HOVERING', 'FLYING']):
+                # no implicit int conversion (for the greater good)
+                with self.assertRaises(TypeError):
+                    self.assertEqual(int(FlyingState(i)), i)
+                with self.assertRaises(TypeError):
+                    self.assertEqual(int(FlyingState[name]), i)
                 self.assertEqual(FlyingState(i).value, i)
                 self.assertEqual(FlyingState(i)._value_, i)
                 self.assertEqual(FlyingState[name]._value_, i)
@@ -527,11 +650,21 @@ if __name__ == '__main__':
             # bitwise operations
             self.assertEqual(
                 FlyingState.LANDED | 'LANDING' | 4,
-                [FlyingState.LANDED, FlyingState.LANDING, FlyingState.TAKING_OFF]
+                [
+                    FlyingState.LANDED,
+                    FlyingState.LANDING,
+                    FlyingState.TAKING_OFF
+                ]
             )
             self.assertEqual(
                 ~FlyingState._bitfield_type_(),
-                [FlyingState.LANDED, FlyingState.LANDING, FlyingState.TAKING_OFF, FlyingState.HOVERING, FlyingState.FLYING]
+                [
+                    FlyingState.LANDED,
+                    FlyingState.LANDING,
+                    FlyingState.TAKING_OFF,
+                    FlyingState.HOVERING,
+                    FlyingState.FLYING
+                ]
             )
             self.assertEqual(
                 (FlyingState.LANDED | 'LANDING' | 4) & 'LANDING',
@@ -539,7 +672,12 @@ if __name__ == '__main__':
             )
             self.assertEqual(
                 ~FlyingState.LANDED,
-                [FlyingState.LANDING, FlyingState.TAKING_OFF, FlyingState.HOVERING, FlyingState.FLYING]
+                [
+                    FlyingState.LANDING,
+                    FlyingState.TAKING_OFF,
+                    FlyingState.HOVERING,
+                    FlyingState.FLYING
+                ]
             )
             self.assertEqual(
                 (FlyingState.LANDED | 'LANDING' | 4) ^ 'LANDING',
@@ -547,12 +685,31 @@ if __name__ == '__main__':
             )
 
             # string conversions
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDED')), 'LANDED')
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDED|LANDING')), 'LANDED|LANDING')
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDED|LANDING|TAKING_OFF')), 'LANDED|LANDING|TAKING_OFF')
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDED|LANDING|TAKING_OFF|HOVERING')), 'LANDED|LANDING|TAKING_OFF|HOVERING')
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDED|LANDING|TAKING_OFF|HOVERING|FLYING')), 'LANDED|LANDING|TAKING_OFF|HOVERING|FLYING')
-            self.assertEqual(str(FlyingState._bitfield_type_('LANDING|LANDED|TAKING_OFF|HOVERING|FLYING')), 'LANDED|LANDING|TAKING_OFF|HOVERING|FLYING')
+            self.assertEqual(
+                str(FlyingState._bitfield_type_('LANDED')), 'LANDED')
+            self.assertEqual(
+                str(FlyingState._bitfield_type_('LANDED|LANDING')),
+                'LANDED|LANDING'
+            )
+            self.assertEqual(
+                str(FlyingState._bitfield_type_('LANDED|LANDING|TAKING_OFF')),
+                'LANDED|LANDING|TAKING_OFF'
+            )
+            self.assertEqual(
+                str(FlyingState._bitfield_type_(
+                    'LANDED|LANDING|TAKING_OFF|HOVERING')),
+                'LANDED|LANDING|TAKING_OFF|HOVERING'
+            )
+            self.assertEqual(
+                str(FlyingState._bitfield_type_(
+                    'LANDED|LANDING|TAKING_OFF|HOVERING|FLYING')),
+                'LANDED|LANDING|TAKING_OFF|HOVERING|FLYING'
+            )
+            self.assertEqual(
+                str(FlyingState._bitfield_type_(
+                    'LANDING|LANDED|TAKING_OFF|HOVERING|FLYING')),
+                'LANDED|LANDING|TAKING_OFF|HOVERING|FLYING'
+            )
 
             # collection operations
             self.assertEqual(
@@ -565,7 +722,10 @@ if __name__ == '__main__':
 
             # empty bitfield
             self.assertEqual(FlyingState._bitfield_type_(''), '')
-            self.assertEqual(repr(FlyingState._bitfield_type_('')), '<FlyingState_Bitfield: []>')
+            self.assertEqual(
+                repr(FlyingState._bitfield_type_('')),
+                '<FlyingState_Bitfield: []>'
+            )
             self.assertEqual(FlyingState._bitfield_type_('').to_int(), 0)
 
             # no implicit int conversion
@@ -577,7 +737,8 @@ if __name__ == '__main__':
                 self.assertEqual(FlyingState._bitfield_type_(i).to_int(), i)
 
             # bitfield attributes
-            bitfield = FlyingState._bitfield_type_.from_str('LANDED|LANDING|TAKING_OFF|HOVERING')
+            bitfield = FlyingState._bitfield_type_.from_str(
+                'LANDED|LANDING|TAKING_OFF|HOVERING')
             self.assertTrue(bitfield.LANDED)
             self.assertTrue(bitfield.LANDING)
             self.assertTrue(bitfield.TAKING_OFF)

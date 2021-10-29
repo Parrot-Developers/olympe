@@ -7,6 +7,7 @@ from olympe.messages.camera import (
 from olympe.media import download_media, indexing_state
 from logging import getLogger
 import olympe
+import os
 import re
 import tempfile
 import xml.etree.ElementTree as ET
@@ -25,7 +26,8 @@ olympe.log.update_config({
 logger = getLogger("photo_example")
 
 # Drone IP
-DRONE_IP = "192.168.42.1"
+DRONE_IP = os.environ.get("DRONE_IP", "192.168.42.1")
+DRONE_MEDIA_PORT = os.environ.get("DRONE_MEDIA_PORT", "80")
 
 XMP_TAGS_OF_INTEREST = (
     "CameraRollDegree",
@@ -46,7 +48,9 @@ def take_photo_burst(drone):
     drone(take_photo(cam_id=0)).wait()
     if not photo_saved.wait(_timeout=30).success():
         assert False, "take_photo timedout"
-    media_id = photo_saved.received_events().last().args["media_id"]
+    photo_progress_info = photo_saved.received_events().last().args
+    media_id = photo_progress_info["media_id"]
+    photo_count = photo_progress_info["photo_count"]
     # download the photos associated with this media id
     drone.media.download_dir = tempfile.mkdtemp(prefix="olympe_photo_example")
     logger.info(
@@ -57,18 +61,22 @@ def take_photo_burst(drone):
     )
     media_download = drone(download_media(media_id, integrity_check=True))
     # Iterate over the downloaded media on the fly
-    resources = media_download.as_completed(timeout=60)
+    resources = media_download.as_completed(expected_count=photo_count, timeout=60)
     resource_count = 0
     for resource in resources:
-        logger.warning("Resource: {}".format(resource.resource_id))
+        logger.info("Resource: {}".format(resource.resource_id))
         if not resource.success():
-            logger.info("Failed to download {}".format(resource.resource_id))
+            logger.error("Failed to download {}".format(resource.resource_id))
             continue
+        resource_count += 1
         # parse the xmp metadata
         with open(resource.download_path, "rb") as image_file:
             image_data = image_file.read()
             image_xmp_start = image_data.find(b"<x:xmpmeta")
             image_xmp_end = image_data.find(b"</x:xmpmeta")
+            if image_xmp_start < 0 or image_xmp_end < 0:
+                logger.error("Failed to find XMP photo metadata {}".format(resource.resource_id))
+                continue
             image_xmp = ET.fromstring(image_data[image_xmp_start: image_xmp_end + 12])
             for image_meta in image_xmp[0][0]:
                 xmp_tag = re.sub(r"{[^}]*}", "", image_meta.tag)
@@ -76,10 +84,9 @@ def take_photo_burst(drone):
                 # only print the XMP tags we are interested in
                 if xmp_tag in XMP_TAGS_OF_INTEREST:
                     logger.info("{} {} {}".format(resource.resource_id, xmp_tag, xmp_value))
-        resource_count += 1
     logger.info("{} media resource downloaded".format(resource_count))
     assert resource_count == 14, "resource count == {} != 14".format(resource_count)
-    assert media_download.success(), "Photo burst media download"
+    assert media_download.wait(1.).success(), "Photo burst media download"
 
 
 def setup_photo_burst_mode(drone):
@@ -109,6 +116,10 @@ def main(drone):
     drone.disconnect()
 
 
-if __name__ == "__main__":
-    with olympe.Drone(DRONE_IP) as drone:
+def test_photo():
+    with olympe.Drone(DRONE_IP, media_port=DRONE_MEDIA_PORT) as drone:
         main(drone)
+
+
+if __name__ == "__main__":
+    test_photo()

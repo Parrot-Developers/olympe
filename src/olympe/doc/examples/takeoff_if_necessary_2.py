@@ -1,13 +1,13 @@
-# -*- coding: UTF-8 -*-
-
 import olympe
+import os
 from olympe.messages.ardrone3.Piloting import TakeOff
 from olympe.messages.ardrone3.PilotingState import FlyingStateChanged
 from olympe.messages.ardrone3.GPSSettingsState import GPSFixStateChanged
 
-DRONE_IP = "10.202.0.1"
+DRONE_IP = os.environ.get("DRONE_IP", "10.202.0.1")
 
-if __name__ == "__main__":
+
+def test_takeoff_if_necessary_2():
     with olympe.Drone(DRONE_IP) as drone:
         drone.connect()
         print("Takeoff if necessary...")
@@ -17,8 +17,12 @@ if __name__ == "__main__":
                 GPSFixStateChanged(fixed=1, _timeout=10)
                 >> (
                     TakeOff(_no_expect=True)
-                    & FlyingStateChanged(state="hovering", _policy="wait", _timeout=5)
+                    & FlyingStateChanged(state="takingoff", _policy="wait", _timeout=5)
                 )
             )
         ).wait()
         drone.disconnect()
+
+
+if __name__ == "__main__":
+    test_takeoff_if_necessary_2()

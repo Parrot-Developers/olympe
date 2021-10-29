@@ -1,5 +1,3 @@
-# -*- coding: UTF-8 -*-
-
 import olympe
 from olympe.messages.skyctrl.CoPiloting import setPilotingSource
 

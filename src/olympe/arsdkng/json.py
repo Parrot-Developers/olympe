@@ -1,6 +1,4 @@
-# -*- coding: UTF-8 -*-
-
-#  Copyright (C) 2019 Parrot Drones SAS
+#  Copyright (C) 2019-2021 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions
@@ -30,25 +28,26 @@
 #  SUCH DAMAGE.
 
 
-from __future__ import unicode_literals
-from __future__ import absolute_import
-from future.builtins import str, bytes
 import re
 import json
 
-from .enums import ArsdkBitfield, ArsdkEnum, ArsdkEnums
-from .messages import ArsdkMessage, ArsdkMessages
+from .enums import ArsdkBitfield, ArsdkEnum, ArsdkProtoEnum, ArsdkEnums
+from .messages import ArsdkMessageBase, ArsdkMessages
 
 
 class JSONEncoder(json.JSONEncoder):
-
     def default(self, o):
         if issubclass(o.__class__, ArsdkBitfield):
-            return "olympe.enums." + o.__class__._feature_name_ + '.' + str(o)
+            return f"olympe.enums.{o.__class__._feature_name_}.{o}"
         elif issubclass(o.__class__, ArsdkEnum):
-            return 'olympe.enums.' + o.__class__._feature_name_ + '.' + str(o)
-        elif issubclass(o.__class__, ArsdkMessage):
-            return 'olympe.messages.' + o.feature_name + '.' + str(o)
+            return f"olympe.enums.{o.__class__._feature_name_}.{o}"
+        elif issubclass(o.__class__, ArsdkProtoEnum):
+            return (
+                f"olympe.enums.{o.__class__._feature_name_}."
+                f"{o.__class__.__name__}.{o.to_upper_str()}"
+            )
+        elif issubclass(o.__class__, ArsdkMessageBase):
+            return f"olympe.messages.{o.feature_name}.{o}"
         return super(JSONEncoder, self).default(o)
 
 
@@ -66,34 +65,48 @@ def replace(r, d):
     return ret
 
 
-re_enums = re.compile(r"^olympe\.enums\.(?P<feature>[^\.]+)\.(?P<enum>[^\.]+)\.(?P<enum_val>[^\.]+)$")
-re_messages = re.compile(r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$")
+re_enums = re.compile(
+    r"^olympe\.enums\.(?P<feature>[^\.]+)\.(?P<enum>[^\.]+)\.(?P<enum_val>[^\.]+)$"
+)
 
 
-def replace_arsdk(s):
+re_messages = re.compile(
+    r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$"
+)
+
+
+def replace_arsdk(root, s):
     if not isinstance(s, (str, bytes)):
         return s
     m = re_enums.match(s)
     if m:
-        return ArsdkEnums.get()._by_feature[m.group("feature")][m.group("enum")][m.group("enum_val")]
+        return ArsdkEnums.get(root)._by_feature[m.group("feature")][m.group("enum")][
+            m.group("enum_val")
+        ]
     m = re_messages.match(s)
     if m:
         message = m.groupdict()
         if not message["message"]:
             return ArsdkMessages.get().by_feature[message["feature"]][message["class"]]
         else:
-            return ArsdkMessages.get().by_feature[message["feature"]][message["class"]][message["message"]]
+            return ArsdkMessages.get().by_feature[message["feature"]][message["class"]][
+                message["message"]
+            ]
     return s
 
 
 class JSONDecoder(json.JSONDecoder):
 
-    enums = re.compile(r"^olympe\.enums\.(?P<feature>[^\.]+)\.(?P<enum>[^\.]+)\.(?P<enum_val>[^\.]+)$")
-    messages = re.compile(r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$")
+    enums = re.compile(
+        r"^olympe\.enums\.(?P<feature>[^\.]+)\.(?P<enum>[^\.]+)\.(?P<enum_val>[^\.]+)$"
+    )
+    messages = re.compile(
+        r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$"
+    )
 
     def __init__(self, *args, **kwds):
         kwds.update(object_hook=lambda o: self._object_hook(o))
         super(JSONDecoder, self).__init__(*args, **kwds)
 
     def _object_hook(self, o):
-        return replace(replace_arsdk, o)
+        return replace(lambda s: replace_arsdk("olympe", s), o)

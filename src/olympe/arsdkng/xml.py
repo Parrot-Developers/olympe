@@ -1,6 +1,4 @@
-# -*- coding: UTF-8 -*-
-
-#  Copyright (C) 2019 Parrot Drones SAS
+#  Copyright (C) 2019-2021 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions
@@ -30,35 +28,37 @@
 #  SUCH DAMAGE.
 
 
-from __future__ import unicode_literals
-from __future__ import absolute_import
-
-import os
+from pathlib import Path
 
 import arsdkparser
+import olympe_deps as od
 
 
-class ArsdkXml(object):
+class ArsdkXml:
 
-    _single = None
+    _store = {}
 
     @classmethod
-    def get(cls):
-        if cls._single is None:
-            cls._single = ArsdkXml()
-        return cls._single
+    def get(cls, root):
+        ret = cls._store.get(root)
+        if ret is None:
+            ret = ArsdkXml(root)
+            cls._store[root] = ret
+        return ret
 
-    def __init__(self):
-        try:
-            self.path = os.environ.get(
-                "OLYMPE_XML",
-                os.path.join(os.path.dirname(arsdkparser.__file__), "arsdk-xml/xml")
-            )
-        except KeyError:
-            raise RuntimeError(
-                "OLYMPE_XML environment variable doesn't exist. It should point to arsdk-xml/xml")
-        self.ctx = None
-        self.parse_xml()
+    def __init__(self, root):
+        if root == "olympe":
+            # Default arsdk-xml location
+            od_path = Path(od.__file__)
+            if od_path.stem == "__init__":
+                od_path = od_path.parent
+            site_path = od_path.parent
+            self.arsdk_xml_path = site_path / "arsdk" / "xml"
+            self.ctx = None
+            self.parse_xml()
+        else:
+            # TODO: we might want to support multiple version of arsdk-xml here
+            self.ctx = arsdkparser.ArParserCtx()
 
     def parse_xml(self):
         """!
@@ -66,8 +66,8 @@ class ArsdkXml(object):
         """
         self.ctx = arsdkparser.ArParserCtx()
         # first load generic.xml
-        arsdkparser.parse_xml(self.ctx, os.path.join(self.path, "generic.xml"))
-        for f in sorted(os.listdir(self.path)):
-            if not f.endswith(".xml") or f == "generic.xml":
+        arsdkparser.parse_xml(self.ctx, str(self.arsdk_xml_path / "generic.xml"))
+        for f in self.arsdk_xml_path.glob("*.xml"):
+            if f.name == "generic.xml":
                 continue
-            arsdkparser.parse_xml(self.ctx, os.path.join(self.path, f))
+            arsdkparser.parse_xml(self.ctx, str(f))

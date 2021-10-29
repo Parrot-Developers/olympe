@@ -1,10 +1,15 @@
 import argparse
 import cv2
+import olympe
+import os
 import sys
 import time
-from olympe import Pdraw, PDRAW_YUV_FORMAT_I420, PDRAW_YUV_FORMAT_NV12, PdrawState
+from olympe.video.pdraw import Pdraw, PdrawState
+from olympe.video.renderer import PdrawRenderer
 
-DRONE_IP = "10.202.0.1"
+
+DRONE_IP = os.environ.get("DRONE_IP", "10.202.0.1")
+DRONE_RTSP_PORT = os.environ.get("DRONE_RTSP_PORT", "554")
 
 
 def yuv_frame_cb(yuv_frame):
@@ -16,26 +21,25 @@ def yuv_frame_cb(yuv_frame):
     # the VideoFrame.info() dictionary contains some useful information
     # such as the video resolution
     info = yuv_frame.info()
-    height, width = info["yuv"]["height"], info["yuv"]["width"]
+    height, width = (  # noqa
+        info["raw"]["frame"]["info"]["height"],
+        info["raw"]["frame"]["info"]["width"],
+    )
 
     # yuv_frame.vmeta() returns a dictionary that contains additional
     # metadata from the drone (GPS coordinates, battery percentage, ...)
 
     # convert pdraw YUV flag to OpenCV YUV flag
     cv2_cvt_color_flag = {
-        PDRAW_YUV_FORMAT_I420: cv2.COLOR_YUV2BGR_I420,
-        PDRAW_YUV_FORMAT_NV12: cv2.COLOR_YUV2BGR_NV12,
-    }[info["yuv"]["format"]]
+        olympe.VDEF_I420: cv2.COLOR_YUV2BGR_I420,
+        olympe.VDEF_NV12: cv2.COLOR_YUV2BGR_NV12,
+    }[yuv_frame.format()]
 
     # yuv_frame.as_ndarray() is a 2D numpy array with the proper "shape"
     # i.e (3 * height / 2, width) because it's a YUV I420 or NV12 frame
 
     # Use OpenCV to convert the yuv frame to RGB
-    cv2frame = cv2.cvtColor(yuv_frame.as_ndarray(), cv2_cvt_color_flag)
-
-    # Use OpenCV to show this frame
-    cv2.imshow("Olympe Pdraw Example", cv2frame)
-    cv2.waitKey(1)  # please OpenCV for 1 ms...
+    cv2frame = cv2.cvtColor(yuv_frame.as_ndarray(), cv2_cvt_color_flag)  # noqa
 
 
 def main(argv):
@@ -43,7 +47,7 @@ def main(argv):
     parser.add_argument(
         "-u",
         "--url",
-        default="rtsp://10.202.0.1/live",
+        default=f"rtsp://{DRONE_IP}:{DRONE_RTSP_PORT}/live",
         help=(
             "Media resource (rtsp:// or file://) URL.\n"
             "See olympe.Pdraw.play documentation"
@@ -54,6 +58,7 @@ def main(argv):
     pdraw = Pdraw()
     pdraw.set_callbacks(raw_cb=yuv_frame_cb)
     pdraw.play(url=args.url, media_name=args.media_name)
+    renderer = PdrawRenderer(pdraw=pdraw)
     assert pdraw.wait(PdrawState.Playing, timeout=5)
     if args.url.endswith("/live"):
         # Let's see the live video streaming for 10 seconds
@@ -66,7 +71,12 @@ def main(argv):
         # For this is example, this is the replayed video maximal duration:
         timeout = 90
     assert pdraw.wait(PdrawState.Closed, timeout=timeout)
+    renderer.stop()
     pdraw.dispose()
+
+
+def test_pdraw():
+    main([])
 
 
 if __name__ == "__main__":

@@ -34,7 +34,8 @@ olympe.log.update_config(
 
 logger = getLogger(__name__)
 
-DRONE_IP = "192.168.42.1"
+DRONE_IP = os.environ.get("DRONE_IP", "192.168.42.1")
+DRONE_MEDIA_PORT = os.environ.get("DRONE_MEDIA_PORT", "80")
 
 
 class MediaEventListener(olympe.EventListener):
@@ -59,8 +60,7 @@ class MediaEventListener(olympe.EventListener):
         # the right thing and download for you any subsequent resources associated
         # to this media id automatically.
         self._media(
-            download_media_thumbnail(event.media_id) &
-            download_media(event.media_id)
+            download_media_thumbnail(event.media_id) & download_media(event.media_id)
         )
 
     @olympe.listen_event(resource_created())
@@ -79,12 +79,15 @@ class MediaEventListener(olympe.EventListener):
     def onResourceDownloaded(self, event, scheduler):
         if event.is_thumbnail:
             return
-        logger.info("resource_downloaded {} {}".format(
-            event.resource_id,
-            event.data["download_path"],
-        ))
+        logger.info(
+            "resource_downloaded {} {}".format(
+                event.resource_id,
+                event.data["download_path"],
+            )
+        )
         self._downloaded_resources.append(
-            self._media.resource_info(resource_id=event.resource_id))
+            self._media.resource_info(resource_id=event.resource_id)
+        )
 
     @olympe.listen_event()
     def default(self, event, scheduler):
@@ -112,8 +115,11 @@ class MediaEventListener(olympe.EventListener):
                 return
 
         # Sanity check 2/2: local downloaded resources equals the number of remote resources
-        self.remote_resource_count = sum(map(
-            lambda id_: len(self._media.resource_info(media_id=id_)), self._media_id))
+        self.remote_resource_count = sum(
+            map(
+                lambda id_: len(self._media.resource_info(media_id=id_)), self._media_id
+            )
+        )
         self.local_resource_count = len(self._downloaded_resources)
         if self.local_resource_count != self.remote_resource_count:
             logger.error(
@@ -129,8 +135,9 @@ class MediaEventListener(olympe.EventListener):
         for media_id in self._media_id:
             delete = delete_media(media_id, _timeout=10)
             if not self._media(delete).wait().success():
-                logger.error("Failed to delete media {} {}".format(
-                    media_id, delete.explain()))
+                logger.error(
+                    "Failed to delete media {} {}".format(media_id, delete.explain())
+                )
         super().unsubscribe()
 
 
@@ -170,29 +177,44 @@ def main(drone, media=None):
         drone(take_photo(cam_id=0)).wait()
         if not photo_saved.wait(_timeout=30).success():
             logger.error("Photo not saved: {}".format(photo_saved.explain()))
-    assert media_listener.remote_resource_count == 14, "remote resource count = {}".format(
-        media_listener.remote_resource_count)
-    assert media_listener.local_resource_count == 14, "local resource count = {}".format(
-        media_listener.local_resource_count)
+    assert (
+        media_listener.remote_resource_count == 14
+    ), "remote resource count = {}".format(media_listener.remote_resource_count)
+    assert (
+        media_listener.local_resource_count == 14
+    ), "local resource count = {}".format(media_listener.local_resource_count)
 
 
-if __name__ == "__main__":
+def test_media():
     # Here we want to demonstrate olympe.Media class usage as a standalone API
     # so we disable the drone object media autoconnection (we won't use
     # drone.media) and choose to instantiate the olympe.Media class ourselves
-    with olympe.Drone(DRONE_IP, media_autoconnect=False, name="example_media_standalone") as drone:
-        drone.connect()
-        media = olympe.Media(DRONE_IP, name="example_media_standalone")
-        media.connect()
+    with olympe.Drone(
+        DRONE_IP,
+        media_autoconnect=False,
+        media_port=DRONE_MEDIA_PORT,
+        name="example_media_standalone",
+    ) as drone:
+        assert drone.connect()
+        media = olympe.Media(
+            f"{DRONE_IP}:{DRONE_MEDIA_PORT}", name="example_media_standalone"
+        )
+        assert media.connect()
         main(drone, media)
-        media.shutdown()
-        drone.disconnect()
+        assert media.shutdown()
+        assert drone.disconnect()
 
     # By default, the drone instantiate an internal olympe.Media object (media_autoconnect=True
     # by default). This olympe.Media object is exposed through the Drone.media property. In this
     # case the connection to the remote media API endpoint is automatically handled by the olympe
     # drone controller class.
-    with olympe.Drone(DRONE_IP, name="example_media_autoconnect") as drone:
-        drone.connect()
+    with olympe.Drone(
+        DRONE_IP, media_port=DRONE_MEDIA_PORT, name="example_media_autoconnect"
+    ) as drone:
+        assert drone.connect(retry=5, timeout=60)
         main(drone)
-        drone.disconnect()
+        assert drone.disconnect()
+
+
+if __name__ == "__main__":
+    test_media()

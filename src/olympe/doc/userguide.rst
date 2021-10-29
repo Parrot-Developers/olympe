@@ -6,14 +6,17 @@ User guide
 This guide will walk you through Olympe API using a series of examples that increasingly demonstrate
 more advanced usage.
 
-If you haven't followed Olympe :ref:`installation procedure<installation>`, you should do it now.
+Before continuing you should first read the Olympe :ref:`installation procedure<installation>`.
 
-For your own safety and the safety of others, the following examples will use a simuated ANAFI drone
-but remember that you can also connect to a physical drone.
+For your own safety and the safety of others, the following examples will use a simulated ANAFI
+drone but remember that Olympe is also capable of communicating with a physical drone. As far as
+Olympe is concerned, the main difference between a physical and a simulated drone is the drone IP
+address (``192.168.42.1`` for a physical drone and ``10.202.0.1`` for a simulated one).
 
-At the end of each example, remember to reset the simulation before getting into the next example
-because each example assume that the drone is landed with a fully charged battery. Just hit
-Ctrl+R inside the Sphinx GUI to reset the simulation.
+At the end of each example, if you are using a simulated drone, remember to reset the simulation
+before getting into the next example. Each example assumes that the drone is landed with a fully
+charged battery. Just enter ``sphinx-cli action -m world fwman world_reset_all`` in a terminal to
+reset the current simulation.
 
 The full code of each example can be found in the
 `src/olympe/doc/examples/ <https://github.com/Parrot-Developers/olympe/tree/master/src/olympe/doc/examples>`_
@@ -22,24 +25,37 @@ folder.
 Create a simulated drone
 ------------------------
 
-First things first, you need a drone to connect to. For this example we will use (sphinx_) to create
+First things first, you need a drone to connect to. For this example we will use Sphinx_ to create
 a simulated drone and then connect to it using Olympe before sending our first commands.
 
-If you haven't installed (sphinx_) yet, now is a good time to install it.
+If you haven't installed Sphinx_ yet, now is a good time to install it.
 
 .. _sphinx: {{ sphinx_doc_url }}
 
+Then in a shell enter the following commands:
+
 .. code-block:: console
 
-    $ sudo systemctl start firmwared
-    $ sphinx /opt/parrot-sphinx/usr/share/sphinx/drones/anafi4k.drone::stolen_interface=::simple_front_cam=true
+    $ sudo systemctl start firmwared.service
+    $ sphinx "/opt/parrot-sphinx/usr/share/sphinx/drones/anafi_ai.drone"::firmware="ftp://<login>:<pass>@ftp2.parrot.biz/versions/anafi2/pc/%23latest/images/anafi2-pc.ext2.zip"
 
-The above commands start a simulation of an ANAFI drone with a simplified front camera and without
-a wifi interface. In the following examples, we will be using the virtual ethernet interface, and
-reach for the simulated drone at "10.202.0.1".
+Where ``login`` is the one from your Parrot partner FTP account and ``pass`` is the associated
+password.
 
-Setup your shell environment
-----------------------------
+The core application is now waiting for an UE4 application to connect… In a second shell, do:
+
+.. code-block:: console
+
+   $ parrot-ue4-empty
+
+The above commands start a simulation of an ANAFI Ai drone in an empty world. In the following
+examples, we will be using the virtual ethernet interface of the simulated drone, and reach it at
+``10.202.0.1``.
+
+For more information on Sphinx, please consult its comprehensive `user documentation <{{sphinx_doc_url}}>`_.
+
+Set up your shell environment
+-----------------------------
 
 Don't forget to :ref:`set up your Python environment<environment-setup>` using the
 ``shell``.
@@ -56,7 +72,7 @@ ARSDK messages explained
 
 At its core, Olympe basically just send and receive
 :ref:`ARSDK messages<messages-reference-documentation>` to control a drone.
-For example, the following sequence diagram shows what is happening when an Olympe scripts sends a
+The following sequence diagram shows what is happening when an Olympe scripts sends a
 :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command to a drone.
 
 .. _take-off-diag:
@@ -76,7 +92,7 @@ For example, the following sequence diagram shows what is happening when an Olym
    }
 
 When Olympe sends a command message like the :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff`
-above, it then waits for a response from the drone, the
+message above, it then waits for a response from the drone, the
 :py:func:`FlyingStateChanged(state="takingoff")<olympe.messages.ardrone3.PilotingState.FlyingStateChanged>`
 event message in this case.
 
@@ -132,38 +148,41 @@ modules. Likewise, ARSDK enum Python types are available in the
 See the :ref:`messages-reference-documentation` for more information.
 
 
-Olympe basics
--------------
+Olympe's basics
+---------------
 
 Taking off - "Hello world" example
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The first thing you might want to do with Olympe is making your drone to take off. In this example
-we'll write a simple python script that will connect to the simulated drone we've just created
+we'll write a simple Python script that will connect to the simulated drone we've just created
 and then send it a :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command.
 
-Create the following python ``takeoff.py`` script somewhere in your home directory:
+Create the following Python ``takeoff.py`` script somewhere in your home directory:
 
 .. literalinclude:: examples/takeoff.py
     :language: python
     :linenos:
 
-First, this script imports the ``olympe`` module and then the
-:py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command message from the arsdk
-:ref:`ardrone3-features`. A "feature" is just a collection of related command and event messages
-that the drone exchanges with the controller (`FreeFlight`, `Skycontroller`, `Olympe`, ...).
+First, this script imports the ``olympe`` Python package and then the
+:py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command message from the `Piloting`
+feature module (one of the :ref:`ardrone3-features` module). A "feature" is just a collection
+of related command and event messages that the drone exchanges its controller (`FreeFlight`,
+`SkyController`, `Olympe`, ...).
 
-Next, this script creates the ``drone`` interface object with the :py:class:`olympe.Drone` class.
-For ``anafi`` this class constructor requires only one argument: the drone IP address. For a
-simulated drone, we can use "10.202.0.1" which is the default drone IP address over the virtual
-Ethernet interface.
+Next, this script creates the ``drone`` object of the :py:class:`olympe.Drone` class.
+This class constructor requires only one argument: the IP address of the drone. For a simulated
+drone, we can use ``10.202.0.1`` which is the default drone IP address over the virtual Ethernet
+interface. For a physical drone, it would be ``192.168.42.1`` which is the de default drone IP
+address over Wi-Fi. Finally, when connected to a SkyController over USB, the SkyController is
+reachable at ``192.168.43.1``.
 
-:py:meth:`olympe.Drone.connect` actually performs the connection to the drone. This would fail if
-the drone is unreachable (or non-existent) for some reason.
+:py:meth:`olympe.Drone.connect` actually performs the connection to the drone. This would fail and
+return `False` if the drone is unreachable (or non-existent) for some reason.
 
 Then, ``drone(TakeOff()).wait()`` sends the
-:py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command to the drone and then waits for
-the drone to acknowledge the command. When the ``wait()`` function returns, our simulated drone
+:py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command message to the drone and then waits
+for the drone to acknowledge the command. When the ``wait()`` function returns, our simulated drone
 should be taking off. For now, we will always use the ``drone(....).wait()`` construct to send
 command message and will explain later what the ``wait()`` function does and what we could do
 differently with or without it.
@@ -182,7 +201,7 @@ Getting the current value of a drone state or setting
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In this example, we will be using the :py:meth:`~olympe.Drone.get_state` method to query the current
-"maximum tilt" setting value.
+value of the "maximum tilt" drone's setting.
 
 When the maximum tilt drone setting is changed by the controller (Olympe) with the
 :py:func:`~olympe.messages.ardrone3.PilotingSettings.MaxTilt` command message the drone sends the
@@ -190,16 +209,17 @@ When the maximum tilt drone setting is changed by the controller (Olympe) with t
 Changing a drone setting will be demonstrated in the following example. Here, we're just interested
 in getting the current drone setting.
 
-When Olympe connects to a drone it also asks the drone to send back all its event messages in order
-to initialize Olympe drone state information as returned by the :py:meth:`olympe.Drone.get_state`
-method. So **if Olympe is connected to a drone** :py:meth:`olympe.Drone.get_state` always returns
-the current drone state associated to an **event message**.
+When Olympe connects to a drone it also asks the drone to send back all its states and settings
+event messages. Olympe can later provide you with this information through the
+:py:meth:`olympe.Drone.get_state` method. So **if Olympe is connected to a drone**,
+:py:meth:`olympe.Drone.get_state` always returns the current drone state associated to an
+**event message**.
 
 In this case, we will be passing the
 :py:func:`~olympe.messages.ardrone3.PilotingSettingsState.MaxTiltChanged` message to the
 :py:meth:`olympe.Drone.get_state` method. This will return a dictionary of the
 :py:func:`~olympe.messages.ardrone3.PilotingSettingsState.MaxTiltChanged` event message which
-provide the following parameters:
+provides the following parameters:
 
     :MaxTiltChanged Parameters:
         - current (float) – Current max tilt
@@ -210,9 +230,10 @@ Note: Don't be confused here, the "min" and "max" parameters are actually the mi
 maximum values for the "maximum tilt" setting. Here, we are only interested in the "current"
 value of this setting.
 
-Let's practice! First, reset the simulation (Ctrl+R inside the Sphinx GUI).
+Let's get down to some practice! First, reset the simulation
+(``sphinx-cli action -m world fwman world_reset_all`` in a terminal).
 
-Create the following python ``maxtiltget.py`` script somewhere in your home directory:
+Create the following Python ``maxtiltget.py`` script somewhere in your home directory:
 
 .. literalinclude:: examples/maxtiltget.py
     :language: python
@@ -225,7 +246,7 @@ source'd the ``shell`` script:
 
     ({{ python_prompt }}) $ python ./maxtiltget.py
 
-This should print the current maximum tilt value in your console. The following sequence diagram
+This should print the current maximum tilt value in your terminal. The following sequence diagram
 illustrate what is happening in this simple example.
 
 .. _max-tilt-get-diag:
@@ -252,8 +273,8 @@ In this example, we will change the "maximum tilt" drone setting. This setting i
 the maximum drone acceleration and speed. The more the drone can tilt, the more the drone gain
 speed.
 
-The maximum tilt setting itself must be within a minimum and a maximum value. A drone with a max
-tilt value of 0° is not particularly useful while a maximum tilt of 180° might only be useful for
+The maximum tilt setting itself must be within a minimum and maximum range. A drone with a max
+tilt value of 0° is not particularly useful while a maximum tilt over 180° might only be useful for
 a racer drone. For ANAFI the maximum tilt setting must be within 1° and 40°.
 
 You might be wondering:
@@ -262,11 +283,11 @@ You might be wondering:
     - How does the drone respond to that?
     - How do we catch this kind of error with Olympe?
 
-Let's see how it's done in the following example. Some important explanations will follow.
+Let's see how this is done in the following example. Some important explanations will follow.
 
-First, reset the simulation (Ctrl+R inside the Sphinx GUI).
+First, reset the simulation (``sphinx-cli action -m world fwman world_reset_all`` in a terminal).
 
-Create the following python ``maxtilt.py`` script somewhere in your home directory:
+Create the following Python ``maxtilt.py`` script somewhere in your home directory:
 
 .. literalinclude:: examples/maxtilt.py
     :language: python
@@ -279,12 +300,14 @@ the second with a 0° tilt value.
 
 
 Note that this time, we are assigning into the ``maxTiltAction`` variable the object returned by the
-``.wait()`` method. For now, all you have to know is that you can call ``.success()`` on an action
-object if you want to know if your command succeeded or not. The ``success()`` function just returns
-``True`` in case of success and ``False`` otherwise. You can also call ``.timedout()`` on an action
-to know if the your command message timed out. This ``.timedout()`` method is not particularly
-useful in this example because we always call ``.wait()`` on the action object so the action is
-either successful or has timed out.
+``.wait()`` method. For now, all you have to know is that you can call ``.success() -> bool`` on an
+"action" object (the more general term is "expectation" object) if you want to know if your command
+succeeded or not. The ``success()`` function just returns ``True`` in case of success and ``False``
+otherwise.
+
+You can also call ``.timedout() -> bool`` on an "action" object to know if your command message
+timed out.  This ``.timedout()`` method is not particularly useful in this example because we always
+call ``.wait()`` on the action object, so the action is either successful or has timed out.
 
 To execute this script, from the same shell/terminal you have source'd the ``shell`` script in:
 
@@ -292,18 +315,18 @@ To execute this script, from the same shell/terminal you have source'd the ``she
 
     ({{ python_prompt }}) $ python ./maxtilt.py
 
-If all goes well, you should see the following output in your console:
+If all goes well, you should see the following output in your terminal:
 
 .. code-block:: console
 
     MaxTilt(10) success
     MaxTilt(0) timedout
 
-Obviously, the 10° maximum tilt value is correct so the first command succeeded while the second
+Obviously, the 10° maximum tilt value is correct, so the first command succeeded while the second
 command failed to set an incorrect 0° maximum tilt value.
 
 It is important to understand how Olympe knows if a particular command succeeded or not. When
-olympe sends a **command message**, it usually implicitly expects an **event message** in return.
+Olympe sends a **command message**, it usually implicitly expects an **event message** in return.
 
 Up until now, we have only explicitly used **command messages**. Command messages and event messages
 are somewhat similar. They are both associated with an internal unique ID and eventually with some
@@ -320,7 +343,7 @@ True``).
 
 The :ref:`following sequence diagram<max-tilt-diag>` illustrates what is happening here.
 For the second maximum tilt command, when Olympe sends the ``MaxTilt(0)`` **command message** it
-receives a ``MaxTiltChanged(1)`` **event message** because 0° is an invalid setting value so the
+receives a ``MaxTiltChanged(1)`` **event message** because 0° is an invalid setting value, so the
 drone just informs the controller that it has set the minimum setting value instead (1°). Olympe
 **does not assume** that this response means "No, I won't do what you are asking". Instead, it still
 waits for a ``MaxTiltChanged(0)`` event that will never come and the command message times out:
@@ -363,21 +386,22 @@ Moving around - Waiting for a 'hovering' flying state
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In this example, we will move our drone around using the
-:py:func:`~olympe.messages.ardrone3.Piloting.moveBy` command.
+:py:func:`~olympe.messages.ardrone3.Piloting.moveBy` command message.
 
-First, reset the simulation (Ctrl+R inside the Sphinx GUI).
+First, reset the simulation (``sphinx-cli action -m world fwman world_reset_all`` in a terminal).
 
-Create the following python ``moveby.py`` script somewhere in your home directory:
+Create the following Python ``moveby.py`` script somewhere in your home directory:
 
 .. literalinclude:: examples/moveby.py
     :language: python
     :linenos:
 
-First, this script imports the ``olympe`` module and then the
+This script starts by importing the ``olympe`` package and then the
 :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff`,
 :py:func:`~olympe.messages.ardrone3.Piloting.moveBy` and
 :py:func:`~olympe.messages.ardrone3.Piloting.Landing`
-**command messages** from the ``ardrone3`` feature. It then connects to the drone and send the
+**command messages** from the ``ardrone3.Piloting`` feature module. It then connects to the drone
+and send the
 :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff`,
 :py:func:`~olympe.messages.ardrone3.Piloting.moveBy` and
 :py:func:`~olympe.messages.ardrone3.Piloting.Landing` commands.
@@ -398,7 +422,7 @@ The output of this script should be:
 
 Wait! The drone takes off and then eventually lands without performing the moveBy?! What happened?
 
-When olympe sends a command message to the drone it expects an acknowledgement event message from
+When olympe sends a command message to the drone it expects an acknowledgment event message from
 the drone in return. In this script, ``drone(TakeOff()).wait()`` sends the
 :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command to the drone and then **waits for the
 drone taking off event message** as an acknowledgment from the drone. Olympe knows that after a
@@ -410,7 +434,7 @@ The problem with the
 :py:func:`~olympe.messages.ardrone3.Piloting.moveBy` command is that it is rejected by the drone as
 long as the drone is not in the "hovering" flying state. In this case it is rejected because after
 the :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command the drone is in ``takingoff``
-flying state.  So, to correct this script we will have to wait for the ``hovering`` state before
+flying state.  So, to fix this script we will have to wait for the ``hovering`` state before
 sending the :py:func:`~olympe.messages.ardrone3.Piloting.moveBy` command. The following sequence
 diagram illustrates what is happening with this first attempt to use the
 :py:func:`~olympe.messages.ardrone3.Piloting.moveBy` command.
@@ -445,11 +469,11 @@ Edit ``moveby.py`` with the following corrected script:
 
 This new script will wait for the hovering state after each command sent to the drone.
 To do that, it imports the :py:func:`~olympe.messages.ardrone3.PilotingState.FlyingStateChanged`
-**event message** from the same ``ardrone3`` feature.
+**event message** from the same ``ardrone3.PilotingState`` module feature.
 
 
-Note: The expectations for each command messages are defined in ``arsdk-xml`` along with the command
-and event messages themselves.
+Note: The expectations for each command message are defined in the ``arsdk-xml`` source repo along
+with the command and event messages themselves.
 
 .. literalinclude:: examples/moveby2.py
     :language: python
@@ -460,17 +484,17 @@ and event messages themselves.
 In this new example after the drone connection, the above code tells Olympe to:
 
     1. Send the :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command
-    2. Then, implicitly wait for the expectations of the
+    2. Then, to implicitly wait for the expectations of the
        :py:func:`~olympe.messages.ardrone3.Piloting.TakeOff` command:
        ``FlyingStateChanged(state='takingoff')``
-    3. Then, explicitly wait for the drone ``hovering`` flying state event:
+    3. Then, to explicitly wait for the drone ``hovering`` flying state event:
        ``FlyingStateChanged(state='hovering')``
 
 
 Here, the ``drone()`` functor accepts more than just a command message. The ``drone()`` takes an
 expression that may be a combination of command and event messages to process.
 The ">>" operator is used to combine two expressions with an "and then" semantic. This example
-could be read as "Take off and then wait a maximum of 5 seconds for the "hovering" flying state").
+could be read as "Take off and then wait a maximum of 5 seconds for the 'hovering' flying state").
 
 The rest of the example should be easy to understand now. After the drone has taken off, this script
 waits for the drone "hovering" state and then sends the moveBy command, waits for the "hovering"
@@ -499,8 +523,9 @@ second (successful) attempt to use the :py:func:`~olympe.messages.ardrone3.Pilot
       Olympe => Drone [label = "disconnect", return = "disconnected"]
    }
 
-Let's check everything works! Reset the simulation (Ctrl+R inside the Sphinx GUI) and execute this
-script, from the same shell/terminal you have source'd the ``shell`` script:
+Let's check everything works! Reset the simulation
+(``sphinx-cli action -m world fwman world_reset_all`` in a terminal) and execute this script, from
+the same shell/terminal you have source'd the ``shell`` script:
 
 .. code-block:: console
 
@@ -510,8 +535,8 @@ And it should work now! The drone should take off, perform a forward move by 10 
 land.
 
 
-Explore available commands
---------------------------
+Explore available ARSDK commands
+--------------------------------
 
 If you followed this guide so far, you might want to explore the
 :ref:`messages-reference-documentation`.
@@ -519,7 +544,7 @@ If you are looking for a specific message or feature, you can also use the searc
 sidebar on the left.
 
 Alternatively, you can also use Olympe in an interactive Python console with ``ipython`` and
-leverage the autocompletion and the help functions to browse the ARSDK messages.
+leverage the autocompletion and the ``help`` function to browse the available ARSDK messages.
 
 .. code-block:: console
 
@@ -550,6 +575,155 @@ leverage the autocompletion and the help functions to browse the ARSDK messages.
      |  is triggered.
 
 
+Using Parrot AirSDK missions with Olympe
+----------------------------------------
+
+Olympe integrates with the `Parrot AirSDK <https://developer.parrot.com/docs/airsdk/general/overview.html>`_
+and enables you to install AirSDK "missions" (i.e. Parrot and Parrot partners applications) onto
+a remote drone connected to Olympe.
+
+Once installed onto the done, Olympe is able to exchange mission specific messages with the drone.
+
+The example below illustrate this installation process and some basic interaction with the `Air SDK
+"Hello, Drone!" <https://dpc-dev.parrot.com/docs/airsdk/general/sample_hello.html#sample-hello>`_
+mission.
+
+.. literalinclude:: examples/mission.py
+    :language: python
+    :linenos:
+
+.. _Olympe eDSL:
+
+Olympe Expectation objects and the Olympe eDSL
+----------------------------------------------
+
+Before introducing more advanced feature, it seems important to take a moment to have a better
+understanding of the Olympe specific usage of Python operators to compose "Expectation" objects
+inside the ``drone()`` functor.
+
+Olympe Expectation objects
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+First, let's explain what is an "Expectation" object.  "Expectation" objects are a special kind of
+"`Future <https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.Future>`_"-like
+objects from the Python stdlib. People more familiar with Javascript might want to compare
+"Expectation" classes with the "`Promise <https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise>`_"
+class from the standard.
+
+Olympe creates "Expectation" objects whenever a message object is "called". For example,
+``takeoff_expectation = TakeOff()`` creates a ``takeoff_expectation`` object from the
+``ardrone3.Piloting.TakeOff`` command message we've been using in the previous example.
+
+Simply creating an expectation object has no side effect, you must pass the expectation object to a
+``drone`` object to "schedule" it. Continuing with our previous example
+``drone(takeoff_expectation)`` will "schedule" the ``takeoff_expectation``. Here "scheduling" this
+expectation actually means sending the ``TakeOff`` message to the drone and wait for the ``TakeOff``
+message default expectations (``FlyingStateChanged(state="takingoff")``). Let us pause on that. This
+means that an expectation objects:
+- has a potential side effect when it is "scheduled" by a ``drone`` object (here we send the
+``TakeOff`` message)
+- may have "sub-expectation(s)" (here the ``FlyingStateChanged(state="takingoff")`` event message)
+
+For convenience, the ``drone()`` functor returns the expectation object it has received in
+parameter. This enables the possibility to create and schedule an expectation object in one
+expression, for example: ``takeoff_expectation = drone(TakeOff())``.
+
+Olympe Expectation eDSL
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Now that we know that one "Expectation" object can be comprised of other expectation objects, like
+this is the case of the ``takeoff_expectation`` in the previous paragraph, we might want to compose
+expectation objects ourselves.
+
+Olympe supports the composition of expectation objects with 3 Python binary operators:
+``|`` ("OR"), ``&`` ("AND"), and ``>>`` ("AND THEN"). This feature has been briefly introduced in
+the ``Moving around - Waiting for a 'hovering' flying state`` previous example where the ``>>``
+"and then" operator is used to wait for the "hovering" flying state after a ``moveBy`` command.
+
+.. code-block:: python
+
+    expectation_object = drone(
+        moveBy(10, 0, 0, 0)
+        >> FlyingStateChanged(state="hovering", _timeout=5)
+    )
+
+This specific syntax that makes use of the Python operator overloading feature is what is called
+an "`embedded Domain Specific Language
+<https://en.wikipedia.org/wiki/Domain-specific_language#External_and_Embedded_Domain_Specific_Languages>`_"
+and we might refer to it as the Olympe "Expectation eDSL".
+
+Here, the ``drone()`` functor accepts more than just one command message expectation. The
+``drone()`` functor takes an expression that may be a combination of command and event messages to
+process. This expression actually results in the creation of a compound expectation object.
+The ">>" operator is used to combine two expressions with an "and then" semantic. This example
+could be read as "Take off and then wait a maximum of 5 seconds for the 'hovering' flying state").
+
+You can choose to schedule an Olympe eDSL expression with or without waiting for the end of its
+execution, just call ``.wait()`` on the expectation object to block the current thread until the
+expectation object is done (i.e. successful or timedout).
+
+When a compound expectation fails (or times out) you might want to understand what went wrong. To
+that end, you can use the ``.explain()`` that returns a string representation of the compound
+expectation. The ``.explain()`` method highlights in green the part of the expectation that was
+successful and in red the part of the compound expectation that has failed.
+
+Programmatic eDSL construct
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+You also have the ability to construct a compound expectation object programmatically before
+scheduling it, for example:
+
+.. code-block:: python
+
+    expectation_object = (
+        moveBy(10, 0, 0, 0)
+        >> FlyingStateChanged(state="hovering", _timeout=5)
+    )
+    for i in range(3):
+        expectation_object = expectation_object
+            >> moveBy(10, 0, 0, 0)
+            >> FlyingStateChanged(state="hovering", _timeout=5)
+        )
+    drone(expectation_object).wait(60)
+    assert expectation_object.success()
+
+
+Each expectation part of a compound expectation may be given a specific `_timeout` value in seconds
+that is independent of the global compound expectation timeout value that may be specified later to
+the ``.wait()`` method. When ``.wait()`` is called without a timeout value, this method blocks the
+current thread indefinitely until the expectation succeeds or until a blocking sub-expectation has
+timedout. In the example above, if any of the ``FlyingStateChanged`` expectations times out after 5
+seconds, the call to ``drone(expectation_object).wait(60)`` returns and
+``expectation_object.success()`` would return ``False``. Likewise, if the drone takes more than 60
+seconds to complete this ``moveBy``, the ``expectation_object`` compound expectation times out and
+``expectation_object.success()`` returns ``False`` even if no individual ``FlyingStateChanged``
+expectation has timedout.
+
+Olympe eDSL operators semantic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To conclude this quick tour of the expectation eDSL, let's focus on the specific semantic of each
+of the supported operator.
+
+The ``>>`` "and then" operator is probably the most useful of them. When an "and then" compound
+expectation is scheduled, the left hand side expectation is scheduled and awaited. When the left
+hand side expectation is satisfied the right-hand side expectation is scheduled and awaited. If the
+left-hand side expectation times out, the left-hand side is never scheduled nor awaited and the
+compound expectation times out. The compound "and then" expectation is successful when the
+right-hand side is successful.
+
+The ``&`` "and" operator schedules and awaits both the left-hand side and right-hand side
+expectations objects simultaneously. The compound "and" expectation is successful when both the
+left-hand side and the right hand side expectation are successful without any specific order
+requirement. The compound expectation times out if the left-hand side or the right-hand side of the
+expectation times out.
+
+The ``|`` "or" operator schedules and awaits both the left-hand side and right-hand side
+expectations objects simultaneously. The compound "or" expectation is successful if one of the
+left-hand side and the right hand side expectation is successful (or both). The
+compound expectation times out if both the left-hand side and the right-hand side of the expectation
+times out.
+
 You should now understand the basics of Olympe and should be able to write your own scripts.
 The rest of this guide will walk you through the most advanced (nevertheless important) features of
 Olympe.
@@ -574,8 +748,8 @@ Create the following python ``asyncaction.py`` script somewhere in your home dir
     :language: python
     :linenos:
 
-Reset the simulation (Ctrl+R inside the Sphinx GUI) and execute this
-script, from the same shell/terminal you have source'd the ``shell`` script:
+Reset the simulation (``sphinx-cli action -m world fwman world_reset_all`` in a terminal) and
+execute this script, from the same shell/terminal you have source'd the ``shell`` script:
 
 In this example, the :py:meth:`olympe.Drone.__call__` functor process commands and events
 asynchronously so that multiple commands can be sent to the drone and processed concurrently.
@@ -622,7 +796,7 @@ In addition to the :ref:`ARSDK messages<arsdk-messages-intro>`, Olympe also prov
 Python Enum and Bitfield types in the `olympe.enums.<feature_name>[.<class_name>]` modules.
 
 Most of the time, you shouldn't really need to import an enum type into your script because enum
-types are implicitly constructed from a string when you create a message object so the following
+types are implicitly constructed from a string when you create a message object, so the following
 examples are roughly equivalent:
 
 .. literalinclude:: examples/enums.py
@@ -642,8 +816,10 @@ Bitfield example:
 
 Additional usage examples are available in the unit tests of `olympe.arsdkng.enums`.
 
-Using Olympe exptectation expressions
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Using Olympe exptectation eDSL
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Before continuing with this Olympe example, you might want to read the :ref:`Olympe eDSL <Olympe eDSL>` section.
 
 Sometimes it can be useful to send a command to the drone only if it is in a specific state.
 For example, if the drone is already hovering when you start an Olympe script, you might want
@@ -674,7 +850,7 @@ The default expectations for the :code:`TakeOff` command are:
 controller receives the "takingoff" flying state a few milliseconds after the :code:`TakeOff`
 command has been sent, the drone has just climbed a few centimeters. Here, we don't really care for
 this "takingoff" flying state and this is why we are disabling the default expectations of the
-:code:`TakeOff` command. :code:`TakeOff(_no_expect=True)` sends the take off command and does not
+:code:`TakeOff` command. :code:`TakeOff(_no_expect=True)` sends the takeoff command and does not
 wait for the default expectations for this command. Instead of the default expectations, we are
 directly expecting the "hovering" flying state. We are using the '&' ("AND") operator instead of
 '>>' ("THEN") to wait for this event while Olympe sends the :code:`TakeOff` command *concurrently*.
@@ -696,8 +872,8 @@ Capture the video streaming and its metadata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Once you are connected to a drone with Olympe, to start the video streaming just call the
-:py:func:`olympe.Drone.start_video_streaming` function and the drone will start sending its
-video stream to Olympe. Call :py:func:`olympe.Drone.stop_video_streaming` the video streaming.
+:py:func:`olympe.Drone.streaming.start` function and the drone will start sending its
+video stream to Olympe. Call :py:func:`olympe.Drone.streaming.stop` the video streaming.
 
 Realtime capture
 """"""""""""""""
@@ -736,8 +912,8 @@ olympe.Drone object and some H.264 statistics.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 28
-    :lines: 28-44
+    :lineno-start: 30
+    :lines: 30-44
 
 Our objective is to start the video stream, fly the drone around, perform some
 live video processing, stop the video stream and finally perform some video
@@ -746,8 +922,8 @@ postprocessing.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 222
-    :lines: 222-231
+    :lineno-start: 183
+    :lines: 183-192
 
 Before we start the video streaming, we must connect to the drone and optionally
 register our callback functions and output files for the recorded video stream.
@@ -764,23 +940,6 @@ The :py:func:`StreamingExample.yuv_frame_cb` and
 video frame data (see: :py:func:`olympe.VideoFrame.as_ndarray`,
 :py:func:`olympe.VideoFrame.as_ctypes_pointer`) and its metadata
 (see: :py:func:`olympe.VideoFrame.info` and :py:func:`olympe.VideoFrame.vmeta`).
-
-.. literalinclude:: examples/streaming.py
-    :language: python
-    :linenos:
-    :lineno-start: 130
-    :lines: 130-152
-
-The `.264` file recorded by Olympe contains raw H.264 frames. In order to
-view this file with your favorite media player, you might need to convert it
-into an `.mp4` file. Here as our postprocessing step, we are merely copying the
-H.264 video frames into an MP4 container.
-
-.. literalinclude:: examples/streaming.py
-    :language: python
-    :linenos:
-    :lineno-start: 205
-    :lines: 205-219
 
 The full code of this example can be found in
 `src/olympe/doc/examples/streaming.py <https://github.com/Parrot-Developers/olympe/blob/master/src/olympe/doc/examples/streaming.py>`_.
@@ -822,8 +981,8 @@ Connect to a physical drone
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To connect olympe to a physical drone, you first need to connect to your linux
-box to a drone wifi access point. once you are connected to your drone over wifi,
-you just need to specify the drone ip address on its WiFi interface ("192.168.42.1").
+box to a drone Wi-Fi  access point. Once you are connected to your drone over Wi-Fi,
+you just need to specify the drone ip address on its Wi-Fi interface ("192.168.42.1").
 
 .. literalinclude:: examples/physical_drone.py
     :language: python
@@ -834,7 +993,7 @@ Connect to a SkyController
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To connect Olympe to a physical SkyController, you first need to connect to your Linux
-box to the SkyController 3 USB-C port. Then you should be able to connect to your SkyController
+node to the SkyController 3 USB-C port. Then you should be able to connect to your SkyController
 with its RNDIS IP address ("192.168.53.1").
 
 .. literalinclude:: examples/physical_skyctrl.py
@@ -850,10 +1009,3 @@ If your SkyController is not already connected to a drone, you may have to pair 
 .. literalinclude:: examples/skyctrl_drone_pairing.py
     :language: python
     :linenos:
-
-
-TODO
-^^^^
-
-.. todo::
-    Document the expectation "explain" method. Maybe insert it into a "How to debug" section.

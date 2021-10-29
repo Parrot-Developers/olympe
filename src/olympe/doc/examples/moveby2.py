@@ -1,12 +1,12 @@
-# -*- coding: UTF-8 -*-
-
 import olympe
+import os
 from olympe.messages.ardrone3.Piloting import TakeOff, moveBy, Landing
 from olympe.messages.ardrone3.PilotingState import FlyingStateChanged
 
-DRONE_IP = "10.202.0.1"
+DRONE_IP = os.environ.get("DRONE_IP", "10.202.0.1")
 
-if __name__ == "__main__":
+
+def test_moveby2():
     drone = olympe.Drone(DRONE_IP)
     drone.connect()
     assert drone(
@@ -19,3 +19,7 @@ if __name__ == "__main__":
     ).wait().success()
     assert drone(Landing()).wait().success()
     drone.disconnect()
+
+
+if __name__ == "__main__":
+    test_moveby2()

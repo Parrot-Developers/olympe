@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-#
 # Olympe documentation build configuration file
 #
 # This file is execfile()d with the current directory set to its
@@ -21,18 +19,15 @@
 
 # -- General configuration ------------------------------------------------
 
-from __future__ import unicode_literals, print_function
-
 from datetime import date
 
 import yaml
-import sphinx_rtd_theme
 
 from olympe import __version__
 
 # If your documentation needs a minimal Sphinx version, state it here.
 #
-# needs_sphinx = '1.0'
+needs_sphinx = '4.2'
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
@@ -41,8 +36,12 @@ extensions = [
     'sphinx.ext.todo',
     'sphinx.ext.autodoc',
     'sphinxcontrib.seqdiag',
+    'sphinx_copybutton',
     'olympe.sphinx_doc',
 ]
+
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+copybutton_prompt_is_regexp = True
 
 # Set up seqdiag extension
 seqdiag_html_image_format = "SVG"
@@ -52,7 +51,7 @@ todo_include_todos = True
 todo_emit_warnings = True
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+# templates_path = ['_templates']
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -68,7 +67,7 @@ source_suffix = '.rst'
 master_doc = 'index'
 
 # General information about the project.
-project = u'Olympe documentation'
+project = u'Olympe'
 _year = date.today().year
 if _year == 2018:
     copyright = u'2018, Parrot'
@@ -81,7 +80,7 @@ author = u'Parrot'
 # built documents.
 #
 # The short X.Y version.
-version = __version__
+version = ".".join(__version__.split(".")[:2])
 # The full version, including alpha/beta/rc tags.
 release = version
 
@@ -141,7 +140,7 @@ todo_include_todos = True
 def read_custom_html_context(app, config):
     if config.custom_html_context_path:
         with open(config.custom_html_context_path) as f:
-            custom_html_context = yaml.load(f)
+            custom_html_context = yaml.load(f, yaml.SafeLoader)
         config.html_context.update(custom_html_context)
     else:
         config.html_context.update(config.custom_html_context)
@@ -156,11 +155,6 @@ def source_preprocess(app, docname, source):
 
 
 def setup(app):
-    # Import sphinx-copybutton extension static files (MIT licensed)
-    app.add_stylesheet('copybutton.css')
-    app.add_javascript('clipboard.min.js')
-    app.add_javascript("copybutton.js")
-
     app.add_config_value('custom_html_context_path', "", "env")
     app.add_config_value('custom_html_context', {}, "env")
     app.connect('config-inited', read_custom_html_context)
@@ -173,15 +167,21 @@ def setup(app):
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = "sphinx_rtd_theme"
-
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+html_theme = "furo"
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
 #
-html_theme_options = {}
+html_theme_options = {
+    "light_logo": "logo-light-mode.png",
+    "dark_logo": "logo-dark-mode.png",
+    "navigation_with_keys": True,
+    "light_css_variables": {
+        "color-announcement-test": "white",
+        "color-announcement-background": "red",
+    },
+}
 
 # Add any paths that contain custom themes here, relative to this directory.
 # html_theme_path = []
@@ -198,7 +198,6 @@ html_theme_options = {}
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
 #
-html_logo = "_static/images/logo.png"
 
 # The name of an image file (relative to this directory) to use as a favicon of
 # the docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
@@ -211,22 +210,12 @@ html_logo = "_static/images/logo.png"
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
-
-html_context = {
-    'css_files': [
-        '_static/copybutton.css',  # from sphinx_copybutton extension
-        '_static/theme_overrides.css',  # override the RTD theme
-    ],
-}
-
 custom_html_context = {
     "python_prompt": "olympe-python3",
-    "workspace": "parrot-groundsdk",
+    "workspace": "parrot-olympe",
     "olympe_path": "packages/olympe",
     "olympe_product": "olympe-linux",
     "olympe_scripts_path": "./products/olympe/linux/env",
-    "repo_dl_url": "https://source.android.com/setup/build/downloading",
-    "sdk_repo_init_args": "-u https://github.com/Parrot-Developers/groundsdk-manifest.git",
     "sphinx_doc_url": "https://developer.parrot.com/docs/sphinx",
 
 }
