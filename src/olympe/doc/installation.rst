@@ -27,7 +27,7 @@ this version, for example:
 
 .. code-block:: console
 
-    $ python3 -m pip install --user https://github.com/Parrot-Developers/olympe/releases/v7.0.0/parrot-olympe-7.0.0-py3-none-manylinux_2_27_x86_64.whl
+    $ python3 -m pip install --user https://github.com/Parrot-Developers/olympe/releases/download/v7.0.1/parrot_olympe-7.0.1-py3-none-manylinux_2_27_x86_64.whl
 
 
 Build from source (for x86_64, armv7 or aarch64)
@@ -48,7 +48,7 @@ Download and extract the .tar.gz archive associated with the latest release of O
 .. code-block:: console
 
     $ mkdir -p ~/code/{{ workspace }}
-    $ curl https://github.com/Parrot-Developers/olympe/releases/v7.0.0/parrot-olympe-src-7.0.0.tar.gz | tar zxf - -C ~/code/{{ workspace }} --strip-components=1
+    $ curl https://github.com/Parrot-Developers/olympe/releases/download/v7.0.1/parrot-olympe-src-7.0.1.tar.gz | tar zxf - -C ~/code/{{ workspace }} --strip-components=1
     $ cd ~/code/{{ workspace }}
 
 
@@ -110,7 +110,7 @@ To setup an interactive Olympe Python environment, source the `shell` script:
     ~/code/{{ workspace }}
     $ source {{ olympe_scripts_path }}/shell
     ({{ python_prompt }}) $ pip --version
-    pip 20.2.3 from ~/code/{{ workspace }}/out/{{ olympe_product }}/pyenv_root/versions/3.9.5/lib/python3.9/site-packages/pip (python 3.9)
+    pip 21.3.1 from ~/code/{{ workspace }}/out/{{ olympe_product }}/pyenv_root/versions/3.9.5/lib/python3.9/site-packages/pip (python 3.9)
 
 
 The shell script can be sourced from outside the workspace:

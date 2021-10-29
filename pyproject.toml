@@ -73,9 +73,9 @@ tests = [
 ]
 
 [project.urls]
-homepage = "developer.parrot.com/"
-documentation = "developer.parrot.com/docs/olympe/"
-repository = "github.com/Parrot-Developers/olympe"
+homepage = "https://developer.parrot.com/"
+documentation = "https://developer.parrot.com/docs/olympe/"
+repository = "https://github.com/Parrot-Developers/olympe"
 
 [project.scripts]
 olympe = "olympe.app:main"
