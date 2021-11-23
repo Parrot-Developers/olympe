@@ -41,6 +41,7 @@ dependencies = [
     "future",
     "geopy",
     "ipython",
+    "importlib_metadata; python_version < '3.8'",
     "numpy",
     "pycryptodomex",
     "pytz",

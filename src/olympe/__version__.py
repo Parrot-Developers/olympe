@@ -29,4 +29,14 @@
 
 
 # Parrot internal version number
-__version__ = "7.0.0"
+try:
+    from importlib.metadata import version as get_version
+    from importlib.metadata import PackageNotFoundError
+except ImportError:
+    from importlib_metadata import version as get_version
+    from importlib_metadata import PackageNotFoundError
+
+try:
+    __version__ = get_version("parrot-olympe")
+except PackageNotFoundError:
+    __version__ = "0.0.0"

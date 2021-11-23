@@ -77,7 +77,13 @@ class MissionMetadata:
     target_max_version: str
     """Maximum version of drone firmware supported"""
 
-    digest: Optional[str]
+    build_sdk_version: str
+    """SDK version used to build the mission"""
+
+    build_sdk_target_arch: str
+    """Target architecture used to build the mission"""
+
+    digest: str
     """SHA512 digest hex dump"""
 
     @classmethod
@@ -231,6 +237,10 @@ class MissionController(LogMixin):
         raise KeyError(f"Unknown mission uid: '{uid}' version '{version}'")
 
     def from_path(self, url_or_path: Union[Path, str], feature_name_from_file=False):
+        """
+        Creates and returns an olympe.Mission object from a local path or an URL to an
+        AirSDK mission archive.
+        """
         return Mission(
             self, Resource(url_or_path), feature_name_from_file=feature_name_from_file
         )
@@ -450,6 +460,10 @@ class Mission:
         self._closed = True
 
     def install(self, allow_overwrite=None, is_default=None, timeout=30, **kwds):
+        """
+        Install this mission onto the remote drone. The drone must be rebooted
+        before this mission becomes available.
+        """
         return self._controller._install(
             self,
             allow_overwrite=allow_overwrite,
@@ -570,10 +584,16 @@ class Mission:
 
     @property
     def messages(self):
+        """
+        Returns a dictionary of mission (non-protobuf) messages usable with the Olympe DSL API.
+        """
         return self._messages
 
     @property
     def enums(self):
+        """
+        Returns a dictionary of mission enums usable with the Olympe DSL API.
+        """
         return self._enums
 
     @property
@@ -585,6 +605,10 @@ class Mission:
         return self._signature
 
     def wait_ready(self, timeout=None):
+        """
+        Wait for this mission to become ready to communicate with the drone. This method
+        waits for the associated drone to send this mission instance recipient ID.
+        """
         with self._ready_condition:
             if self._recipient_id is not None:
                 return True
@@ -603,6 +627,17 @@ class Mission:
         recipient_id=None,
         quiet=False,
     ):
+        """
+        Send an AirSDK mission custom protobuf message to the drone.
+
+        :param proto_message: An AirSDK protocol buffer message
+        :param service_name: the associated custom message service
+        :param msg_num: the associated custom message number
+        :param proto_args: an optional mapping of arguments to merge into
+         the protocol buffer message
+        :param recipient_id: specify or override the associated recipient ID
+        :param quiet: optional boolean flag to decrease log verbosity (defaults to False)
+        """
         service_id = ArsdkProto.service_id(service_name)
         recipient_id = recipient_id or self.recipient_id
         try:
@@ -635,6 +670,11 @@ class Mission:
         return send_future
 
     def subscribe(self, callback, service_name=None, msg_num=None, recipient_id=None):
+        """
+        Subscribe a callback function to every event messages associated to this mission.
+
+        See: :py:func:`~olympe.expectations.Scheduler.subscribe`
+        """
         recipient_id = recipient_id or self.recipient_id
         service_id = ArsdkProto.service_id(service_name) if service_name else None
         params = dict(service_id=service_id, recipient_id=recipient_id, msg_num=msg_num)

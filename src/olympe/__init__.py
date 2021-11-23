@@ -34,6 +34,7 @@ from .event import Event
 from .expectations import Expectation
 from .listener import EventListener, listen_event
 from .media import Media, MediaEvent, MediaInfo, ResourceInfo
+from .mission import Mission, MissionController
 from .video import VMetaFrameType
 from .video.frame import VideoFrame
 from .video.pdraw import PdrawState, Pdraw
@@ -61,6 +62,8 @@ __all__ = [
     "Media",
     "MediaEvent",
     "MediaInfo",
+    "Mission",
+    "MissionController",
     "Pdraw",
     "PdrawState",
     "ResourceInfo",

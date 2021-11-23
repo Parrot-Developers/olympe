@@ -77,7 +77,7 @@ def main(argv=None):
         sys.exit(sphinx_build(cmd))
 
     if 'version' in args and args['version']:
-        print(olympe.VERSION_STRING)
+        print(olympe.__version__)
         sys.exit(0)
 
     import IPython

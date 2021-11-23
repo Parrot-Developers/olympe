@@ -87,6 +87,20 @@ Olympe API Reference Documentation
     .. autoattribute:: Error
 
 
+.. autoclass:: olympe.MissionController()
+
+    .. automethod:: from_path
+
+.. autoclass:: olympe.Mission()
+
+    .. automethod:: install
+    .. autoattribute:: messages
+    .. autoattribute:: enums
+    .. automethod:: wait_ready
+    .. automethod:: send
+    .. automethod:: subscribe
+
+
 .. autoclass:: olympe.Expectation
 
     .. automethod:: received_events

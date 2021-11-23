@@ -3,8 +3,11 @@
 Installation
 ============
 
+Install via pip (x86_64 desktop only)
+-------------------------------------
+
 Olympe Python Wheels Runtime Requirements
------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Olympe is a Python 3 only package and requires Ubuntu 20.04 or higher, Debian 10 or higher.
 
@@ -15,21 +18,25 @@ install the `libgl1` package.
 
     $ sudo apt-get install libgl1
 
-Install via pip (x86_64 desktop only)
--------------------------------------
 
+Olympe Python Wheels minimal pip version
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Installation of Olympe wheels requires pip version 20.3 or higher. As Ubuntu and Debian latest LTS
 release provided pip versions are currently too old you MUST use a `virtual environment
 <https://docs.python.org/3/tutorial/venv.html>`_. See the Python environment
 :ref:`best practices` below for why and how to install a Python virtual environment. The rest of
 this section assumes that you have activated a suitable virtual environment in your current shell.
 
+Install from pypi.org
+^^^^^^^^^^^^^^^^^^^^^
 Install the latest available version of Olympe via pip:
 
 .. code-block:: console
 
     $ pip install parrot-olympe
 
+Install from github.com
+^^^^^^^^^^^^^^^^^^^^^^^
 Alternatively, to install a specific Olympe version, you should browse the
 https://github.com/Parrot-Developers/olympe/releases page and pip install the .whl associated to
 this version, for example:
@@ -40,16 +47,16 @@ this version, for example:
 
 
 Build from source (for x86_64, armv7 or aarch64)
-================================================
+------------------------------------------------
 
 System requirements
--------------------
+^^^^^^^^^^^^^^^^^^^
 
 The following install instructions have been tested under Ubuntu 20.04 and should also work
 on Debian 10 or higher.
 
 Download Olympe sources
------------------------
+^^^^^^^^^^^^^^^^^^^^^^^
 
 Olympe sources can be downloaded on Github olympe release page: https://github.com/Parrot-Developers/olympe/releases
 Download and extract the .tar.gz archive associated with the latest release of Olympe, for example:
@@ -60,14 +67,38 @@ Download and extract the .tar.gz archive associated with the latest release of O
     $ curl -L https://github.com/Parrot-Developers/olympe/releases/download/v7.0.2/parrot-olympe-src-7.0.2.tar.gz | tar zxf - -C ~/code/{{ workspace }} --strip-components=1
     $ cd ~/code/{{ workspace }}
 
-
-Install {{ olympe_product }} dependencies
------------------------------------------
-
 System dependencies installation procedure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To install the system dependencies of the `{{ workspace }}` workspace, just execute the `postinst` script.
+On Debian/Ubuntu, system dependencies must be installed before building Olympe from source.
+
+.. code-block:: console
+
+   # pyenv dependencies
+   sudo apt-get install make build-essential libssl-dev zlib1g-dev \
+            libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
+            libncursesw5-dev libncurses5 xz-utils tk-dev libffi-dev liblzma-dev \
+            python3-openssl git libgdbm-dev libgdbm-compat-dev uuid-dev python3-gdbm \
+            gawk
+
+    # python alchemy/dragon build system dependency
+    sudo apt-get install python3
+
+    # pdraw dependencies
+    sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev \
+      unzip freeglut3-dev libglfw3 libglfw3-dev libjson-c-dev libcurl4-gnutls-dev \
+      libgles2-mesa-dev
+
+    # ffmpeg alchemy module build dependencies
+    sudo apt-get install rsync
+
+    # Olympe / PySDL2 / pdraw renderer dependencies
+    sudo apt-get install libsdl2-dev libsdl2-2.0-0 libjpeg-dev libwebp-dev \
+     libtiff5-dev libsdl2-image-dev libsdl2-image-2.0-0 libfreetype6-dev \
+     libsdl2-ttf-dev libsdl2-ttf-2.0-0 libsdl2-gfx-dev
+
+
+Alternatively, to install the system dependencies of the `{{ workspace }}` workspace, just execute the `postinst` script.
 
 .. code-block:: console
 
@@ -75,10 +106,11 @@ To install the system dependencies of the `{{ workspace }}` workspace, just exec
     ~/code/{{ workspace }}
     $ {{ olympe_scripts_path }}/postinst
 
-Build {{ olympe_product }}
---------------------------
 
-Olympe relies on some SDK C libraries that need to be built.  Before using Olympe, We need to build the SDK itself.
+Build {{ olympe_product }}
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Olympe relies on some SDK C libraries that need to be built. Before using Olympe, we need to build the SDK itself.
 
 .. code-block:: console
 
@@ -93,7 +125,7 @@ created in the previous step.
 You should now have a 'built' Olympe workspace that already provides a Python virtual environment
 you can use in your developments (see the next steps).
 
-Alternatively, to build an Olympe wheel to install in another environment, use the following command
+Alternatively, to build an Olympe wheel to install Olympe in another environment, use the following command:
 
 .. code-block:: console
 
@@ -106,7 +138,7 @@ Olympe wheels are built in the `out/olympe-linux/images` workspace subdirectory.
 .. _environment-setup:
 
 Set up the development environment
-----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Finally, if you want to test Olympe from your development workspace, you need to set up the shell
 environment in which you will execute Olympe scripts. In the future, you will have to do this before
@@ -156,7 +188,7 @@ does not change your current prompt and just sets up the environment in your cur
 
 
 Check your development environment
-----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 If your installation succeeded, the following commands shouldn't report any error.
 
@@ -173,14 +205,14 @@ If your installation succeeded, the following commands shouldn't report any erro
 .. _best practices:
 
 Python environment best practices on Debian-based distros
-=========================================================
+---------------------------------------------------------
 
 This section of the documentation is not specific to Olympe and introduce the usage of Python
 virtual environment from a beginner perspective in order to avoid Python package installation
 pitfalls with pip.
 
 What's a Python virtual environment
------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A Python virtual environment is a Python environment isolated from the system-wide Python
 environment. A package installed in one virtual environment does not change anything in the
@@ -193,7 +225,7 @@ particular environment is activated, any `python` or `pip` process executed from
 virtual environment "site-packages" directory instead of the system "site-packages" directory.
 
 Why using a Python virtual environment is important
----------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Using `/usr/bin/python3` the system-wide Python interpreter environment for testing & development
 should generally be avoided. Creating a virtual environment per development project should be the
@@ -241,7 +273,7 @@ environment in which you can install any package (including a recent version of 
 risking to break anything.
 
 Creating a Python virtual environment on a Debian-based system
---------------------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 On Debian-based distros you first need to ensure that the Python standard `venv` library is
 available.
@@ -270,7 +302,7 @@ script. The first thing you want to do in this environment is upgrading pip.
    (my-virtual-env) $ pip --version
    pip 21.3.1 from /home/user/my-virtual-env/lib/python3.8/site-packages/pip (python 3.8)
 
-To deactivate/exit the virtual environment, just type `deactivate`, since we are down with this
+To deactivate/exit the virtual environment, just type `deactivate`, since we are done with this
 little virtual experience, we can safely remove this virtual environment from our filesystem.
 
 .. code-block:: console
