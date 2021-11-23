@@ -83,9 +83,6 @@ class MissionMetadata:
     build_sdk_target_arch: str
     """Target architecture used to build the mission"""
 
-    digest: str
-    """SHA512 digest hex dump"""
-
     @classmethod
     def from_dict(cls, data):
         def _from_int_str(x):
@@ -97,6 +94,12 @@ class MissionMetadata:
         return dacite.from_dict(
             cls, data, dacite.Config(type_hooks={int: _from_int_str})
         )
+
+
+@dataclass
+class MissionMetadataRemote(MissionMetadata):
+    digest: str
+    """SHA512 digest hex dump"""
 
 
 @dataclass
@@ -222,7 +225,7 @@ class MissionController(LogMixin):
             self.logger.error(str(e))
             return None
         missions = response.json()
-        missions = [MissionMetadata.from_dict(m) for m in missions]
+        missions = [MissionMetadataRemote.from_dict(m) for m in missions]
         return missions
 
     def from_uid(self, uid, version=None):

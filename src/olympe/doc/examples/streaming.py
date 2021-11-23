@@ -40,12 +40,12 @@ class StreamingExample:
         )
         self.h264_stats_writer.writeheader()
         self.frame_queue = queue.Queue()
-        self.flush_queue_lock = threading.Lock()
+        self.processing_thread = threading.Thread(target=self.yuv_frame_processing)
         self.renderer = None
 
     def start(self):
         # Connect the the drone
-        self.drone.connect()
+        assert self.drone.connect(retry=3)
 
         if DRONE_RTSP_PORT is not None:
             self.drone.streaming.server_addr = f"{DRONE_IP}:{DRONE_RTSP_PORT}"
@@ -68,13 +68,17 @@ class StreamingExample:
         # Start video streaming
         self.drone.streaming.start()
         self.renderer = PdrawRenderer(pdraw=self.drone.streaming)
+        self.running = True
+        self.processing_thread.start()
 
     def stop(self):
+        self.running = False
+        self.processing_thread.join()
         if self.renderer is not None:
             self.renderer.stop()
         # Properly stop the video stream and disconnect
-        self.drone.streaming.stop()
-        self.drone.disconnect()
+        assert self.drone.streaming.stop()
+        assert self.drone.disconnect()
         self.h264_stats_file.close()
 
     def yuv_frame_cb(self, yuv_frame):
@@ -86,12 +90,22 @@ class StreamingExample:
         yuv_frame.ref()
         self.frame_queue.put_nowait(yuv_frame)
 
+    def yuv_frame_processing(self):
+        while self.running:
+            try:
+                yuv_frame = self.frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            # You should process your frames here and release (unref) them when you're done.
+            # Don't hold a reference on your frames for too long to avoid memory leaks and/or memory
+            # pool exhaustion.
+            yuv_frame.unref()
+
     def flush_cb(self, stream):
         if stream["vdef_format"] != olympe.VDEF_I420:
             return True
-        with self.flush_queue_lock:
-            while not self.frame_queue.empty():
-                self.frame_queue.get_nowait().unref()
+        while not self.frame_queue.empty():
+            self.frame_queue.get_nowait().unref()
         return True
 
     def start_cb(self):
@@ -166,8 +180,8 @@ class StreamingExample:
             )
         ).wait()
         self.drone(MaxTilt(40)).wait().success()
-        for i in range(3):
-            print("Moving by ({}/3)...".format(i + 1))
+        for i in range(4):
+            print("Moving by ({}/4)...".format(i + 1))
             self.drone(moveBy(10, 0, 0, math.pi, _timeout=20)).wait().success()
 
         print("Landing...")

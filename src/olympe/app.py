@@ -59,6 +59,24 @@ def main(argv=None):
     )
 
     parser.add_argument(
+        '--gendoc_conf',
+        dest="doc_conf",
+        help="Sphinx doc conf.py path (overrides the default one)"
+    )
+
+    parser.add_argument(
+        '--gendoc_version',
+        dest="doc_version",
+        help="Override documentation version number"
+    )
+
+    parser.add_argument(
+        '--gendoc_release',
+        dest="doc_release",
+        help="Override documentation release number"
+    )
+
+    parser.add_argument(
         '--gendoc_context_path',
         dest="doc_context",
         help="Documentation context path"
@@ -72,6 +90,12 @@ def main(argv=None):
         cmd = ["-b", "html"]
         if args["doc_context"]:
             cmd += ["-D", "custom_html_context_path={}".format(args["doc_context"])]
+        if args["doc_conf"]:
+            cmd += ["-c", args["doc_conf"]]
+        if args["doc_version"]:
+            cmd += ["-D", f"version={args['doc_version']}"]
+        if args["doc_release"]:
+            cmd += ["-D", f"release={args['doc_release']}"]
         cmd += ["{}/doc".format(os.path.dirname(olympe.__file__))]
         cmd += [args['doc_out_directory']]
         sys.exit(sphinx_build(cmd))

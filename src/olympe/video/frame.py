@@ -171,11 +171,21 @@ class VideoFrame:
         )
         if res < 0:
             self.logger.error(f"mbuf_raw_video_frame_copy returned error {res}")
+            res = od.mbuf_mem_unref(self._packed_buffer)
+            if res < 0:
+                self.logger.error(f"mbuf_mem_unref returned error {res}")
             return self._packed_video_frame
         res = self._mbuf.finalize(self._packed_video_frame)
         if res < 0:
             self.logger.error(f"mbuf_raw_video_frame_finalize returned error {res}")
+            res = od.mbuf_mem_unref(self._packed_buffer)
+            if res < 0:
+                self.logger.error(f"mbuf_mem_unref returned error {res}")
             return self._packed_video_frame
+        # Let the frame own the last ref count on this buffer
+        res = od.mbuf_mem_unref(self._packed_buffer)
+        if res < 0:
+            self.logger.error(f"mbuf_mem_unref returned error {res}")
         return self._packed_video_frame
 
     def as_ctypes_pointer(self):

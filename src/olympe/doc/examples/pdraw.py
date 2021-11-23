@@ -1,5 +1,4 @@
 import argparse
-import cv2
 import olympe
 import os
 import sys
@@ -18,6 +17,8 @@ def yuv_frame_cb(yuv_frame):
 
         :type yuv_frame: olympe.VideoFrame
     """
+    import cv2
+
     # the VideoFrame.info() dictionary contains some useful information
     # such as the video resolution
     info = yuv_frame.info()
@@ -56,7 +57,9 @@ def main(argv):
     parser.add_argument("-m", "--media-name", default="DefaultVideo")
     args = parser.parse_args(argv)
     pdraw = Pdraw()
-    pdraw.set_callbacks(raw_cb=yuv_frame_cb)
+    # Uncomment the following line, to test this OpenCV frame processing callback function
+    # This function requires `pip3 install opencv-python`.
+    # pdraw.set_callbacks(raw_cb=yuv_frame_cb)
     pdraw.play(url=args.url, media_name=args.media_name)
     renderer = PdrawRenderer(pdraw=pdraw)
     assert pdraw.wait(PdrawState.Playing, timeout=5)

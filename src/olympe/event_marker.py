@@ -57,7 +57,7 @@ class EventMarker(Enum):
 
     @classmethod
     def color_string(cls, input_str):
-        if os.isatty(0):
+        if not os.environ.get("OLYMPE_NO_COLOR"):
             out = re.sub(r"begin_(\w+)\(", lambda m: cls[m.group(1)].colored_begin(), input_str)
             out = re.sub(r"\).end_(\w+)", lambda m: cls[m.group(1)].colored_end(), out)
             return out

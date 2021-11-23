@@ -43,7 +43,7 @@ this version, for example:
 
 .. code-block:: console
 
-    $ pip install https://github.com/Parrot-Developers/olympe/releases/download/v7.0.2/parrot_olympe-7.0.2-py3-none-manylinux_2_27_x86_64.whl
+    $ pip install https://github.com/Parrot-Developers/olympe/releases/download/v{{ release }}/parrot_olympe-{{ release }}-py3-none-manylinux_2_27_x86_64.whl
 
 
 Build from source (for x86_64, armv7 or aarch64)
@@ -64,7 +64,7 @@ Download and extract the .tar.gz archive associated with the latest release of O
 .. code-block:: console
 
     $ mkdir -p ~/code/{{ workspace }}
-    $ curl -L https://github.com/Parrot-Developers/olympe/releases/download/v7.0.2/parrot-olympe-src-7.0.2.tar.gz | tar zxf - -C ~/code/{{ workspace }} --strip-components=1
+    $ curl -L https://github.com/Parrot-Developers/olympe/releases/download/v{{ release }}/parrot-olympe-src-{{ release }}.tar.gz | tar zxf - -C ~/code/{{ workspace }} --strip-components=1
     $ cd ~/code/{{ workspace }}
 
 System dependencies installation procedure
