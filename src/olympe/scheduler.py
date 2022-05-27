@@ -32,11 +32,10 @@ from collections import OrderedDict, defaultdict, deque
 from logging import getLogger
 from types import SimpleNamespace
 
+from olympe.expectations import MultipleExpectation
 from olympe.subscriber import Subscriber
-from olympe.utils.pomp_loop_thread import PompLoopThread
-from olympe.utils import (
-    callback_decorator,
-)
+from olympe.concurrent import Loop
+from olympe.utils import callback_decorator, timestamp_now
 
 import functools
 import threading
@@ -87,13 +86,14 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default = SimpleNamespace()
         self._attr.default.name = name
         self._attr.default.device_name = device_name
+        self._attr.default.time = timestamp_now
         if self._attr.default.name is not None:
             self._attr.default.logger = getLogger(
-                "olympe.{}.scheduler".format(self._attr.default.name)
+                f"olympe.{self._attr.default.name}.scheduler"
             )
         elif self._attr.default.device_name is not None:
             self._attr.default.logger = getLogger(
-                "olympe.scheduler.{}".format(self._attr.default.device_name)
+                f"olympe.scheduler.{self._attr.default.device_name}"
             )
         else:
             self._attr.default.logger = getLogger("olympe.scheduler")
@@ -103,30 +103,25 @@ class DefaultScheduler(AbstractScheduler):
         self._attr.default.pending_expectations = []
         self._attr.default.pomp_loop_thread = pomp_loop_thread
 
-        # Setup expectations monitoring timer, this is used to detect timedout
-        # expectations periodically
-        self._attr.default.expectations_timer = (
-            self._attr.default.pomp_loop_thread.create_timer(
-                lambda timer, userdata: self._garbage_collect()
-            )
-        )
-        if not self._attr.default.pomp_loop_thread.set_timer(
-            self._attr.default.expectations_timer, delay=200, period=15
-        ):
-            error_message = "Unable to launch piloting interface"
-            self._attr.default.logger.error(error_message)
-            raise RuntimeError(error_message)
+        # Setup expectations timeout monitoring
+        self._attr.default.pomp_loop_thread.run_delayed(0.2, self._garbage_collect)
 
         # Subscribers internal state
         self._attr.default.subscribers_lock = threading.RLock()
         self._attr.default.subscribers = []
-        self._attr.default.running_subscribers = defaultdict(list)
-        self._attr.default.subscribers_thread_loop = PompLoopThread(
+        self._attr.default.running_subscribers = defaultdict(set)
+        self._attr.default.subscribers_thread_loop = Loop(
             self._attr.default.logger,
             name="subscribers_thread",
             parent=pomp_loop_thread,
         )
         self._attr.default.subscribers_thread_loop.start()
+
+    def set_time_function(self, time_function):
+        self._attr.default.time = time_function
+
+    def time(self):
+        return self._attr.default.time()
 
     def add_context(self, name, context):
         self._attr.default.contexts[name] = context
@@ -137,6 +132,20 @@ class DefaultScheduler(AbstractScheduler):
     def context(self, name):
         return self._attr.default.contexts[name]
 
+    def _call_context_schedule_hook(self, expectation, **kwds):
+        if isinstance(expectation, MultipleExpectation):
+            for e in expectation.expectations:
+                ret = self._call_context_schedule_hook(e, **kwds)
+                if ret is not None:
+                    return ret
+            return None
+        for context in self._attr.default.contexts.values():
+            if hasattr(context, "schedule_hook"):
+                ret = context.schedule_hook(expectation, **kwds)
+                if ret is not None:
+                    return ret
+        return None
+
     def schedule(self, expectations, **kwds):
         # IMPORTANT note: the schedule method should ideally be called from
         # this scheduler pomp loop thread. This method should not be blocking
@@ -146,9 +155,13 @@ class DefaultScheduler(AbstractScheduler):
         # execute it through the pomp loop run_async function. If we are already
         # in the pomp loop thread, this `self._schedule()` is called
         # synchronously
+        hook_ret = self._call_context_schedule_hook(expectations, **kwds)
+        if hook_ret is not None:
+            return hook_ret
         self._attr.default.pomp_loop_thread.run_async(
             self._schedule, expectations, **kwds
         ).result()
+        return expectations
 
     def run(self, *args, **kwds):
         return self._attr.default.pomp_loop_thread.run_async(*args, **kwds)
@@ -190,21 +203,22 @@ class DefaultScheduler(AbstractScheduler):
         # Notify subscribers
         self._attr.default.pomp_loop_thread.run_later(self._notify_subscribers, event)
 
-    @callback_decorator()
-    def _garbage_collect(self):
-        # For all currently pending expectations
-        garbage_collected_expectations = []
-        for expectation in self._attr.default.pending_expectations:
-            # Collect cancelled or timedout expectation
-            # The actual cancel/timeout check is delegated to the expectation
-            if expectation.cancelled() or expectation.timedout():
-                garbage_collected_expectations.append(expectation)
-        # Remove the collected expectations
-        for expectation in garbage_collected_expectations:
-            try:
-                self._attr.default.pending_expectations.remove(expectation)
-            except ValueError:
-                pass
+    async def _garbage_collect(self):
+        while self._attr.default.pomp_loop_thread.running:
+            # For all currently pending expectations
+            garbage_collected_expectations = []
+            for expectation in self._attr.default.pending_expectations:
+                # Collect cancelled or timedout expectation
+                # The actual cancel/timeout check is delegated to the expectation
+                if expectation.cancelled() or expectation.timedout():
+                    garbage_collected_expectations.append(expectation)
+            # Remove the collected expectations
+            for expectation in garbage_collected_expectations:
+                try:
+                    self._attr.default.pending_expectations.remove(expectation)
+                except ValueError:
+                    pass
+            await self._attr.default.pomp_loop_thread.asleep(0.015)
 
     def stop(self):
         for expectation in self._attr.default.pending_expectations:
@@ -220,11 +234,9 @@ class DefaultScheduler(AbstractScheduler):
     def _notify_subscribers(self, event):
         with self._attr.default.subscribers_lock:
             defaults = OrderedDict.fromkeys(
-                (
-                    s._default
-                    for s in self._attr.default.subscribers
-                    if s._default is not None
-                )
+                s._default
+                for s in self._attr.default.subscribers
+                if s._default is not None
             )
             for subscriber in self._attr.default.subscribers:
                 checked = subscriber.notify(event)
@@ -234,14 +246,14 @@ class DefaultScheduler(AbstractScheduler):
                     future = self._attr.default.subscribers_thread_loop.run_async(
                         subscriber.process
                     )
-                    self._attr.default.running_subscribers[id(subscriber)].append(
+                    self._attr.default.running_subscribers[id(subscriber)].add(
                         future
                     )
                     future.add_done_callback(
                         functools.partial(
                             lambda subscriber, future, _: self._attr.default.running_subscribers[
                                 id(subscriber)
-                            ].remove(
+                            ].discard(
                                 future
                             ),
                             subscriber,
@@ -293,7 +305,7 @@ class DefaultScheduler(AbstractScheduler):
         :type subscriber: Subscriber
         """
         with self._attr.default.subscribers_lock:
-            futures = self._attr.default.running_subscribers.pop(id(subscriber), [])
+            futures = self._attr.default.running_subscribers.pop(id(subscriber), set())
             for future in futures:
                 try:
                     future.result(subscriber.timeout)

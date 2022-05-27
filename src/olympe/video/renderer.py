@@ -3,12 +3,13 @@ import sdl2
 import sdl2.ext
 import ctypes
 import olympe_deps as od
+import time
 from abc import ABC, abstractmethod
 from OpenGL import GL
 from OpenGL import GLX
 from olympe.log import LogMixin
 from olympe.utils import callback_decorator
-from olympe.utils.pomp_loop_thread import PompLoopThread
+from olympe.concurrent import Loop
 
 
 class Renderer(ABC, LogMixin):
@@ -30,7 +31,7 @@ class Renderer(ABC, LogMixin):
     ):
 
         super().__init__(name, device_name, "video.renderer")
-        self._loop = PompLoopThread(self.logger)
+        self._loop = Loop(self.logger)
         if window_title is None:
             window_title = "Olympe Video Renderer"
         if width is None:
@@ -51,7 +52,11 @@ class Renderer(ABC, LogMixin):
 
     def _async_init(self):
         # Create an SDL2 window
-        sdl2.ext.init()
+        try:
+            sdl2.ext.init()
+        except sdl2.ext.common.SDLError as e:
+            self.logger.error(str(e))
+            return
         if sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO) != 0:
             raise RuntimeError(sdl2.SDL_GetError())
         self._window = sdl2.SDL_CreateWindow(
@@ -90,8 +95,8 @@ class Renderer(ABC, LogMixin):
 
         # Start rendering
         sdl2.SDL_ShowWindow(self._window)
-        self._timer = self._loop.create_timer(self._on_update)
-        self._loop.set_timer(self._timer, 1, int(1000.0 / 60.0))
+        self._period = float(1.0 / 60.0)
+        self._loop.run_delayed(self._period, self._on_update)
 
     @property
     def width(self):
@@ -157,6 +162,7 @@ class Renderer(ABC, LogMixin):
 
     @callback_decorator()
     def _on_update(self, *args):
+        start_time = time.monotonic()
         events = sdl2.ext.get_events()
         for event in events:
             if event.type == sdl2.SDL_QUIT:
@@ -169,6 +175,9 @@ class Renderer(ABC, LogMixin):
 
         self.render()
         sdl2.SDL_GL_SwapWindow(self._window)
+        duration = time.monotonic() - start_time
+        next_time = max(self._period - duration, 0.001)
+        self._loop.run_delayed(next_time, self._on_update)
 
     @callback_decorator()
     def _dispose(self):
@@ -195,10 +204,17 @@ class PdrawRenderer(Renderer):
 
     OPENGL_VERSION = (3, 0)
 
+    def __init__(self, *args, **kwds):
+        # When the async_init fails early (e.g. when there is no display available) the following
+        # attributes must have been initialized because they are checked inside the render() method
+        # before the actual rendering.
+        self._media_infos = dict()
+        self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
+        super().__init__(*args, **kwds)
+
     def init(self, *, pdraw, media_id=0):
         self._pdraw = pdraw
         self._media_id = media_id
-        self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
         self._render_zone = od.struct_pdraw_rect(0, 0, self.width, self.height)
         self._renderer_params = od.struct_pdraw_video_renderer_params.bind(
             {
@@ -214,7 +230,6 @@ class PdrawRenderer(Renderer):
                 "video_texture_dar_height": self.height,
             }
         )
-        self._media_infos = dict()
 
         self._renderer_cbs = od.struct_pdraw_video_renderer_cbs.bind(
             {
@@ -295,7 +310,8 @@ class PdrawRenderer(Renderer):
     def dispose(self):
         if self._pdraw_renderer:
             od.pdraw_video_renderer_destroy(self._pdraw.pdraw, self._pdraw_renderer)
-        self._pdraw_renderer = None
+        self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
+        self._media_infos = dict()
         super().dispose()
 
 

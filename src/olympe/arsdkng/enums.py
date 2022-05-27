@@ -97,7 +97,7 @@ class ArsdkBitfield(metaclass=ArsdkBitfieldMeta):
             enums = list(sorted(map(self._enum_type_, enums)))
             if not all(map(lambda v: isinstance(v, self._enum_type_), enums)):
                 raise TypeError(
-                    "Not all values in {} are of type {}".format(enums, self._enum_type_))
+                    f"Not all values in {enums} are of type {self._enum_type_}")
             seen_enums = set()
             self._enums = [
                 enum for enum in enums
@@ -144,14 +144,14 @@ class ArsdkBitfield(metaclass=ArsdkBitfieldMeta):
             enum = self.__class__._enum_type_.__getitem__(name)
         except KeyError:
             raise AttributeError(
-                '{} is not a {} bitfield flag'.format(name, self.__class__.__name__))
+                f'{name} is not a {self.__class__.__name__} bitfield flag')
         return enum in self
 
     def __str__(self):
         return '|'.join(map(lambda v: v.name, self._enums))
 
     def __repr__(self):
-        return '<{}: {}>'.format(self.__class__.__name__, self._enums)
+        return f'<{self.__class__.__name__}: {self._enums}>'
 
     def pretty(self):
         return "'" + '|'.join(map(lambda v: v.name, self._enums)) + "'"
@@ -245,7 +245,7 @@ class ArsdkEnumMeta(_EnumBase.__class__):
             # not be bothered with this. Enum types that have the same
             # ArsdkEnumAlias_* base class are comparable with each others.
 
-            class_key = (name,) + tuple((starmap(lambda k, v: k + "_" + str(v), ns.items())))
+            class_key = (name,) + tuple(starmap(lambda k, v: k + "_" + str(v), ns.items()))
             cls = mcls._classes.get(class_key)
             if cls is not None:
                 return cls
@@ -296,11 +296,11 @@ class ArsdkEnum(metaclass=ArsdkEnumMeta):
     @classmethod
     def from_str(cls, value):
         if value == '':
-            raise ValueError("Empty string cannot be converted to {}".format(cls.__name__))
+            raise ValueError(f"Empty string cannot be converted to {cls.__name__}")
         try:
             return cls[value]
         except KeyError as e:
-            raise ValueError("{} is not an enum label of {}".format(str(e), cls.__name__))
+            raise ValueError(f"{str(e)} is not an enum label of {cls.__name__}")
 
     def to_str(self):
         return self._name_
@@ -364,11 +364,11 @@ class ArsdkProtoEnum(OrderedEnum, metaclass=ArsdkProtoEnumMeta):
     @classmethod
     def from_str(cls, value):
         if value == '':
-            raise ValueError("Empty string cannot be converted to {}".format(cls.__name__))
+            raise ValueError(f"Empty string cannot be converted to {cls.__name__}")
         try:
             return cls[value]
         except KeyError as e:
-            raise ValueError("{} is not an enum label of {}".format(str(e), cls.__name__))
+            raise ValueError(f"{str(e)} is not an enum label of {cls.__name__}")
 
     def to_str(self):
         return self._name_

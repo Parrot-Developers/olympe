@@ -50,43 +50,43 @@ class SkyControllerExample:
     def connect_drone(self, drone_serial, drone_security_key=""):
         self.update_drones()
         if self.active_drone == drone_serial:
-            print("SkyController is already connected to {}".format(drone_serial))
+            print(f"SkyController is already connected to {drone_serial}")
             return True
-        print("SkyController is not currently connected to {}".format(drone_serial))
+        print(f"SkyController is not currently connected to {drone_serial}")
         if drone_serial in self.visible_drones:
-            print("Connecting to {}...".format(drone_serial))
+            print(f"Connecting to {drone_serial}...")
             connection = self.skyctrl(
                 connect(serial=drone_serial, key=drone_security_key)
                 >> connection_state(state="connected", serial=drone_serial)
             ).wait(_timeout=10)
         elif drone_serial in self.known_drones:
             print(
-                "{} is a known drone but is not currently visible".format(drone_serial)
+                f"{drone_serial} is a known drone but is not currently visible"
             )
             return
         elif drone_serial is not None:
             print(
-                "{} is an unknown drone and not currently visible".format(drone_serial)
+                f"{drone_serial} is an unknown drone and not currently visible"
             )
             return
         if connection.success():
-            print("Connected to {}".format(drone_serial))
+            print(f"Connected to {drone_serial}")
             return True
         else:
-            print("Failed to connect to {}".format(drone_serial))
+            print(f"Failed to connect to {drone_serial}")
 
     def forget_drone(self, drone_serial):
         if drone_serial == self.active_drone:
-            print("Forgetting {} ...".format(drone_serial))
+            print(f"Forgetting {drone_serial} ...")
             self.skyctrl(
                 forget(serial=drone_serial)
                 >> connection_state(state="disconnecting", serial=drone_serial)
             ).wait(_timeout=10)
         elif drone_serial in self.known_drones:
-            print("Forgetting {} ...".format(drone_serial))
+            print(f"Forgetting {drone_serial} ...")
             self.skyctrl(forget(serial=drone_serial)).wait(_timeout=10)
         else:
-            print("{} is an unknown drone".format(drone_serial))
+            print(f"{drone_serial} is an unknown drone")
 
     def disconnect_skyctrl(self):
         self.skyctrl.disconnect()

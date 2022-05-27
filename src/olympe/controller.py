@@ -67,7 +67,7 @@ class SkyController(ControllerBase):
          immediately. In this case, call arsdk_device_disconnect and the
          'disconnected' callback will be called.
         """
-        self.logger.info("Link status: {}".format(status))
+        self.logger.info(f"Link status: {status}")
         if status == od.ARSDK_LINK_STATUS_KO:
             # FIXME: Link status KO seems to be an unrecoverable
             # random error with a SkyController when `drone_manager.forget`

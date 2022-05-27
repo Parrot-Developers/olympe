@@ -59,7 +59,7 @@ def columns(strs, col_nb=None, aligns='<', vsep='', hsep=None):
     if hsep is None:
         hsep = '\n'
     else:
-        hsep = '\n{}\n'.format(hsep * line_width)
+        hsep = f'\n{hsep * line_width}\n'
 
     # build the row format string
     row_fmt = vsep.join(['{{:{}{}}}'.format(

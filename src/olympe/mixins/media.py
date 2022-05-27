@@ -34,25 +34,24 @@ from olympe.utils import callback_decorator
 class MediaControllerMixin:
     def __init__(self, *args, media_autoconnect=True, media_port=80, **kwds):
         self._media = None
+        super().__init__(*args, **kwds)
         self._media_autoconnect = media_autoconnect
         self._media_port = media_port
-        super().__init__(*args, **kwds)
+        media_hostname = self._ip_addr_str + f":{self._media_port}"
+        self._media = Media(
+            name=self._name,
+            hostname=media_hostname,
+            device_name=self._device_name,
+            scheduler=self._scheduler
+        )
 
     @callback_decorator()
     def _connected_cb(self, *args):
         super()._connected_cb(*args)
         if not self._is_skyctrl and self._media_autoconnect:
             media_hostname = self._ip_addr_str + f":{self._media_port}"
-            if self._media is not None:
-                self._media.shutdown()
-                self._media = None
-            self._media = Media(
-                media_hostname,
-                name=self._name,
-                device_name=self._device_name,
-                scheduler=self._scheduler
-            )
-            self._media.async_connect()
+            self._media.set_hostname(media_hostname)
+            self._media.async_disconnect().then(lambda f: self._media.async_connect())
 
     @callback_decorator()
     def _on_connection_state_changed(self, message_event, _):
@@ -62,17 +61,9 @@ class MediaControllerMixin:
             # The SkyController forwards port tcp/180 to the drone tcp/80
             # for the web API endpoints
             if self._media_autoconnect:
-                if self._media is not None:
-                    self._media.shutdown()
-                    self._media = None
                 media_hostname = self._ip_addr_str + ":180"
-                self._media = Media(
-                    media_hostname,
-                    name=self._name,
-                    device_name=self._device_name,
-                    scheduler=self._scheduler
-                )
-                self._media.async_connect()
+                self._media.set_hostname(media_hostname)
+                self._media.async_disconnect().then(lambda f: self._media.async_connect())
 
     def _reset_instance(self):
         """
@@ -80,7 +71,6 @@ class MediaControllerMixin:
         """
         if self._media is not None:
             self._media._reset_state()
-            self._media = None
         super()._reset_instance()
 
     @property

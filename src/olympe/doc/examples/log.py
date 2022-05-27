@@ -1,17 +1,18 @@
 import olympe
 import os
 import time
+import logness
 from olympe.messages.ardrone3.Piloting import TakeOff, Landing
 
-olympe.log.update_config({
+logness.update_config({
     "handlers": {
         "olympe_log_file": {
-            "class": "logging.FileHandler",
+            "class": "logness.FileHandler",
             "formatter": "default_formatter",
             "filename": "olympe.log"
         },
         "ulog_log_file": {
-            "class": "logging.FileHandler",
+            "class": "logness.FileHandler",
             "formatter": "default_formatter",
             "filename": "ulog.log"
         },

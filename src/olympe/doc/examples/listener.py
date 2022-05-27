@@ -25,7 +25,7 @@ def print_event(event):
         max_args_size = 60
         args = str(event.args)
         args = (args[: max_args_size - 3] + "...") if len(args) > max_args_size else args
-        print("{}({})".format(event.message.fullName, args))
+        print(f"{event.message.fullName}({args})")
     else:
         print(str(event))
 

@@ -32,27 +32,39 @@ import json
 import olympe_deps as od
 
 from . import messages, PeerInfo
-from .backend import DeviceBackend
+from .backend import BackendType, DeviceBackendNet, DeviceBackendMuxIp
 from .cmd_itf import CommandInterfaceBase, DisconnectedEvent
 from olympe.utils import callback_decorator
 
 
 class DeviceBase(CommandInterfaceBase):
     def __init__(
-        self, name=None, dcport=44444, drone_type=0, proto_v_min=1, proto_v_max=3
+        self,
+        name=None,
+        dcport=44444,
+        drone_type=0,
+        proto_v_min=1,
+        proto_v_max=3,
+        backend=BackendType.Net,
     ):
         self._logger_scope = "device"
         self._dcport = dcport
         self._peer = None
-        self._publisher_net = od.POINTER_T(od.struct_arsdk_publisher_net)()
         self._listening = False
+        self._backend_type = backend
+        if backend is BackendType.Net:
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_net)()
+            self._backend_class = DeviceBackendNet
+        elif backend is BackendType.MuxIp:
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_mux)()
+            self._backend_class = DeviceBackendMuxIp
         super().__init__(name=name, drone_type=drone_type, proto_v_min=1, proto_v_max=3)
 
     def _recv_message_type(self):
         return messages.ArsdkMessageType.EVT
 
     def _create_backend(self, name, proto_v_min, proto_v_max):
-        self._backend = DeviceBackend(
+        self._backend = self._backend_class(
             name=name, proto_v_min=proto_v_min, proto_v_max=proto_v_max
         )
 
@@ -62,7 +74,7 @@ class DeviceBase(CommandInterfaceBase):
         self._listen_cbs = od.struct_arsdk_backend_listen_cbs.bind(
             {
                 "userdata": ctypes.cast(
-                    ctypes.pointer(ctypes.py_object((self._listen_cbs_userdata))),
+                    ctypes.pointer(ctypes.py_object(self._listen_cbs_userdata)),
                     ctypes.c_void_p,
                 ),
                 "conn_req": self._conn_req_cb,
@@ -76,23 +88,26 @@ class DeviceBase(CommandInterfaceBase):
                 "id": od.char_pointer_cast("12345678"),
             }
         )
-        self._publisher_net_cfg = od.struct_arsdk_publisher_net_cfg.bind(
-            {
-                "base": self._publisher_cfg,
-                "port": self._dcport,
-            }
-        )
+        if self._backend_type is BackendType.Net:
+            self._publisher_net_cfg = od.struct_arsdk_publisher_net_cfg.bind(
+                {
+                    "base": self._publisher_cfg,
+                    "port": self._dcport,
+                }
+            )
 
         self._peer_conn_cfg = od.struct_arsdk_peer_conn_cfg.bind(
             {
-                "json": od.char_pointer_cast(json.dumps(
-                    {
-                        "arstream_fragment_size": 65000,
-                        "arstream_fragment_maximum_number": 4,
-                        "c2d_update_port": 51,
-                        "c2d_user_port": 21,
-                    }
-                )),
+                "json": od.char_pointer_cast(
+                    json.dumps(
+                        {
+                            "arstream_fragment_size": 65000,
+                            "arstream_fragment_maximum_number": 4,
+                            "c2d_update_port": 51,
+                            "c2d_user_port": 21,
+                        }
+                    )
+                ),
             }
         )
         self._peer_conn_cbs = od.struct_arsdk_peer_conn_cbs.bind(
@@ -104,6 +119,7 @@ class DeviceBase(CommandInterfaceBase):
             }
         )
 
+    @callback_decorator()
     def _conn_req_cb(self, peer, info, userdata):
         # Only one peer at a time */
         if self._peer:
@@ -191,38 +207,80 @@ class DeviceBase(CommandInterfaceBase):
             self._thread_loop.run_later(self._on_device_removed)
 
     def listen(self):
+        return self._thread_loop.run_async(self.alisten)
+
+    async def alisten(self):
         if self._listening:
             self.logger.info("Already listening")
             return True
 
+        if self._backend_type is BackendType.Net:
+            return await self._listen_net()
+        else:
+            return await self._listen_mux()
+
+    async def _listen_net(self):
         res = od.arsdk_publisher_net_new(
-            self._backend._backend_net,
+            self._backend._info.backend,
             self._thread_loop.pomp_loop,
             ctypes.c_char_p(),
-            ctypes.byref(self._publisher_net),
+            ctypes.byref(self._publisher),
         )
         if res < 0:
             self.logger.error(f"arsdk_publisher_net_new: {res}")
             return False
 
         res = od.arsdk_backend_net_start_listen(
-            self._backend._backend_net, ctypes.byref(self._listen_cbs), self._dcport
+            self._backend._info.backend, ctypes.byref(self._listen_cbs), self._dcport
         )
         if res < 0:
-            od.arsdk_publisher_net_destroy(self._publisher_net)
-            self._publisher_net = od.POINTER_T(od.struct_arsdk_publisher_net)()
+            od.arsdk_publisher_net_destroy(self._publisher)
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_net)()
             self.logger.error(f"arsdk_backend_net_start_listen: {res}")
             return False
 
         # start net publisher
         res = od.arsdk_publisher_net_start(
-            self._publisher_net, ctypes.byref(self._publisher_net_cfg)
+            self._publisher, ctypes.byref(self._publisher_net_cfg)
         )
         if res < 0:
-            od.arsdk_backend_net_stop_listen(self._backend._backend_net)
-            od.arsdk_publisher_net_destroy(self._publisher_net)
-            self._publisher_net = od.POINTER_T(od.struct_arsdk_publisher_net)()
+            od.arsdk_backend_net_stop_listen(self._backend._info.backend)
+            od.arsdk_publisher_net_destroy(self._publisher)
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_net)()
             self.logger.error(f"arsdk_publisher_net_start: {res}")
+            return False
+        self._listening = True
+        return True
+
+    async def _listen_mux(self):
+        await self._backend.ready()
+        res = od.arsdk_publisher_mux_new(
+            self._backend._info.backend,
+            self._backend._info.mux_ctx,
+            ctypes.byref(self._publisher),
+        )
+        if res < 0:
+            self.logger.error(f"arsdk_publisher_mux_new: {res}")
+            return False
+
+        res = od.arsdk_backend_mux_start_listen(
+            self._backend._info.backend, ctypes.byref(self._listen_cbs)
+        )
+        if res < 0:
+            od.arsdk_publisher_mux_destroy(self._publisher)
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_mux)()
+            self.logger.error(f"arsdk_backend_mux_start_listen: {res}")
+            return False
+
+        # start mux publisher
+        res = od.arsdk_publisher_mux_start(
+            self._publisher, ctypes.byref(self._publisher_cfg)
+        )
+        if res < 0:
+            od.arsdk_backend_mux_stop_listen(self._backend._info.backend)
+            od.arsdk_publisher_mux_destroy(self._publisher)
+            self._publisher = od.POINTER_T(od.struct_arsdk_publisher_mux)()
+            self.logger.error(f"arsdk_publisher_mux_start: {res}")
             return False
         self._listening = True
         return True
@@ -232,24 +290,44 @@ class DeviceBase(CommandInterfaceBase):
         if not self._listening:
             self.logger.info("Not currently listening")
             return True
-        res = od.arsdk_publisher_net_stop(self._publisher_net)
-        if res < 0:
-            self.logger.error(f"arsdk_publisher_net_stop: {res}")
-            ret = False
-        res = od.arsdk_publisher_net_destroy(self._publisher_net)
-        if res < 0:
-            self.logger.error(f"arsdk_publisher_net_destroy: {res}")
-            ret = False
-        self._publisher_net = od.POINTER_T(od.struct_arsdk_publisher_net)()
-        res = od.arsdk_backend_net_stop_listen(self._backend._backend_net)
-        if res < 0:
-            self.logger.error(f"arsdk_backend_net_stop_listen: {res}")
-            ret = False
+        if self._backend_type is BackendType.Net:
+            if self._publisher:
+                res = od.arsdk_publisher_net_stop(self._publisher)
+                if res < 0:
+                    self.logger.error(f"arsdk_publisher_net_stop: {res}")
+                    ret = False
+                res = od.arsdk_publisher_net_destroy(self._publisher)
+                if res < 0:
+                    self.logger.error(f"arsdk_publisher_net_destroy: {res}")
+                    ret = False
+                self._publisher = od.POINTER_T(od.struct_arsdk_publisher_net)()
+                res = od.arsdk_backend_net_stop_listen(self._backend._info.backend)
+                if res < 0:
+                    self.logger.error(f"arsdk_backend_net_stop_listen: {res}")
+                    ret = False
+        else:
+            if self._publisher:
+                res = od.arsdk_publisher_mux_stop(self._publisher)
+                if res < 0:
+                    self.logger.error(f"arsdk_publisher_mux_stop: {res}")
+                    ret = False
+                res = od.arsdk_publisher_mux_destroy(self._publisher)
+                if res < 0:
+                    self.logger.error(f"arsdk_publisher_mux_destroy: {res}")
+                    ret = False
+                self._publisher = od.POINTER_T(od.struct_arsdk_publisher_mux)()
+                res = od.arsdk_backend_mux_stop_listen(self._backend._info.backend)
+                if res < 0:
+                    self.logger.error(f"arsdk_backend_mux_stop_listen: {res}")
+                    ret = False
+        self._backend.destroy()
+        self.connected = False
         self._listening = False
         return ret
 
     def _on_device_removed(self):
-        self._disconnection_impl()
+        if not self._disconnection_impl():
+            return
         for message in self.messages.values():
             message._reset_state()
         event = DisconnectedEvent()
@@ -259,11 +337,14 @@ class DeviceBase(CommandInterfaceBase):
 
     @callback_decorator()
     def _disconnection_impl(self):
-        if self._peer:
-            res = od.arsdk_peer_disconnect(self._peer.arsdk_peer)
-            if res < 0:
-                self.logger.error(f"arsdk_peer_disconnect {res}")
-            self._peer = None
+        if not self._peer:
+            return False
+        peer = self._peer
+        self._peer = None
+        res = od.arsdk_peer_disconnect(peer.arsdk_peer)
+        if res < 0:
+            self.logger.error(f"arsdk_peer_disconnect {res}")
+        return True
 
     def destroy(self):
         """

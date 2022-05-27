@@ -39,13 +39,6 @@ Messages Reference Documentation
     arsdkng_ardrone3
 
 .. toctree::
-    :caption: Auto Follow feature
-    :maxdepth: 1
-    :titlesonly:
-
-    arsdkng_auto_follow
-
-.. toctree::
     :caption: Auto Look At feature
     :maxdepth: 1
     :titlesonly:

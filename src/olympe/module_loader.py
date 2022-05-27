@@ -129,7 +129,7 @@ class ModuleLoader:
             fullname_path = fullname.replace(".", "/")
             messages = self.messages[root]
             enums = self.enums[root]
-            name = fullname[len(root) + 1:]
+            name = fullname[len(root) + 1 :]
             name_path = name.split(".")
             if len(name_path) == 0 or len(name_path) == 1 and not name_path[0]:
                 # {root}
@@ -188,10 +188,22 @@ class ModuleLoader:
             logger.exception("ModuleLoader.find_module unhandled exception")
             return None
 
+    def iter_modules(self, prefix):
+        try:
+            package = self.load_module(prefix.rstrip("."))
+        except Exception:
+            return
+        else:
+            for name in package.__all__:
+                item = getattr(package, name, None)
+                if isinstance(item, ModuleType):
+                    yield prefix + name, item.__spec__.submodule_search_locations is not None
+
     def load_module(self, fullname):
         try:
-            if fullname in sys.modules:
-                return sys.modules[fullname]
+            module = sys.modules.get(fullname)
+            if module and module.__loader__ is self:
+                return module
             spec = self.find_spec(fullname, None)
             if spec is None:
                 raise ImportError(f"Unknown module {fullname}")
@@ -201,13 +213,16 @@ class ModuleLoader:
             messages = self.messages[root]
             enums = self.enums[root]
 
-            name = fullname[len(root) + 1:]
+            name = fullname[len(root) + 1 :]
             name_path = name.split(".")
             is_feature = len(name_path) == 2
             type_, feature_name, class_name, *_ = name_path + 2 * [None]  # noqa
 
             module = ModuleType(fullname)
-            module.__fakefile__ = os.path.join(root_path, fullname_path)
+            module.__spec__ = spec
+            module.__fakefile__ = f"{root_path}://{fullname_path}"
+            if spec.submodule_search_locations is not None:
+                module.__path__ = [module.__fakefile__]
             module.__name__ = fullname
             module.__cached__ = None
             module.__loader__ = self
@@ -218,7 +233,6 @@ class ModuleLoader:
             module.__arsdkng_is_proto__ = False
             module.__arsdkng_root_package__ = root
             if feature_name is None:
-                module.__path__ = [module.__fakefile__]
                 module.__package__ = f"{root}.{type_}"
                 if not type_:
                     features = []
@@ -230,7 +244,7 @@ class ModuleLoader:
                     setattr(
                         module,
                         feature_name,
-                        self.load_module("{}.{}".format(fullname, feature_name)),
+                        self.load_module(f"{fullname}.{feature_name}"),
                     )
                     module.__all__.append(feature_name)
             else:
@@ -289,7 +303,7 @@ class ModuleLoader:
         elif isinstance(item, (list, tuple)):
             source += "".join(self._get_source(i) for i in item)
         if isinstance(item, Mapping):
-            source += "\n\nclass {}:".format(name)
+            source += f"\n\nclass {name}:"
             source += indent(self._get_source_mapping(item), "   ")
             source += "\n\n"
         source += "\n\n"
@@ -329,8 +343,25 @@ class ModuleLoader:
         pass
 
 
+def path_hook(path):
+    global module_loader
+    if path.startswith("olympe://"):
+        return module_loader
+        return module_loader
+    if path.startswith("olympe.airsdk://"):
+        return module_loader
+    raise ImportError
+
+
 faulthandler.enable()
 module_loader = ModuleLoader()
 module_loader.add_package_root("olympe")
 module_loader.add_package_root("olympe.airsdk")
 sys.meta_path.append(module_loader)
+sys.path_hooks.append(path_hook)
+sys.path_importer_cache[
+    os.path.join(os.path.dirname(sys.modules["olympe"].__file__), "messages")
+] = module_loader
+sys.path_importer_cache[
+    os.path.join(os.path.dirname(sys.modules["olympe"].__file__), "enums")
+] = module_loader

@@ -32,7 +32,7 @@ class StreamingExample:
         # Create the olympe.Drone object from its IP address
         self.drone = olympe.Drone(DRONE_IP)
         self.tempd = tempfile.mkdtemp(prefix="olympe_streaming_test_")
-        print("Olympe streaming example output dir: {}".format(self.tempd))
+        print(f"Olympe streaming example output dir: {self.tempd}")
         self.h264_frame_stats = []
         self.h264_stats_file = open(os.path.join(self.tempd, "h264_stats.csv"), "w+")
         self.h264_stats_writer = csv.DictWriter(
@@ -181,7 +181,7 @@ class StreamingExample:
         ).wait()
         self.drone(MaxTilt(40)).wait().success()
         for i in range(4):
-            print("Moving by ({}/4)...".format(i + 1))
+            print(f"Moving by ({i + 1}/4)...")
             self.drone(moveBy(10, 0, 0, math.pi, _timeout=20)).wait().success()
 
         print("Landing...")

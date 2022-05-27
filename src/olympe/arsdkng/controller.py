@@ -36,13 +36,13 @@ import pprint
 import time
 
 from . import messages, SKYCTRL_DEVICE_TYPE_LIST
-from .backend import CtrlBackend
+from .backend import BackendType, CtrlBackendNet, CtrlBackendMuxIp
 from .cmd_itf import CommandInterfaceBase, ConnectedEvent
-from .discovery import DiscoveryNet, DiscoveryNetRaw
+from .discovery import DiscoveryNet, DiscoveryNetRaw, DiscoveryMux
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import CancelledError
 from olympe.utils import callback_decorator
-from olympe.utils.pomp_loop_thread import Future
+from olympe.concurrent import Future
 from olympe.messages import ardrone3
 from olympe.messages import common
 from olympe.messages import drone_manager
@@ -84,18 +84,32 @@ class ControllerBase(CommandInterfaceBase):
                  proto_v_max=3,
                  is_skyctrl=None,
                  video_buffer_queue_size=8,
-                 media_autoconnect=True):
+                 media_autoconnect=True,
+                 backend=BackendType.Net,
+                 time_function=None):
         self._logger_scope = "controller"
         self._ip_addr_str = str(ip_addr)
         self._ip_addr = ip_addr.encode('utf-8')
         self._is_skyctrl = is_skyctrl
         self._piloting = False
         self._piloting_command = PilotingCommand()
+        self._backend_type = backend
+        if backend is BackendType.Net:
+            self._backend_class = CtrlBackendNet
+            self._discovery_class = DiscoveryNet
+        elif backend is BackendType.MuxIp:
+            self._backend_class = CtrlBackendMuxIp
+            self._discovery_class = DiscoveryMux
+        else:
+            raise ValueError(f"Unknown backend type {backend}")
         super().__init__(
             name=name,
             drone_type=drone_type,
             proto_v_min=1,
-            proto_v_max=3)
+            proto_v_max=3,
+            device_addr=self._ip_addr)
+        if time_function is not None:
+            self._scheduler.set_time_function(time_function)
         self._connected_future = None
         self._last_disconnection_time = None
         # Setup piloting commands timer
@@ -105,9 +119,9 @@ class ControllerBase(CommandInterfaceBase):
     def _recv_message_type(self):
         return messages.ArsdkMessageType.CMD
 
-    def _create_backend(self, name, proto_v_min, proto_v_max):
-        self._backend = CtrlBackend(
-            name=name, proto_v_min=proto_v_min, proto_v_max=proto_v_max
+    def _create_backend(self, name, proto_v_min, proto_v_max, *, device_addr=None):
+        self._backend = self._backend_class(
+            name=name, proto_v_min=proto_v_min, proto_v_max=proto_v_max, device_addr=device_addr
         )
 
     def _declare_callbacks(self):
@@ -404,16 +418,20 @@ class ControllerBase(CommandInterfaceBase):
 
     async def _async_discover_device(self):
         # Try to identify the device type we are attempting to connect to...
-        discovery = DiscoveryNet(self._backend, ip_addr=self._ip_addr)
+        await self._backend.ready()
+        discovery = self._discovery_class(self._backend, ip_addr=self._ip_addr)
         device = await discovery.async_get_device()
-        if device is None:
+        if device is not None:
+            return device, discovery
+        await discovery.async_stop()
+        if self._backend_type is BackendType.Net:
             self.logger.info(f"Net discovery failed for {self._ip_addr}")
             self.logger.info(f"Trying 'NetRaw' discovery for {self._ip_addr} ...")
-            assert discovery.stop()
+            assert await discovery.async_stop()
             discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr)
             device = await discovery.async_get_device()
             if device is None:
-                discovery.stop()
+                await discovery.async_stop()
         return device, discovery
 
     async def _async_get_device(self):
@@ -442,7 +460,7 @@ class ControllerBase(CommandInterfaceBase):
         # Use default values for connection json. If we want to changes values
         # (or add new info), we just need to add them in req (using json format)
         # For instance:
-        req = bytes('{ "%s": "%s", "%s": "%s", "%s": "%s"}' % (
+        req = bytes('{{ "{}": "{}", "{}": "{}", "{}": "{}"}}'.format(
             "arstream2_client_stream_port", PDRAW_LOCAL_STREAM_PORT,
             "arstream2_client_control_port", PDRAW_LOCAL_CONTROL_PORT,
             "arstream2_supported_metadata_version", "1"), 'utf-8')
@@ -501,6 +519,8 @@ class ControllerBase(CommandInterfaceBase):
             # We're connected
             break
         else:
+            if self._discovery:
+                await self._discovery.async_stop()
             self.logger.error(f"'{self._ip_addr_str} connection retries failed")
             return False
 
@@ -510,7 +530,7 @@ class ControllerBase(CommandInterfaceBase):
             self._cmd_itf = self._create_command_interface()
             if self._cmd_itf is None:
                 self.logger.error(f"Creating cmd_itf for {self._ip_addr_str} failed")
-                self.disconnect()
+                await self.async_disconnect()
                 return False
 
         if self.connected:
@@ -524,7 +544,7 @@ class ControllerBase(CommandInterfaceBase):
             self.logger.error(
                 f"Unable get device state/settings: {command} "
                 f"for {self._ip_addr}")
-            self.disconnect()
+            await self.async_disconnect()
             return False
         return True
 
@@ -612,6 +632,8 @@ class ControllerBase(CommandInterfaceBase):
         :rtype: bool
         """
 
+        if timeout is None:
+            timeout = 6 * retry
         connected_future = self.async_connect(timeout=timeout, retry=retry)
         try:
             connected_future.result_or_cancel(timeout=timeout)
@@ -622,9 +644,10 @@ class ControllerBase(CommandInterfaceBase):
 
         return self.connected
 
+    @callback_decorator()
     def _on_device_removed(self):
         if self._discovery:
-            self._discovery.stop()
+            self._discovery.async_stop()
         if self._piloting:
             self._stop_piloting_impl()
         self._disconnection_impl()

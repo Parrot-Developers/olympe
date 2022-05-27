@@ -80,7 +80,7 @@ class ArsdkExpectationBase(Expectation):
         return ArsdkWhenSequenceExpectations([self, other])
 
 
-class ArsdkFillDefaultArgsExpectationMixin(object):
+class ArsdkFillDefaultArgsExpectationMixin:
     def _fill_default_arguments(self, message, args):
         for argname, argval in self.expected_args.copy().items():
             if callable(argval):
@@ -461,7 +461,7 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
 
     def explain(self):
         if self._command_future is None:
-            return "{} has not been sent yet".format(self.command_message.fullName)
+            return f"{self.command_message.fullName} has not been sent yet"
         elif not self._command_future.done() or not self._command_future.result():
             return "{} has been sent but hasn't been acknowledged".format(
                 self.command_message.fullName
@@ -471,7 +471,7 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
                 self.command_message.fullName
             )
             if not self._no_expect and self.expectations:
-                ret += " Command expectations status:\n{}".format(super().explain())
+                ret += f" Command expectations status:\n{super().explain()}"
             return ret
 
 
@@ -589,6 +589,11 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
         if self.expectation is None:
             return iter(())
         return iter(self.expectation)
+
+    @property
+    def expectations(self):
+        # Provided for convenience and to be consistent with ArsdkCommandExpectation
+        return self.expectation
 
 
 class ArsdkWhenSequenceExpectations(

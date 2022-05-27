@@ -37,10 +37,8 @@ from aenum import Enum
 from boltons.setutils import IndexedSet
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from concurrent.futures import CancelledError as FutureCancelledError
 from logging import getLogger
-from .utils import timestamp_now
-from .utils.pomp_loop_thread import Future
+from .concurrent import Future
 from .event_marker import EventMarker
 from .event import EventContext, MultipleEventContext
 
@@ -75,7 +73,7 @@ class ExpectationBase(ABC):
         if self._future.loop is None:
             self._future.loop = self._scheduler.expectation_loop
         if self._timeout is not None:
-            self._deadline = timestamp_now() + self._timeout
+            self._deadline = self._scheduler.time() + self._timeout
         with self._scheduled_condition:
             self._scheduled_condition.notify_all()
 
@@ -90,13 +88,24 @@ class ExpectationBase(ABC):
 
     def wait(self, _timeout=None):
         if self._awaited:
-            try:
-                self._future.result(timeout=_timeout)
-            except FutureTimeoutError:
-                self.set_timedout()
-            except FutureCancelledError:
-                self.cancel()
+            self._scheduler.expectation_loop.run_async(
+                self._wait_future, _timeout=_timeout
+            ).result_or_cancel()
         return self
+
+    async def _wait_future(self, _timeout=None):
+        deadline = None
+        if _timeout is not None:
+            deadline = self._scheduler.time() + _timeout
+        while True:
+            await self._scheduler.expectation_loop.asleep(0.005)
+            if self._future.done():
+                if self._future.cancelled():
+                    self.cancel()
+                return self
+            if deadline is not None and self._scheduler.time() > deadline:
+                self.set_timedout()
+                return self
 
     def add_done_callback(self, cb):
         self._future.add_done_callback(lambda f: cb(self))
@@ -134,7 +143,7 @@ class ExpectationBase(ABC):
         return self._future.cancelled()
 
     def remaining_time(self):
-        remaining = self._deadline - timestamp_now()
+        remaining = self._deadline - self._scheduler.time()
         return remaining if remaining > 0.0 else 0.0
 
     def timedout(self):
@@ -143,7 +152,7 @@ class ExpectationBase(ABC):
         if self._success:
             return False
         if self._deadline is not None:
-            timedout = timestamp_now() > self._deadline
+            timedout = self._scheduler.time() > self._deadline
             if timedout:
                 self.set_timedout()
         return self._timedout
@@ -165,7 +174,8 @@ class ExpectationBase(ABC):
         return f"{self.__class__.__name__} is {bool(self)}"
 
     def done(self):
-        return (self._future.done() or not self._awaited) and self._success
+        return (self._future.done() or not self._awaited) and self._success or (
+            self._future.done() and self.exception() is not None)
 
     def __await__(self):
         if not self.done():
@@ -175,8 +185,15 @@ class ExpectationBase(ABC):
             raise RuntimeError("await wasn't used with future")
         return self
 
-    def result(self):
-        return self._future.result()
+    def result(self, timeout=None):
+        return self._future.result(timeout=timeout)
+
+    def exception(self, timeout=None):
+        if self._success or not self._awaited:
+            return None
+        if self._future.cancelled():
+            return None
+        return self._future.exception(timeout=timeout)
 
     def __bool__(self):
         return self.done()
@@ -398,6 +415,8 @@ class MultipleExpectationMixin:
             self.expectations = []
         else:
             self.expectations = expectations
+        for expectation in self.expectations:
+            expectation.add_done_callback(self.check)
         self.matched_expectations = IndexedSet()
 
     def _await(self, scheduler):
@@ -415,8 +434,11 @@ class MultipleExpectationMixin:
     def append(self, expectation):
         if not isinstance(expectation, self.__class__):
             self.expectations.append(expectation)
+            expectation.add_done_callback(self.check)
         else:
             self.expectations.extend(expectation.expectations)
+            for expectation in expectation.expectations:
+                expectation.add_done_callback(self.check)
         return self
 
     def expected_events(self):
@@ -455,7 +477,7 @@ class MultipleExpectationMixin:
         return len(self.expectations)
 
     def __repr__(self):
-        return "<{}: {}>".format(self.__class__.__name__, repr(self.expectations))
+        return f"<{self.__class__.__name__}: {repr(self.expectations)}>"
 
     @abstractmethod
     def _combine_method(self):
@@ -475,10 +497,11 @@ class MultipleExpectationMixin:
         end_time = None
         if timeout is not None:
             end_time = timeout + time.monotonic()
-        if not self._scheduled_condition.wait_for(
-            lambda: self._awaited, timeout=timeout
-        ):
-            raise FutureTimeoutError()
+        with self._scheduled_condition:
+            if not self._scheduled_condition.wait_for(
+                lambda: self._awaited, timeout=timeout
+            ):
+                raise FutureTimeoutError()
         done = set()
         if timeout is not None:
             timeout = end_time - time.monotonic()

@@ -1,10 +1,12 @@
 from pathlib import Path
 from typing import Union
+from . import callonce
 import logging
 import os
 import os.path
 import requests
 import shutil
+import tempfile
 import uuid
 import urllib.parse
 
@@ -12,6 +14,7 @@ import urllib.parse
 logger = logging.getLogger(__name__)
 
 
+@callonce()
 def olympe_data_dir():
     XDG_DATA_HOME = Path(
         os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
@@ -21,6 +24,7 @@ def olympe_data_dir():
     return data_dir
 
 
+@callonce()
 def olympe_cache_dir():
     XDG_CACHE_HOME = Path(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
@@ -28,6 +32,26 @@ def olympe_cache_dir():
     cache_dir = XDG_CACHE_HOME / "parrot" / "olympe"
     cache_dir.mkdir(mode=0o750, exist_ok=True, parents=True)
     return cache_dir
+
+
+@callonce()
+def olympe_tmp_dir():
+    XDG_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    tmp_dir = XDG_RUNTIME_DIR / "parrot" / "olympe"
+    tmp_dir.mkdir(mode=0o750, exist_ok=True, parents=True)
+    return tmp_dir
+
+
+def mkstemp(suffix=None, prefix=None, text=False):
+    return tempfile.mkstemp(
+        suffix=suffix, prefix=prefix, text=text, dir=olympe_tmp_dir()
+    )
+
+
+def TemporaryFile(*args, **kwds):
+    kwds.pop("dir", None)
+    kwds["dir"] = olympe_tmp_dir()
+    return tempfile.TemporaryFile(*args, **kwds)
 
 
 def directory_is_writable(dir_path: Union[str, Path]):
@@ -38,7 +62,7 @@ def directory_is_writable(dir_path: Union[str, Path]):
         write_check.touch()
         write_check.unlink()
         return True
-    except IOError:
+    except OSError:
         return False
 
 

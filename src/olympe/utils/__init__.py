@@ -30,7 +30,9 @@
 
 import ctypes
 import functools
+import typing
 
+import errno
 from collections import namedtuple, OrderedDict
 from collections.abc import Mapping
 from datetime import datetime
@@ -59,6 +61,8 @@ class FuncDecoratorMeta(type):
 
 
 class decorator(metaclass=FuncDecoratorMeta):
+    @typing.no_type_check
+    # Workaround mypy false positive error, this constructor is never called directly anyway
     def __init__(self, f):
         self._f = f
         self._args = None
@@ -106,7 +110,25 @@ class callback_decorator(decorator):
             else:
                 logger = getLogger("olympe.callbacks")
             logger.exception("Unhandled exception")
-            return None
+
+            if self.func.__annotations__.get("return") is int:
+                return -errno.ENOTRECOVERABLE
+            else:
+                raise
+
+
+class callonce(decorator):
+
+    undefined = object()
+
+    def __init__(self, *args, **kwds):
+        super().__init__(*args, **kwds)
+        self.ret = self.undefined
+
+    def __call__(self, *args, **kwargs):
+        if self.ret is self.undefined:
+            self.ret = self.func(*args, **kwargs)
+        return self.ret
 
 
 def string_from_arsdkxml(_input):
@@ -116,7 +138,7 @@ def string_from_arsdkxml(_input):
     """
     if not _input:
         # Handles empty string and None (we don't actually handle boolean type)
-        return u''
+        return ''
     errors = 'strict'
     if isinstance(_input, bytes):
         # str input must be decoded to unicode first

@@ -45,3 +45,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# cache
+.mypy_cache

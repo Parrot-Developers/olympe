@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # Olympe sphinx-doc extension configuration file
 
 from sphinx.ext.autodoc import Documenter, FunctionDocumenter, ModuleLevelDocumenter
@@ -62,7 +60,7 @@ class ArsdkMessageDocumenter(FunctionDocumenter):
         ret = "{}".format(", ".join(
             map(lambda arg: arg + "=" + str(args_default[arg])
                 if arg in args_default else arg, args)))
-        ret = "({})".format(ret)
+        ret = f"({ret})"
         return ret
 
     def format_signature(self):
@@ -97,10 +95,10 @@ class ArsdkEnumDocumenter(ClassDocumenter):
                 self.add_line("    :{}: {} ({})".format(
                     value._name_, value.__doc__, value._value_), sourcename)
         else:
-            super(ArsdkEnumDocumenter, self).document_members(all_members)
+            super().document_members(all_members)
 
 
-class DummyOptionSpec(object):
+class DummyOptionSpec:
     """An option_spec allows any options."""
 
     def __getitem__(self, key: Any) -> Any:
@@ -117,7 +115,7 @@ class ArsdkFeatureDirective(Directive):
 
     def __init__(self, name, arguments, options, *args):
         self.directive_args = args
-        super(ArsdkFeatureDirective, self).__init__(name, arguments, options, *args)
+        super().__init__(name, arguments, options, *args)
 
     def run(self):
         automodule = directives._directives["automodule"]

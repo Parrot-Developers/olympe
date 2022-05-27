@@ -40,9 +40,11 @@ dependencies = [
     "dataclasses; python_version == '3.6'",
     "future",
     "geopy",
+    "h11",
     "ipython",
     "importlib_metadata; python_version < '3.8'",
     "numpy",
+    "typing-protocol; python_version < '3.8'",
     "pycryptodomex",
     "pytz",
     "PyYAML",
@@ -50,7 +52,7 @@ dependencies = [
     "six",
     "tzlocal<4.0",
     "yapf",
-    "websocket_client"
+    "wsproto"
 ]
 
 [project.optional-dependencies]

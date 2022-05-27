@@ -45,3 +45,77 @@ LOCAL_PYTHONPKG_NO_ABI := $(true)
 LOCAL_MODULE_FILENAME := parrot-olympe.whl
 
 include $(BUILD_PYTHON_WHEEL)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := olympe-deps
+LOCAL_CATEGORY_PATH := libs
+LOCAL_DESCRIPTION := \
+	Python ctypes bindings for olympe dependencies (libpdraw, ....)
+
+LOCAL_LIBRARIES := libulog-py protobuf-python parrot-protobuf-extensions-py
+
+LOCAL_EXPAND_CUSTOM_VARIABLES := 1
+
+OLYMPE_DEPS_LIBS_NAME := $\
+	libpomp:libpdraw:libvideo-metadata:libvideo-defs:libarsdk:libarsdkctrl:$\
+	libmedia-buffers:libmedia-buffers-memory:libmedia-buffers-memory-generic:$\
+	libmp4:libmux
+
+OLYMPE_DEPS_HEADERS := $\
+	/usr/include/stdint.h:$\
+	LIBPOMP_HEADERS:$\
+	LIBPDRAW_HEADERS:$\
+	LIBVIDEOMETADATA_HEADERS:$\
+	LIBVIDEODEFS_HEADERS:$\
+	LIBARSDK_HEADERS:$\
+	LIBARSDKCTRL_HEADERS:$\
+	LIBMEDIABUFFERS_HEADERS:$\
+	LIBMEDIABUFFERSMEMORY_HEADERS:$\
+	LIBMEDIABUFFERSMEMORYGENERIC_HEADERS:$\
+	LIBMP4_HEADERS:$\
+	LIBMUX_HEADERS
+
+OLYMPE_DEPS_LIBS_DIR := \
+	$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})/lib/
+OLYMPE_DEPS_BIN_DIR := \
+	$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})/bin/
+
+OLYMPE_DEPS_LIBS_PATH := $\
+	$(OLYMPE_DEPS_LIBS_DIR)libpomp$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libpdraw$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libvideo-metadata$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libvideo-defs$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libarsdk$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libarsdkctrl$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libmedia-buffers$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libmedia-buffers-memory$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libmedia-buffers-memory-generic$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libmp4$(TARGET_SHARED_LIB_SUFFIX):$\
+        $(OLYMPE_DEPS_LIBS_DIR)libmux$(TARGET_SHARED_LIB_SUFFIX)
+
+ifeq ($(CONFIG_ALCHEMY_BUILD_LIBMETADATATHERMAL),y)
+OLYMPE_DEPS_LIBS_NAME := $(OLYMPE_DEPS_LIBS_NAME):libmetadatathermal
+OLYMPE_DEPS_HEADERS := $(OLYMPE_DEPS_HEADERS):LIBMETADATATHERMAL_HEADERS
+OLYMPE_DEPS_LIBS_PATH := $(OLYMPE_DEPS_LIBS_PATH):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libmetadatathermal$(TARGET_SHARED_LIB_SUFFIX)
+endif
+
+LOCAL_CUSTOM_MACROS := $\
+	pybinding-macro:olympe_deps,$\
+	$(OLYMPE_DEPS_LIBS_NAME),$\
+	$(OLYMPE_DEPS_HEADERS),$\
+	$(OLYMPE_DEPS_LIBS_PATH)
+
+LOCAL_DESTDIR := usr/lib/python/site-packages
+LOCAL_LIBRARIES += libpomp libpdraw libvideo-metadata libvideo-defs libarsdk \
+	libarsdkctrl libmedia-buffers libmedia-buffers-memory \
+	libmedia-buffers-memory-generic libmp4 protobuf libmux
+
+LOCAL_PREREQUISITES := protobuf
+
+LOCAL_BUNDLE_FILES := $(OLYMPE_DEPS_BIN_DIR)protoc
+LOCAL_BUNDLE_SYSTEM_DEPS := 1
+LOCAL_BUNDLE_SYSTEM_ALLOW_LIST := $(TARGET_PYTHON_WHEEL_ALLOW_LIST)
+
+include $(BUILD_BUNDLE)

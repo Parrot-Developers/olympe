@@ -72,9 +72,9 @@ class ArsdkMessageEvent(Event):
     def _str_args(self):
         args_list = []
         for argname, argvalue in self.args.items():
-            args_list += ["{}={}".format(argname, self._str_arg(argvalue))]
+            args_list += [f"{argname}={self._str_arg(argvalue)}"]
         if self.policy is not None:
-            args_list += ["policy={}".format(self.policy)]
+            args_list += [f"policy={self.policy}"]
         return ", ".join(args_list)
 
     def _str_arg(self, argvalue):

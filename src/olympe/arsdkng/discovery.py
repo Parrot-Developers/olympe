@@ -30,40 +30,41 @@
 
 import concurrent.futures
 import ctypes
+import logging
 import olympe_deps as od
 import queue
 import socket
 import time
+import typing
 
 from . import DeviceInfo, DEVICE_TYPE_LIST
-from .backend import CtrlBackend
+from .backend import CtrlBackend, CtrlBackendNet, CtrlBackendMuxIp, DeviceHandler
+from olympe.concurrent import Future, Loop, TimeoutError
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from contextlib import closing
 from olympe.utils import callback_decorator
 
 
-class Discovery(ABC):
+class Discovery(ABC, DeviceHandler):
 
     timeout = 3.0
 
-    def __init__(self, backend):
-        self._backend = backend
-        self._thread_loop = self._backend._thread_loop
-        self.logger = self._backend.logger
-        self._devices = OrderedDict()
-        self._device_queue = queue.Queue()
+    def __init__(self):
+        self._backend: CtrlBackend
+        self._thread_loop: Loop
+        self.logger: logging.Logger
+        self._devices: typing.Dict[str, DeviceInfo] = OrderedDict()
+        self._device_queue: "queue.Queue[DeviceInfo]" = queue.Queue()
 
         self.userdata = ctypes.c_void_p()
         self.discovery = None
-        self._thread_loop.register_cleanup(self._destroy)
 
     @property
-    def discovery_name(self):
+    def discovery_name(self) -> str:
         return self.__class__.__name__
 
-    @callback_decorator()
-    def _do_start(self):
+    async def _do_start(self) -> bool:
         if self.discovery is not None:
             self.logger.error(f"{self.discovery_name}: already running")
             return True
@@ -78,7 +79,7 @@ class Discovery(ABC):
         )
         res = self._start_discovery()
         if res != 0:
-            self.stop()
+            await self.async_stop()
             self.logger.error(f"{self.discovery_name}: arsdk_discovery_start: {res}")
             return False
         self.logger.debug(f"{self.discovery_name}: Net discovery has been started")
@@ -109,27 +110,33 @@ class Discovery(ABC):
         Destroy the internal arsdk (net, raw, ...) discovery object
         """
 
-    def start(self):
-        f = self._thread_loop.run_async(self._do_start)
+    def start(self) -> bool:
+        f = self.async_start()
         try:
             return f.result_or_cancel(timeout=self.timeout)
-        except concurrent.futures.TimeoutError:
+        except TimeoutError:
             self.logger.warning(f"{self.discovery_name}: Discovery start timedout")
             return False
 
-    def stop(self):
-        f = self._thread_loop.run_async(self._do_stop)
+    def stop(self) -> bool:
+        f = self.async_stop()
         try:
             return f.result_or_cancel(timeout=self.timeout)
-        except concurrent.futures.TimeoutError:
+        except TimeoutError:
             self.logger.warning(f"{self.discovery_name}: Discovery stop timedout")
             return False
         finally:
             self._devices = OrderedDict()
             self._device_queue = queue.Queue()
 
+    def async_start(self) -> "Future":
+        return self._thread_loop.run_async(self._do_start)
+
+    def async_stop(self) -> "Future":
+        return self._thread_loop.run_async(self._do_stop)
+
     @callback_decorator()
-    def _do_stop(self):
+    def _do_stop(self) -> bool:
         ret = True
         self._backend.remove_device_handler(self)
 
@@ -164,7 +171,10 @@ class Discovery(ABC):
         self.discovery = None
         return ret
 
-    def _device_added_cb(self, arsdk_device, _user_data):
+    @callback_decorator()
+    def _device_added_cb(
+        self, arsdk_device: "od.POINTER_T[od.struct_arsdk_device]", _user_data: "od.POINTER_T[None]"
+    ) -> None:
         """
         Called when a new device is detected.
         Detected devices depends on discovery parameters
@@ -176,7 +186,10 @@ class Discovery(ABC):
         self._devices[device.name] = device
         self._device_queue.put_nowait(device)
 
-    def _device_removed_cb(self, arsdk_device, _user_data):
+    @callback_decorator()
+    def _device_removed_cb(
+        self, arsdk_device: "od.POINTER_T[od.struct_arsdk_device]", _user_data: "od.POINTER_T[None]"
+    ) -> None:
         """
         Called when a device disappear from the discovery search
         """
@@ -200,14 +213,16 @@ class Discovery(ABC):
             del self._devices[name]
 
     @callback_decorator()
-    def _destroy(self):
+    def _destroy(self) -> None:
         self._thread_loop.unregister_cleanup(self._destroy, ignore_error=True)
         self._do_stop()
 
-    def destroy(self):
+    def destroy(self) -> None:
         self._thread_loop.run_later(self._destroy)
 
-    async def async_devices(self, timeout=None):
+    async def async_devices(
+        self, timeout: float = None
+    ) -> typing.AsyncGenerator[DeviceInfo, None]:
         if not self.start():
             return
         if timeout is None:
@@ -219,8 +234,10 @@ class Discovery(ABC):
             except queue.Empty:
                 await self._thread_loop.asleep(0.005)
 
-    async def async_get_device_count(self, max_count, timeout=None):
-        devices = []
+    async def async_get_device_count(
+        self, max_count: int, timeout: float = None
+    ) -> typing.List[DeviceInfo]:
+        devices: typing.List[DeviceInfo] = []
         if timeout is None:
             timeout = self.timeout
         if max_count <= 0:
@@ -233,14 +250,18 @@ class Discovery(ABC):
                 break
         return devices
 
-    async def async_get_device(self, timeout=None):
+    async def async_get_device(
+        self, timeout: float = None
+    ) -> typing.Optional[DeviceInfo]:
         if timeout is None:
             timeout = self.timeout
         async for device in self.async_devices(timeout=timeout):
             return device
         return None
 
-    def get_device_count(self, max_count, timeout=None):
+    def get_device_count(
+        self, max_count: int, timeout: float = None
+    ) -> typing.Optional[typing.List[DeviceInfo]]:
         if timeout is None:
             timeout = self.timeout
         t = self._thread_loop.run_async(
@@ -251,7 +272,7 @@ class Discovery(ABC):
         except concurrent.futures.TimeoutError:
             return None
 
-    def get_device(self, timeout=None):
+    def get_device(self, timeout: float = None) -> typing.Optional[DeviceInfo]:
         if timeout is None:
             timeout = self.timeout
         devices = self.get_device_count(max_count=1, timeout=timeout)
@@ -262,8 +283,19 @@ class Discovery(ABC):
 
 
 class DiscoveryNet(Discovery):
-    def __init__(self, backend, ip_addr, device_types=None):
-        super().__init__(backend=backend)
+    def __init__(
+        self,
+        backend: CtrlBackendNet,
+        *,
+        ip_addr: str,
+        device_types: typing.Optional[typing.List[int]] = None,
+        **kwds,
+    ):
+        self._backend: CtrlBackendNet = backend
+        self._thread_loop = self._backend._thread_loop
+        self._thread_loop.register_cleanup(self._destroy)
+        self.logger = self._backend.logger
+        super().__init__()
         if device_types is None:
             device_types = DEVICE_TYPE_LIST
         self._device_types = device_types
@@ -274,15 +306,15 @@ class DiscoveryNet(Discovery):
         )
         self.ip_addr = ip_addr
 
-    def _create_discovery(self):
+    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery_net]":
         """
         Start net discovery in order to detect devices
         """
         discovery = od.POINTER_T(od.struct_arsdk_discovery_net)()
 
         res = od.arsdk_discovery_net_new(
-            self._backend._arsdk_ctrl,
-            self._backend._backend_net,
+            self._backend._info.arsdk_ctrl,
+            self._backend._info.backend,
             ctypes.pointer(self.discovery_cfg),
             od.char_pointer_cast(self.ip_addr),
             ctypes.byref(discovery),
@@ -292,13 +324,13 @@ class DiscoveryNet(Discovery):
             return None
         return discovery
 
-    def _start_discovery(self):
+    def _start_discovery(self) -> None:
         return od.arsdk_discovery_net_start(self.discovery)
 
-    def _stop_discovery(self):
+    def _stop_discovery(self) -> None:
         return od.arsdk_discovery_net_stop(self.discovery)
 
-    def _destroy_discovery(self):
+    def _destroy_discovery(self) -> None:
         return od.arsdk_discovery_net_destroy(self.discovery)
 
 
@@ -312,17 +344,28 @@ class DiscoveryNetRaw(Discovery):
     This method should be considered as a fallback.
     """
 
-    def __init__(self, backend, check_port=True, *args, **kwds):
-        super().__init__(backend=backend)
+    def __init__(
+        self,
+        backend: CtrlBackendNet,
+        *,
+        ip_addr: str,
+        check_port: typing.Optional[bool] = True,
+        **kwds,
+    ):
+        self._backend: CtrlBackendNet = backend
+        self._thread_loop = self._backend._thread_loop
+        self._thread_loop.register_cleanup(self._destroy)
+        self.logger = self._backend.logger
+        super().__init__()
         self._check_port = check_port
         devices = kwds.pop("devices", None)
         self._raw_devices = []
         if not devices:
-            self._raw_devices.append(DeviceInfo(*args, **kwds))
+            self._raw_devices.append(DeviceInfo(ip_addr, **kwds))
         else:
             self._raw_devices.extend(devices)
-            if args or kwds:
-                self._raw_devices.append(DeviceInfo(*args, **kwds))
+            if kwds:
+                self._raw_devices.append(DeviceInfo(ip_addr, **kwds))
 
         id_ = str(id(self))[:7]
         for i, device in enumerate(self._raw_devices):
@@ -335,48 +378,55 @@ class DiscoveryNetRaw(Discovery):
                 if device.ip_addr == "192.168.53.1":
                     device.type = od.ARSDK_DEVICE_TYPE_SKYCTRL_3
                     device.name = "Skycontroller 3"
-                elif device.ip_addr in (
-                    "192.168.42.1",
-                    "192.168.43.1",
-                ) or device.ip_addr.startswith("10.202.0."):
+                elif (
+                    device.ip_addr
+                    in (
+                        "192.168.42.1",
+                        "192.168.43.1",
+                    )
+                    or device.ip_addr.startswith("10.202.0.")
+                ):
                     device.type = od.ARSDK_DEVICE_TYPE_ANAFI4K
                     device.name = "ANAFI-{}".format(7 * "X")
 
-    def start(self):
+    def start(self) -> bool:
         super().start()
         for device in self._raw_devices:
             self._add_device(device)
         return True
 
-    def _create_discovery(self):
+    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery]":
         discovery = od.POINTER_T(od.struct_arsdk_discovery)()
 
-        backendparent = od.arsdkctrl_backend_net_get_parent(self._backend._backend_net)
+        backendparent = od.arsdkctrl_backend_net_get_parent(self._backend._info.backend)
 
         res = od.arsdk_discovery_new(
-            b"netraw", backendparent, self._backend._arsdk_ctrl, ctypes.byref(discovery)
+            b"netraw",
+            backendparent,
+            self._backend._info.arsdk_ctrl,
+            ctypes.byref(discovery),
         )
         if res != 0:
             raise RuntimeError(f"Unable to create raw discovery:{res}")
         return discovery
 
-    def _start_discovery(self):
+    def _start_discovery(self) -> int:
         return od.arsdk_discovery_start(self.discovery)
 
-    def _stop_discovery(self):
+    def _stop_discovery(self) -> int:
         return od.arsdk_discovery_stop(self.discovery)
 
-    def _destroy_discovery(self):
+    def _destroy_discovery(self) -> int:
         return od.arsdk_discovery_destroy(self.discovery)
 
-    def _add_device(self, device):
+    def _add_device(self, device: DeviceInfo) -> None:
         if self._check_port:
             # check that the device port is opened
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 try:
                     res = sock.connect_ex((device.ip_addr, device.port))
-                except (socket.error, OSError):
+                except OSError:
                     self.logger.debug(
                         f"{self.discovery_name}: {device.ip_addr} is unreachable"
                     )
@@ -397,7 +447,7 @@ class DiscoveryNetRaw(Discovery):
             )
 
     @callback_decorator()
-    def _do_add_device(self, device):
+    def _do_add_device(self, device: DeviceInfo) -> None:
         res = od.arsdk_discovery_add_device(
             self.discovery, device.as_arsdk_discovery_device_info()
         )
@@ -412,9 +462,58 @@ class DiscoveryNetRaw(Discovery):
             )
 
 
+class DiscoveryMux(Discovery):
+    def __init__(
+        self,
+        backend: CtrlBackendMuxIp,
+        device_types: typing.Optional[typing.List[int]] = None,
+        **kwds,
+    ):
+        self._backend: CtrlBackendMuxIp = backend
+        self._thread_loop = self._backend._thread_loop
+        self._thread_loop.register_cleanup(self._destroy)
+        self.logger = self._backend.logger
+        super().__init__()
+        if device_types is None:
+            device_types = DEVICE_TYPE_LIST
+        self._device_types = device_types
+        ctypes_device_type_list = (ctypes.c_int * len(device_types))(*device_types)
+        self.discovery_cfg = od.struct_arsdk_discovery_cfg(
+            ctypes.cast(ctypes_device_type_list, od.POINTER_T(od.arsdk_device_type)),
+            len(ctypes_device_type_list),
+        )
+
+    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery_mux]":
+        """
+        Start mux discovery in order to detect devices
+        """
+        discovery = od.POINTER_T(od.struct_arsdk_discovery_mux)()
+
+        res = od.arsdk_discovery_mux_new(
+            self._backend._info.arsdk_ctrl,
+            self._backend._info.backend,
+            ctypes.pointer(self.discovery_cfg),
+            self._backend._info.mux_ctx,
+            ctypes.byref(discovery),
+        )
+        if res != 0:
+            self.logger.error(f"arsdk_discovery_mux_new: {res}")
+            return None
+        return discovery
+
+    def _start_discovery(self) -> int:
+        return od.arsdk_discovery_mux_start(self.discovery)
+
+    def _stop_discovery(self) -> int:
+        return od.arsdk_discovery_mux_stop(self.discovery)
+
+    def _destroy_discovery(self) -> int:
+        return od.arsdk_discovery_mux_destroy(self.discovery)
+
+
 if __name__ == "__main__":
 
-    backend = CtrlBackend()
+    backend = CtrlBackendNet()
 
     for ip_addr in ("192.168.42.1", "192.168.43.1", "192.168.53.1"):
         for discovery in (

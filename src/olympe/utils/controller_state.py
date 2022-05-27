@@ -32,7 +32,7 @@ import datetime
 from collections import OrderedDict, defaultdict
 
 
-class DeviceConnStatus(object):
+class DeviceConnStatus:
     """
     Save info about connection/device
     """
@@ -48,7 +48,7 @@ class DeviceConnStatus(object):
         self.device_infos = {}
 
 
-class DeviceStates(object):
+class DeviceStates:
     """
     Save all device states in a dictionary
     """
@@ -60,7 +60,7 @@ class DeviceStates(object):
         self.states = defaultdict(OrderedDict)
 
 
-class PilotingCommand(object):
+class PilotingCommand:
     """
     Manage piloting commands values that will be send to the drone when piloting has been started
     """
@@ -85,7 +85,7 @@ class PilotingCommand(object):
         self.initial_time = 0
 
 
-class ControllerState(object):
+class ControllerState:
 
     def __init__(self):
         self.device_conn_status = DeviceConnStatus()

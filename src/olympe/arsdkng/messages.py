@@ -161,7 +161,7 @@ class ArsdkMessageMeta(type):
 
         cls.fullName = fullName
         cls.prefix = fullPath[:-1]
-        Full_Name = "_".join((name[0].upper() + name[1:] for name in fullPath))
+        Full_Name = "_".join(name[0].upper() + name[1:] for name in fullPath)
         cls.g_arsdk_cmd_desc = f"g_arsdk_cmd_desc_{Full_Name}"
 
         cls.obj = obj
@@ -331,12 +331,10 @@ class ArsdkMessageMeta(type):
                 zip(cls.args_name, [None] * len(cls.args_name))
             )
         cls.args_default_str = ", ".join(
-            (
-                "{}={}".format(argname, cls.args_default[argname])
-                if argname in cls.args_default
-                else argname
-                for argname in cls.args_name + ["**kwds"]
-            )
+            f"{argname}={cls.args_default[argname]}"
+            if argname in cls.args_default
+            else argname
+            for argname in cls.args_name + ["**kwds"]
         )
 
         # docstring
@@ -364,8 +362,8 @@ class ArsdkMessageMeta(type):
         return docstring
 
     def _py_ar_arg_directive(cls, directive, argname, doc):
-        directive = ":{} {}: ".format(directive, argname)
-        doc = "{}{}".format(directive, doc)
+        directive = f":{directive} {argname}: "
+        doc = f"{directive}{doc}"
         doc = textwrap.fill(
             doc, subsequent_indent=(" " * len(directive)), break_long_words=False
         )
@@ -394,13 +392,13 @@ class ArsdkMessageMeta(type):
             ":param _float_tol: specify the float comparison tolerance, a 2-tuple"
             " containing a "
             + "relative tolerance float value and an absolute tolerate float value "
-            + "(default to {}). ".format(cls.float_tol)
+            + f"(default to {cls.float_tol}). "
             + "See python 3 stdlib `math.isclose` "
             + "documentation for more information\n"
             + ":type _float_tol: `tuple`\n"
         )
         return (
-            "\n".join((cls._py_ar_arg_docstring(arg) for arg in ar_args))
+            "\n".join(cls._py_ar_arg_docstring(arg) for arg in ar_args)
             + extra_params_docstring
         )
 
@@ -428,12 +426,12 @@ class ArsdkMessageMeta(type):
             )
             type_ = cls._py_ar_arg_directive("type", ar_arg.name, doc)
         else:
-            raise RuntimeError("Unknown argument type {}".format(type(ar_arg.argType)))
+            raise RuntimeError(f"Unknown argument type {type(ar_arg.argType)}")
 
         param = cls._py_ar_arg_directive(
             "param", ar_arg.name, cls._py_ar_comment_docstring(ar_arg.doc)
         )
-        return "\n\n{}\n\n{}".format(type_, param)
+        return f"\n\n{type_}\n\n{param}"
 
     def _py_ar_supported(cls, supported_devices, deprecated):
         unsupported_notice = "**Unsupported message**"
@@ -489,7 +487,7 @@ class ArsdkMessageMeta(type):
                     )
                 else:
                     ret.append(
-                        "    :{}: with an up to date firmware".format(device_str)
+                        f"    :{device_str}: with an up to date firmware"
                     )
         if not ret:
             return unsupported_notice
@@ -563,7 +561,7 @@ class ArsdkMessageMeta(type):
                 if i < len(cls._expectation) - 1:
                     ret += " & "
         if ret:
-            ret = "**Expectations**: {}".format(ret)
+            ret = f"**Expectations**: {ret}"
         return ret
 
     def _py_ar_cmd_any_expectation_docstring(cls, any_expectations):
@@ -602,7 +600,7 @@ class ArsdkMessageMeta(type):
             return argval.pretty()
         elif callable(argval):
             command_args = OrderedDict(
-                ((arg, "this.{}".format(arg)) for arg in cls.args_name)
+                (arg, f"this.{arg}") for arg in cls.args_name
             )
             try:
                 return argval(cls, command_args)
@@ -755,7 +753,7 @@ class ArsdkMessageMeta(type):
                 expectation_objs = []
             cls._expectation = ArsdkCommandExpectation(cls)
             cls._reverse_expectation = ArsdkEventExpectation(
-                cls, OrderedDict((zip(cls.args_name, [None] * len(cls.args_name))))
+                cls, OrderedDict(zip(cls.args_name, [None] * len(cls.args_name)))
             )
             for expectation_obj in expectation_objs:
                 if not isinstance(expectation_obj, list):
@@ -768,7 +766,7 @@ class ArsdkMessageMeta(type):
                     )
         else:
             cls._expectation = ArsdkEventExpectation(
-                cls, OrderedDict((zip(cls.args_name, [None] * len(cls.args_name))))
+                cls, OrderedDict(zip(cls.args_name, [None] * len(cls.args_name)))
             )
             cls._reverse_expectation = ArsdkCommandExpectation(cls)
 
@@ -818,7 +816,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
 
     @classmethod
     def _argsmap_from_args(cls, *args, **kwds):
-        args = OrderedDict((zip(map(lambda a: a, cls.args_name), args)))
+        args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
         args_set = set(args.keys())
         kwds_set = set(kwds.keys())
         if not args_set.isdisjoint(kwds_set):
@@ -936,7 +934,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
 
     def state(self):
         if self._last_event is None:
-            raise RuntimeError("{} state is uninitialized".format(self.fullName))
+            raise RuntimeError(f"{self.fullName} state is uninitialized")
         return self._state
 
     def _reset_state(self):
@@ -1649,12 +1647,10 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
                 zip(cls.args_name, [None] * len(cls.args_name))
             )
         cls.args_default_str = ", ".join(
-            (
-                "{}={}".format(argname, cls.args_default[argname])
-                if argname in cls.args_default
-                else argname
-                for argname in cls.args_name + ["**kwds"]
-            )
+            f"{argname}={cls.args_default[argname]}"
+            if argname in cls.args_default
+            else argname
+            for argname in cls.args_name + ["**kwds"]
         )
 
         cls.args_enum = OrderedDict()
@@ -1807,7 +1803,7 @@ class ArsdkProtoMessage(
 
     def state(self):
         if self._last_event is None:
-            raise RuntimeError("{} state is uninitialized".format(self.fullName))
+            raise RuntimeError(f"{self.fullName} state is uninitialized")
         return self._state
 
     def _reset_state(self):
@@ -2224,7 +2220,7 @@ class ArsdkProtoMessage(
 
     @classmethod
     def _argsmap_from_args(cls, *args, **kwds):
-        args = OrderedDict((zip(map(lambda a: a, cls.args_name), args)))
+        args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
         args_set = set(args.keys())
         kwds_set = set(kwds.keys())
         if not args_set.isdisjoint(kwds_set):
@@ -2306,7 +2302,7 @@ class ArsdkProtoMessage(
                     )
                 else:
                     ret.append(
-                        "    :{}: with an up to date firmware".format(device_str)
+                        f"    :{device_str}: with an up to date firmware"
                     )
         if not ret:
             return "\n**Unsupported message**\n"

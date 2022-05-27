@@ -32,7 +32,11 @@ to create its own mobile or desktop application for ANAFI and ANAFI Thermal dron
 
 ## License
 
-BSD-3-Clause license
+SPDX-License-Identifier: BSD-3-Clause
+
+Olympe source code is licensed under the BSD-3-clause license, some part incorporated into Olympe
+coming from CPython/asyncio are licensed under their original PSF-2.0 license agreement.
+
 
 ## Supported platform
 

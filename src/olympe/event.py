@@ -79,7 +79,7 @@ def _format_olympe_dsl(code):
         return code
 
 
-class EventContext(object):
+class EventContext:
     def __init__(self, event_list=None, policy=None, marker=None):
         if event_list is None:
             event_list = []
@@ -151,8 +151,8 @@ class EventContext(object):
 class MultipleEventContext(EventContext):
     def __init__(self, contexts, combine_method, policy=None, marker=None):
         self._contexts = list(contexts)
-        self._combine_method = " {} ".format(combine_method)
-        super(MultipleEventContext, self).__init__(
+        self._combine_method = f" {combine_method} "
+        super().__init__(
             list(chain.from_iterable(map(lambda c: c.events(), self._contexts))),
             policy=policy,
             marker=marker,
@@ -163,7 +163,7 @@ class MultipleEventContext(EventContext):
         return list(filter(lambda c: bool(c), self._contexts))
 
     def _set_marker(self, marker):
-        super(MultipleEventContext, self)._set_marker(marker)
+        super()._set_marker(marker)
         for context in self._contexts:
             context._set_marker(marker)
         return self

@@ -64,9 +64,9 @@ def take_photo_burst(drone):
     resources = media_download.as_completed(expected_count=photo_count, timeout=60)
     resource_count = 0
     for resource in resources:
-        logger.info("Resource: {}".format(resource.resource_id))
+        logger.info(f"Resource: {resource.resource_id}")
         if not resource.success():
-            logger.error("Failed to download {}".format(resource.resource_id))
+            logger.error(f"Failed to download {resource.resource_id}")
             continue
         resource_count += 1
         # parse the xmp metadata
@@ -75,7 +75,7 @@ def take_photo_burst(drone):
             image_xmp_start = image_data.find(b"<x:xmpmeta")
             image_xmp_end = image_data.find(b"</x:xmpmeta")
             if image_xmp_start < 0 or image_xmp_end < 0:
-                logger.error("Failed to find XMP photo metadata {}".format(resource.resource_id))
+                logger.error(f"Failed to find XMP photo metadata {resource.resource_id}")
                 continue
             image_xmp = ET.fromstring(image_data[image_xmp_start: image_xmp_end + 12])
             for image_meta in image_xmp[0][0]:
@@ -83,9 +83,9 @@ def take_photo_burst(drone):
                 xmp_value = image_meta.text
                 # only print the XMP tags we are interested in
                 if xmp_tag in XMP_TAGS_OF_INTEREST:
-                    logger.info("{} {} {}".format(resource.resource_id, xmp_tag, xmp_value))
-    logger.info("{} media resource downloaded".format(resource_count))
-    assert resource_count == 14, "resource count == {} != 14".format(resource_count)
+                    logger.info(f"{resource.resource_id} {xmp_tag} {xmp_value}")
+    logger.info(f"{resource_count} media resource downloaded")
+    assert resource_count == 14, f"resource count == {resource_count} != 14"
     assert media_download.wait(1.).success(), "Photo burst media download"
 
 

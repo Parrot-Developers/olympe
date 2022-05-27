@@ -39,7 +39,7 @@ from aenum import Enum, auto
 from collections import defaultdict, namedtuple
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from olympe.utils import py_object_cast, callback_decorator
-from olympe.utils.pomp_loop_thread import Future, PompLoopThread
+from olympe.concurrent import Condition, Loop
 from olympe.log import LogMixin
 from . import VMetaFrameType, PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT  # noqa
 from . import PDRAW_TIMESCALE
@@ -146,24 +146,23 @@ class Pdraw(LogMixin):
 
         if pdraw_thread_loop is None:
             self.own_pdraw_thread_loop = True
-            self.pdraw_thread_loop = PompLoopThread(self.logger)
+            self.pdraw_thread_loop = Loop(self.logger)
             self.pdraw_thread_loop.start()
         else:
             self.own_pdraw_thread_loop = False
             self.pdraw_thread_loop = pdraw_thread_loop
 
-        self.callbacks_thread_loop = PompLoopThread(
+        self.callbacks_thread_loop = Loop(
             self.logger, parent=self.pdraw_thread_loop)
         self.callbacks_thread_loop.start()
         self.buffer_queue_size = buffer_queue_size
         self.pomp_loop = self.pdraw_thread_loop.pomp_loop
 
-        self._open_resp_future = Future(self.pdraw_thread_loop)
-        self._close_resp_future = Future(self.pdraw_thread_loop)
-        self._close_resp_future.add_done_callback(self._on_close_resp_done)
-        self._play_resp_future = Future(self.pdraw_thread_loop)
-        self._pause_resp_future = Future(self.pdraw_thread_loop)
-        self._stop_resp_future = Future(self.pdraw_thread_loop)
+        self._open_condition = Condition(self.pdraw_thread_loop)
+        self._close_condition = Condition(self.pdraw_thread_loop)
+        self._play_condition = Condition(self.pdraw_thread_loop)
+        self._pause_condition = Condition(self.pdraw_thread_loop)
+        self._stop_condition = Condition(loop=self.pdraw_thread_loop)
         self._state = PdrawState.Created
         self._state_lock = threading.Lock()
         self._state_wait_events = {k: list() for k in PdrawState}
@@ -228,7 +227,7 @@ class Pdraw(LogMixin):
             od.VDEF_FRAME_TYPE_RAW: _RawVideoSink,
         }
 
-        self.pdraw_thread_loop.register_cleanup(self._dispose)
+        self.pdraw_thread_loop.register_cleanup(self._adispose)
 
     @property
     def state(self):
@@ -273,7 +272,7 @@ class Pdraw(LogMixin):
         return event.wait(timeout=timeout)
 
     def dispose(self):
-        return self.pdraw_thread_loop.run_later(self._dispose)
+        return self.pdraw_thread_loop.run_async(self._adispose)
 
     def destroy(self):
         self.callbacks_thread_loop.stop()
@@ -283,33 +282,24 @@ class Pdraw(LogMixin):
             self.logger.error("Pdraw.destroy() timedout")
         self.pdraw_thread_loop.stop()
 
-    @callback_decorator()
-    def _dispose(self):
+    async def _adispose(self):
         self.pdraw_thread_loop.unregister_cleanup(
-            self._dispose, ignore_error=True)
-        return self.pdraw_thread_loop.run_async(
-            self._dispose_impl)
-
-    @callback_decorator()
-    def _dispose_impl(self):
-        f = self.close().then(
-            lambda _: self._stop(),
-        )
-        return f
+            self._adispose, ignore_error=True)
+        await self.aclose()
+        if not self._stop():
+            return False
+        async with self._stop_condition:
+            await self._stop_condition.wait()
+        return self.state is PdrawState.Closed
 
     @callback_decorator()
     def _stop(self):
-        if self._stop_resp_future.done():
-            self._stop_resp_future = Future(self.pdraw_thread_loop)
         if not self.pdraw:
-            self._stop_resp_future.set_result(True)
-            return self._stop_resp_future
+            return False
         res = od.pdraw_stop(self.pdraw)
-        if res != 0:
-            self.logger.error(f"cannot stop pdraw session {res}")
-            self._stop_resp_future.set_result(False)
         if self.callbacks_thread_loop.stop():
             self.logger.info("pdraw callbacks thread loop stopped")
+
         # cleanup some FDs from the callbacks thread loop that might
         # have been lost
         for stream in self.streams.values():
@@ -319,19 +309,30 @@ class Pdraw(LogMixin):
                 self.callbacks_thread_loop.remove_event_from_loop(
                     stream['video_queue_event'])
                 stream['video_queue_event'] = None
-        return self._stop_resp_future
+        if res != 0:
+            self.logger.error(f"cannot stop pdraw session: {os.strerror(-res)}")
+            return False
+        else:
+            self.pdraw_thread_loop.run_delayed(2.0, self._stop_waiter)
+        return True
+
+    async def _stop_waiter(self):
+        async with self._stop_condition:
+            self._stop_condition.notify_all()
 
     @callback_decorator()
     def stop_resp(self, pdraw, status, userdata):
-        if status != 0:
-            self.logger.error(f"_stop_resp called {status}")
-            self._stop_resp_future.set_result(False)
-            self.state = PdrawState.Error
-        else:
-            self.logger.info(f"_stop_resp called {status}")
-            self._stop_resp_future.set_result(True)
-            self.state = PdrawState.Stopped
-        return self._stop_resp_future
+        self.pdraw_thread_loop.run_async(self._astop_resp, status)
+
+    async def _astop_resp(self, status):
+        async with self._stop_condition:
+            if status != 0:
+                self.logger.error(f"_stop_resp called {status}")
+                self.state = PdrawState.Error
+            else:
+                self.logger.info(f"_stop_resp called {status}")
+                self.state = PdrawState.Stopped
+            self._stop_condition.notify_all()
 
     def _destroy_pdraw(self):
         ret = True
@@ -343,7 +344,7 @@ class Pdraw(LogMixin):
             self.logger.info("destroying pdraw demuxer...")
             res = od.pdraw_demuxer_destroy(self.pdraw, self.pdraw_demuxer)
             if res != 0:
-                self.logger.error(f"cannot destroy pdraw demuxer {res}")
+                self.logger.error(f"cannot destroy pdraw demuxer: {os.strerror(-res)}")
                 ret = False
             else:
                 self.logger.info("pdraw demuxer destroyed")
@@ -352,7 +353,7 @@ class Pdraw(LogMixin):
             self.logger.info("destroying pdraw...")
             res = od.pdraw_destroy(self.pdraw)
             if res != 0:
-                self.logger.error(f"cannot destroy pdraw {res}")
+                self.logger.error(f"cannot destroy pdraw: {os.strerror(-res)}")
                 ret = False
             else:
                 self.logger.info("pdraw destroyed")
@@ -381,7 +382,7 @@ class Pdraw(LogMixin):
 
         if res != 0:
             self.logger.error(
-                f"Error while opening pdraw url: {self.url} ({res})")
+                f"Error while opening pdraw url: {self.url} {os.strerror(-res)}")
             return False
         else:
             self.logger.info(f"Opening pdraw url OK: {self.url}")
@@ -392,82 +393,83 @@ class Pdraw(LogMixin):
         """
         Opening pdraw stream using an rtsp url
         """
-        self._open_resp_future = Future(self.pdraw_thread_loop)
         if self.state not in (
                 PdrawState.Error,
                 PdrawState.Stopped,
                 PdrawState.Closed,
                 PdrawState.Created):
             self.logger.warning(f"Cannot open stream from {self.state}")
-            self._open_resp_future.set_result(False)
-            return self._open_resp_future
+            return False
 
         self.state = PdrawState.Opening
         if not self.pdraw and not self._pdraw_new():
-            self._open_resp_future.set_result(False)
-            return self._open_resp_future
+            return False
 
-        ret = self._open_url()
+        if not self._open_url():
+            return False
 
-        if not ret:
-            self._open_resp_future.set_result(False)
-
-        return self._open_resp_future
+        return True
 
     def close(self):
         """
         Close a playing or paused video stream session
         """
+        return self.pdraw_thread_loop.run_async(self.aclose).result_or_cancel(5.0)
+
+    async def aclose(self):
+        """
+        Close a playing or paused video stream session
+        """
         if self.state is PdrawState.Closed:
-            f = Future(self.pdraw_thread_loop)
-            f.set_result(True)
+            return True
         if self.state in (
                 PdrawState.Opened,
                 PdrawState.Paused,
                 PdrawState.Playing,
                 PdrawState.Error):
             self.logger.debug(f"pdraw closing from the {self.state} state")
-            if self._close_resp_future.done():
-                self._close_resp_future = Future(self.pdraw_thread_loop)
-                self._close_resp_future.add_done_callback(
-                    self._on_close_resp_done)
-            f = self._close_resp_future
             self.state = PdrawState.Closing
-            self.pdraw_thread_loop.run_async(self._close_stream)
+            if not self._close_stream():
+                return False
         elif self.state is not PdrawState.Closing:
-            f = Future(self.pdraw_thread_loop)
-            f.set_result(False)
-        else:
-            f = self._close_resp_future
-        return f
+            return False
+        self.pdraw_thread_loop.run_delayed(1., self._close_waiter)
+        async with self._close_condition:
+            await self._close_condition.wait()
+        if self.state is not PdrawState.Closed:
+            self.logger.warning("Closing pdraw session timedout")
+            # FIXME: workaround TRS-1052
+            self.state = PdrawState.Closed
+        return self.state is PdrawState.Closed
 
-    @callback_decorator()
+    async def _close_waiter(self):
+        async with self._close_condition:
+            self._close_condition.notify_all()
+
     def _close_stream(self):
         """
         Close pdraw stream
         """
         if self.state is PdrawState.Closed:
             self.logger.info("pdraw is already closed")
-            self._close_resp_future.set_result(True)
-            return self._close_resp_future
+            return True
 
         if not self.pdraw:
             self.logger.error("Error Pdraw interface seems to be destroyed")
             self.state = PdrawState.Error
-            self._close_resp_future.set_result(False)
-            return self._close_resp_future
+            return False
 
         if not self._close_stream_impl():
             self.state = PdrawState.Error
-            self._close_resp_future.set_result(False)
+            return False
 
-        return self._close_resp_future
+        return True
 
     def _close_stream_impl(self):
         res = od.pdraw_demuxer_close(self.pdraw, self.pdraw_demuxer)
 
         if res != 0:
-            self.logger.error(f"Error while closing pdraw demuxer: {res}")
+            self.logger.error(f"Error while closing pdraw demuxer: {os.strerror(-res)}")
             self.state = PdrawState.Error
             return False
         else:
@@ -476,55 +478,40 @@ class Pdraw(LogMixin):
         return True
 
     @callback_decorator()
-    def _on_close_resp_done(self, close_resp_future):
-        if not close_resp_future.cancelled():
-            return
-
-        close_resp_future.cancel()
-        self.logger.error("Closing pdraw demuxer timedout")
-
-        if self.state not in (
-                PdrawState.Closed, PdrawState.Stopped, PdrawState.Error):
-            return
-
-        # FIXME: workaround pdraw closing timeout
-        # This random issue is quiet hard to reproduce
-        self.logger.error("destroying pdraw demuxer...")
-        if self.pdraw and self.pdraw_demuxer:
-            self.pdraw_thread_loop.run_later(
-                od.pdraw_demuxer_destroy, self.pdraw, self.pdraw_demuxer).then(
-                    lambda _: self._stop())
-        self.pdraw = od.POINTER_T(od.struct_pdraw)()
-        self.state = PdrawState.Closed
-
     def _open_resp(self, pdraw, demuxer, status, userdata):
         self.logger.debug("_open_resp called")
+        self.pdraw_thread_loop.run_async(self._aopen_resp, status)
+
+    async def _aopen_resp(self, status):
         if status != 0:
             self.state = PdrawState.Error
         else:
             self.state = PdrawState.Opened
 
-        self._open_resp_future.set_result(status == 0)
+        async with self._open_condition:
+            self._open_condition.notify_all()
 
+    @callback_decorator()
     def _close_resp(self, pdraw, demuxer, status, userdata):
         self._close_output_files()
+        self.pdraw_thread_loop.run_async(self._aclose_resp, pdraw, demuxer, status)
+
+    async def _aclose_resp(self, pdraw, demuxer, status):
         if status != 0:
             self.logger.error(f"_close_resp called {status}")
-            self._close_resp_future.set_result(False)
             self.state = PdrawState.Error
         else:
             self.logger.debug(f"_close_resp called {status}")
             self.state = PdrawState.Closed
-            self._close_resp_future.set_result(True)
-        if not self._open_resp_future.done():
-            self._open_resp_future.set_result(False)
         if demuxer == self.pdraw_demuxer:
             self.pdraw_demuxer = od.POINTER_T(od.struct_pdraw_demuxer)()
         res = od.pdraw_demuxer_destroy(pdraw, demuxer)
         if res != 0:
-            self.logger.error(f"pdraw_demuxer_destroy: {res}")
+            self.logger.error(f"pdraw_demuxer_destroy: {os.strerror(-res)}")
         else:
-            self.logger.debug(f"pdraw_demuxer_destroy: {res}")
+            self.logger.debug(f"pdraw_demuxer_destroy: {os.strerror(-res)}")
+        async with self._close_condition:
+            self._close_condition.notify_all()
 
     def _pdraw_new(self):
         res = od.pdraw_new(
@@ -563,8 +550,6 @@ class Pdraw(LogMixin):
         self.logger.info(f"_ready_to_play({ready}) called")
         self._is_ready_to_play = bool(ready)
         if self._is_ready_to_play:
-            if self._play_resp_future.done():
-                self._play_resp_future = Future(self.pdraw_thread_loop)
             self._play_impl()
             if self.start_callback is not None:
                 self.callbacks_thread_loop.run_async(self.start_callback)
@@ -573,26 +558,30 @@ class Pdraw(LogMixin):
                 self.callbacks_thread_loop.run_async(self.end_callback)
 
     def _play_resp(self, pdraw, demuxer, status, timestamp, speed, userdata):
+        self.pdraw_thread_loop.run_async(self._aplay_resp, status)
+
+    async def _aplay_resp(self, status):
         if status == 0:
             self.logger.debug(f"_play_resp called {status}")
             self.state = PdrawState.Playing
-            if not self._play_resp_future.done():
-                self._play_resp_future.set_result(True)
         else:
             self.logger.error(f"_play_resp called {status}")
             self.state = PdrawState.Error
-            if not self._play_resp_future.done():
-                self._play_resp_future.set_result(False)
+        async with self._play_condition:
+            self._play_condition.notify_all()
 
     def _pause_resp(self, pdraw, demuxer, status, timestamp, userdata):
+        self.pdraw_thread_loop.run_async(self._apause_resp, status)
+
+    async def _apause_resp(self, status):
         if status == 0:
             self.logger.debug(f"_pause_resp called {status}")
             self.state = PdrawState.Paused
-            self._pause_resp_future.set_result(True)
         else:
             self.logger.error(f"_pause_resp called {status}")
             self.state = PdrawState.Error
-            self._pause_resp_future.set_result(False)
+        async with self._pause_condition:
+            self._pause_condition.notify_all()
 
     def _seek_resp(self, pdraw, demuxer, status, timestamp, userdata):
         if status == 0:
@@ -756,7 +745,7 @@ class Pdraw(LogMixin):
         res = self.video_sink_vt[frame_type].queue_get_event(
             queue, ctypes.byref(self.streams[id_]['video_queue_event']))
         if res < 0 or not self.streams[id_]['video_queue_event']:
-            self.logger.error(f"Unable to get video sink queue event: {-res}")
+            self.logger.error(f"Unable to get video sink queue event: {os.strerror(-res)}")
             return
 
         # add the file description to our pomp loop
@@ -811,7 +800,7 @@ class Pdraw(LogMixin):
 
     def _end_of_range(self, pdraw, demuxer, timestamp, userdata):
         self.logger.info("_end_of_range")
-        self.close()
+        self.pdraw_thread_loop.run_async(self.aclose)
 
     def _video_sink_flush(self, pdraw, videosink, userdata):
         id_ = py_object_cast(userdata)
@@ -854,10 +843,10 @@ class Pdraw(LogMixin):
                 self.streams[id_]['video_queue'])
             if res < 0:
                 self.logger.error(
-                    f"mbuf_coded/raw_video_frame_queue_flush() returned {res}")
+                    f"mbuf_coded/raw_video_frame_queue_flush(): {os.strerror(-res)}")
             else:
                 self.logger.info(
-                    f"mbuf_coded/raw_video_frame_queue_flush() returned {res}")
+                    f"mbuf_coded/raw_video_frame_queue_flush(): {os.strerror(-res)}")
 
             res = self.video_sink_vt[frame_type].queue_flushed(
                 self.pdraw, self.streams[id_]['video_sink'])
@@ -885,7 +874,7 @@ class Pdraw(LogMixin):
         # acknowledge event
         res = od.pomp_evt_clear(self.streams[id_]['video_queue_event'])
         if res != 0:
-            self.logger.error(f"Unable to clear frame received event ({res})")
+            self.logger.error(f"Unable to clear frame received event: {os.strerror(-res)}")
 
         if not self._is_ready_to_play:
             self.logger.debug("The stream is no longer ready: drop one frame")
@@ -906,7 +895,7 @@ class Pdraw(LogMixin):
         if res < 0:
             if res not in (-errno.EAGAIN, -errno.ENOENT):
                 self.logger.error(
-                    f"mbuf_coded_video_frame_queue_pop returned error {res}")
+                    f"mbuf_coded_video_frame_queue_pop returned error: {os.strerror(-res)}")
             mbuf_video_frame = od.POINTER_T(
                 self.video_sink_vt[frame_type].mbuf_video_frame_type)()
         elif not mbuf_video_frame:
@@ -1138,11 +1127,17 @@ class Pdraw(LogMixin):
         """
         Stops the video stream
         """
-        f = self.pause().then(lambda f: self.close() if f else None)
-        if timeout > 0:
-            return f.result_or_cancel(timeout=timeout)
-        else:
-            return f
+        return self.pdraw_thread_loop.run_async(
+            self.astop
+        ).result_or_cancel(timeout=timeout)
+
+    async def astop(self):
+        """
+        Stops the video stream
+        """
+        if not await self.apause():
+            return False
+        return await self.aclose()
 
     def play(
             self,
@@ -1173,17 +1168,29 @@ class Pdraw(LogMixin):
         :type media_name: str
 
         """
+        return self.pdraw_thread_loop.run_async(
+            self.aplay,
+            url=url,
+            media_name=media_name,
+            resource_name=resource_name,
+            timeout=timeout
+        ).result_or_cancel(timeout=timeout)
+
+    async def aplay(
+            self,
+            url=None,
+            media_name="DefaultVideo",
+            resource_name="live",
+            timeout=5):
+
         if self.pdraw is None:
             self.logger.error("Error Pdraw interface seems to be destroyed")
-            self._play_resp_future.set_result(False)
-            return self._play_resp_future
+            return False
 
         if self.state in (PdrawState.Opening, PdrawState.Closing):
             self.logger.error(
                 f"Cannot play stream from the {self.state} state")
-            f = Future(self.pdraw_thread_loop)
-            f.set_result(False)
-            return f
+            return False
 
         self.resource_name = resource_name
         self.media_name = media_name
@@ -1207,64 +1214,77 @@ class Pdraw(LogMixin):
         self.streams = defaultdict(StreamFactory)
 
         self._open_output_files()
-        if self._play_resp_future.done():
-            self._play_resp_future = Future(self.pdraw_thread_loop)
         if self.state in (PdrawState.Created, PdrawState.Closed):
-            open_resp_future = self.pdraw_thread_loop.run_async(self._open_stream)
-            f = self.pdraw_thread_loop.complete_futures(open_resp_future, self._play_resp_future)
-        else:
-            f = self._play_resp_future
-            self.pdraw_thread_loop.run_async(self._play_impl)
-        if timeout > 0:
-            return f.result_or_cancel(timeout=timeout)
-        else:
-            return f
+            self.pdraw_thread_loop.run_delayed(timeout, self._open_waiter)
+            if not self._open_stream():
+                return False
+            async with self._open_condition:
+                await self._open_condition.wait()
+            if self.state is not PdrawState.Opened:
+                return False
+        self.pdraw_thread_loop.run_delayed(timeout, self._play_waiter)
+        async with self._play_condition:
+            await self._play_condition.wait()
+        return self.state is PdrawState.Playing
 
-    @callback_decorator()
+    async def _open_waiter(self):
+        async with self._open_condition:
+            self._open_condition.notify_all()
+
+    async def _play_waiter(self):
+        async with self._play_condition:
+            self._play_condition.notify_all()
+
     def _play_impl(self):
         self.logger.debug("play_impl")
         if self.state is PdrawState.Playing:
-            if not self._play_resp_future.done():
-                self._play_resp_future.set_result(True)
-            return self._play_resp_future
+            return True
 
         res = od.pdraw_demuxer_play(self.pdraw, self.pdraw_demuxer)
         if res != 0:
-            self.logger.error(f"Unable to start streaming ({res})")
-            if not self._play_resp_future.done():
-                self._play_resp_future.set_result(False)
+            self.logger.error(f"Unable to start streaming: {os.strerror(-res)}")
+            return False
 
-        return self._play_resp_future
+        return True
 
     def pause(self):
         """
         Pause the currently playing video
         """
+        return self.pdraw_thread_loop.run_async(self.apause)
+
+    async def apause(self):
+        """
+        Pause the currently playing video
+        """
         if self.pdraw is None:
             self.logger.error("Error Pdraw interface seems to be destroyed")
-            self._pause_resp_future.set_result(False)
-            return self._pause_resp_future
+            return False
 
-        if self._pause_resp_future.done():
-            self._pause_resp_future = Future(self.pdraw_thread_loop)
         if self.state is PdrawState.Playing:
-            self.pdraw_thread_loop.run_async(self._pause_impl)
+            self.pdraw_thread_loop.run_delayed(2.0, self._pause_waiter)
+            if not self._pause_impl():
+                return False
         elif self.state is PdrawState.Closed:
             # Pause an closed stream is OK
-            self._pause_resp_future.set_result(True)
+            return True
         else:
-            self.logger.error(
-                f"Cannot pause stream from the {self.state} state")
-            self._pause_resp_future.set_result(False)
-        return self._pause_resp_future
+            return False
+        async with self._pause_condition:
+            await self._pause_condition.wait()
 
-    @callback_decorator()
+        return self.state in (PdrawState.Closed, PdrawState.Paused)
+
+    async def _pause_waiter(self):
+        async with self._pause_condition:
+            self._pause_condition.notify_all()
+
     def _pause_impl(self):
         res = od.pdraw_demuxer_pause(self.pdraw, self.pdraw_demuxer)
         if res != 0:
-            self.logger.error(f"Unable to stop streaming ({res})")
-            self._pause_resp_future.set_result(False)
-        return self._pause_resp_future
+            self.logger.error(f"Unable to stop streaming: {os.strerror(-res)}")
+            return False
+        return True
 
     def get_session_metadata(self):
         """
@@ -1274,14 +1294,4 @@ class Pdraw(LogMixin):
             self.logger.error("Error Pdraw interface seems to be destroyed")
             return None
 
-        return self.session_metadata
-
-        vmeta_session = od.struct_vmeta_session()
-        res = od.pdraw_get_peer_session_metadata(
-            self.pdraw, ctypes.pointer(vmeta_session))
-        if res != 0:
-            self.logger.error("Unable to get sessions metata")
-            return None
-        self.session_metadata = od.struct_vmeta_session.as_dict(
-            vmeta_session)
         return self.session_metadata

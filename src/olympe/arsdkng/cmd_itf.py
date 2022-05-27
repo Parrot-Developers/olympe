@@ -33,6 +33,7 @@ import re
 
 from . import enums
 from . import messages
+from .expectations import ArsdkExpectationBase
 from .events import ArsdkMessageEvent, ArsdkProtoMessageEvent
 from abc import abstractmethod
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -46,7 +47,7 @@ from olympe.messages import mission
 from olympe.scheduler import AbstractScheduler, Scheduler
 from collections import OrderedDict
 from olympe.utils import py_object_cast, callback_decorator, DEFAULT_FLOAT_TOL
-from olympe.utils.pomp_loop_thread import Future
+from olympe.concurrent import Future
 from olympe.log import LogMixin
 
 
@@ -208,9 +209,9 @@ class Connect(Expectation):
 
 
 class CommandInterfaceBase(LogMixin, AbstractScheduler):
-    def __init__(self, *, name=None, drone_type=0, proto_v_min=1, proto_v_max=3):
+    def __init__(self, *, name=None, drone_type=0, proto_v_min=1, proto_v_max=3, **kwds):
         super().__init__(name, None, "drone")
-        self._create_backend(name, proto_v_min, proto_v_max)
+        self._create_backend(name, proto_v_min, proto_v_max, **kwds)
         self._thread_loop = self._backend._thread_loop
         self._scheduler = Scheduler(self._thread_loop, name=self._name)
         self._scheduler.add_context("olympe.controller", self)
@@ -447,6 +448,8 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
          2 -> ARSDK_CMD_ITF_SEND_STATUS_TIMEOUT,
          3 -> ARSDK_CMD_ITF_SEND_STATUS_CANCELED,
         """
+        if not self._connected or not self._cmd_itf:
+            return
         status_repr = od.arsdk_cmd_itf_send_status__enumvalues.get(status, status)
         done = bool(done)
         send_status_userdata = py_object_cast(userdata)
@@ -454,7 +457,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self.logger.debug(
             f"Command send status: {message.fullName} {status_repr}, done: {done}"
         )
-        if not done:
+        if not done or send_command_future.done():
             return
         if status in (
             od.ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
@@ -751,15 +754,18 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
                 self.logger.debug("The SkyController is not connected to the drone")
                 return False
 
+    def schedule_hook(self, expectations, **kwds):
+        if not isinstance(expectations, ArsdkExpectationBase):
+            return None
+        if not self.connected and not isinstance(expectations, (Connect, Disconnect)):
+            return FailedExpectation("Not connected to any device")
+        return None
+
     def schedule(self, expectations):
         """
         See: Drone.__call__()
         """
-        if not self.connected and not isinstance(expectations, (Connect, Disconnect)):
-            return FailedExpectation("Not connected to any device")
-
-        self._scheduler.schedule(expectations)
-        return expectations
+        return self._scheduler.schedule(expectations)
 
     def __call__(self, expectations):
         """

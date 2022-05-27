@@ -44,7 +44,7 @@ def main(argv=None):
     parser.add_argument(
         '-v', '--version',
         action="store_true",
-        help=u'Displays version'
+        help='Displays version'
     )
 
     parser.add_argument(
@@ -96,7 +96,7 @@ def main(argv=None):
             cmd += ["-D", f"version={args['doc_version']}"]
         if args["doc_release"]:
             cmd += ["-D", f"release={args['doc_release']}"]
-        cmd += ["{}/doc".format(os.path.dirname(olympe.__file__))]
+        cmd += [f"{os.path.dirname(olympe.__file__)}/doc"]
         cmd += [args['doc_out_directory']]
         sys.exit(sphinx_build(cmd))
 

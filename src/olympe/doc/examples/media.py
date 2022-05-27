@@ -50,7 +50,7 @@ class MediaEventListener(olympe.EventListener):
     @olympe.listen_event(media_created())
     def onMediaCreated(self, event, scheduler):
         self._media_id.append(event.media_id)
-        logger.info("media_created {}".format(event.media_id))
+        logger.info(f"media_created {event.media_id}")
         # When using the photo burst mode, the `media_created` event is sent by the
         # drone when the first photo resource is available for download.  The
         # `media_created` event does not include a full listing of all the future
@@ -65,15 +65,15 @@ class MediaEventListener(olympe.EventListener):
 
     @olympe.listen_event(resource_created())
     def onResourceCreated(self, event, scheduler):
-        logger.info("resource_created {}".format(event.resource_id))
+        logger.info(f"resource_created {event.resource_id}")
 
     @olympe.listen_event(media_removed())
     def onMediaRemoved(self, event, scheduler):
-        logger.info("media_removed {}".format(event.media_id))
+        logger.info(f"media_removed {event.media_id}")
 
     @olympe.listen_event(resource_removed())
     def onResourceRemoved(self, event, scheduler):
-        logger.info("resource_removed {}".format(event.resource_id))
+        logger.info(f"resource_removed {event.resource_id}")
 
     @olympe.listen_event(resource_downloaded())
     def onResourceDownloaded(self, event, scheduler):
@@ -102,15 +102,17 @@ class MediaEventListener(olympe.EventListener):
         # integrity check afterward using the "md5summ --check *.md5" command.
         for resource in self._downloaded_resources:
             check = subprocess.run(
-                ["md5sum", "--check", "{}.md5".format(resource.download_path)],
+                ["md5sum", "--check", resource.download_md5_path],
                 stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=os.path.dirname(resource.download_path),
             )
             stdout = check.stdout.decode().strip()
             if check.returncode == 0:
-                logger.info("Integrity check: " + stdout)
+                logger.info(f"Integrity check: {stdout}")
             else:
-                logger.error("Integrity check: " + stdout)
+                stderr = check.stderr.decode().strip()
+                logger.error(f"Integrity check: {stdout}\n{stderr}")
                 super().unsubscribe()
                 return
 
@@ -136,7 +138,7 @@ class MediaEventListener(olympe.EventListener):
             delete = delete_media(media_id, _timeout=10)
             if not self._media(delete).wait().success():
                 logger.error(
-                    "Failed to delete media {} {}".format(media_id, delete.explain())
+                    f"Failed to delete media {media_id} {delete.explain()}"
                 )
         super().unsubscribe()
 
@@ -176,13 +178,13 @@ def main(drone, media=None):
         photo_saved = drone(photo_progress(result="photo_saved", _policy="wait"))
         drone(take_photo(cam_id=0)).wait()
         if not photo_saved.wait(_timeout=30).success():
-            logger.error("Photo not saved: {}".format(photo_saved.explain()))
+            logger.error(f"Photo not saved: {photo_saved.explain()}")
     assert (
         media_listener.remote_resource_count == 14
-    ), "remote resource count = {}".format(media_listener.remote_resource_count)
+    ), f"remote resource count = {media_listener.remote_resource_count}"
     assert (
         media_listener.local_resource_count == 14
-    ), "local resource count = {}".format(media_listener.local_resource_count)
+    ), f"local resource count = {media_listener.local_resource_count}"
 
 
 def test_media():

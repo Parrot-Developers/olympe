@@ -48,7 +48,7 @@ class JSONEncoder(json.JSONEncoder):
             )
         elif issubclass(o.__class__, ArsdkMessageBase):
             return f"olympe.messages.{o.feature_name}.{o}"
-        return super(JSONEncoder, self).default(o)
+        return super().default(o)
 
 
 def replace(r, d):
@@ -106,7 +106,7 @@ class JSONDecoder(json.JSONDecoder):
 
     def __init__(self, *args, **kwds):
         kwds.update(object_hook=lambda o: self._object_hook(o))
-        super(JSONDecoder, self).__init__(*args, **kwds)
+        super().__init__(*args, **kwds)
 
     def _object_hook(self, o):
         return replace(lambda s: replace_arsdk("olympe", s), o)

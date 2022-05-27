@@ -29,23 +29,37 @@
 
 
 from aenum import IntFlag
+from olympe.utils import callback_decorator
+from olympe.utils.path import TemporaryFile
+from .sync import (
+    Lock,
+    Event,
+    Condition,
+    Semaphore,
+    BoundedSemaphore,
+)
+from ._loop import (
+    _set_running_loop,
+    get_running_loop,
+)
+from .future import Future
+from ._task import _Task, _TaskQueueItem, _WaitReschedule, _Reschedule, current_tasks
+
+# expose concurrent.futures.TimeoutError
+from concurrent.futures import TimeoutError, CancelledError  # noqa
+from queue import PriorityQueue
+
 
 import concurrent.futures
 import ctypes
-import functools
+import faulthandler
 import inspect
 import logging
 import olympe_deps as od
 import os
 import threading
 import time
-
-
-try:
-    from itertools import ifilter as filter
-except ImportError:
-    # python3
-    pass
+import types
 
 
 logger = logging.getLogger("concurrent.futures")
@@ -61,242 +75,26 @@ class PompEvent(IntFlag):
     HUP = od.POMP_FD_EVENT_HUP
 
 
-class Future(concurrent.futures.Future):
-
-    """
-    A chainable Future class
-    """
-
-    _eventloop_future_blocking = False
-
-    def __init__(self, loop=None):
-        super(Future, self).__init__()
-        self._loop = loop
-        self._register()
-
-    @property
-    def loop(self):
-        return self._loop
-
-    @loop.setter
-    def loop(self, loop):
-        if self._loop is not None:
-            raise RuntimeError("Future is already attached to a loop")
-        self._loop = loop
-        self._register()
-
-    def _register(self):
-        if self._loop is not None:
-            self._loop._register_future(self)
-            self.add_done_callback(lambda _: self._loop._unregister_future(self))
-
-    def set_from(self, source):
-        if self.done():
-            return
-        if source.cancelled() and self.cancel():
-            return
-        if not self.running() and not self.set_running_or_notify_cancel():
-            return
-        try:
-            exception = source.exception()
-        except:  # noqa
-            self.cancel()
-        else:
-            if exception is not None:
-                self.set_exception(exception)
-            else:
-                result = source.result()
-                if not isinstance(result, Future):
-                    self.set_result(result)
-                else:
-                    result.chain(self)
-
-    def chain(self, next_):
-        if self.done():
-            next_.set_from(self)
-        else:
-            self.add_done_callback(lambda _: next_.set_from(self))
-
-    def _then_callback(self, fn, result, deferred):
-        try:
-            if deferred:
-                temp = self._loop.run_later(fn, self.result())
-                temp.chain(result)
-            elif not threading.current_thread() is self._loop:
-                temp = self._loop.run_async(fn, self.result())
-                temp.chain(result)
-            else:
-                try:
-                    res = fn(self.result())
-                except concurrent.futures.CancelledError:
-                    result.cancel()
-                except Exception as e:
-                    result.set_exception(e)
-                except:  # noqa
-                    result.cancel()
-                else:
-                    if not isinstance(res, Future):
-                        result.set_result(res)
-                    else:
-                        res.chain(result)
-        except Exception as e:
-            self._loop.logger.exception("Unhandled exception while chaining futures")
-            result.set_exception(e)
-        except:  # noqa
-            result.cancel()
-
-    def then(self, fn, deferred=False):
-        result = Future(self._loop)
-        if not deferred:
-            deferred = inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
-        self.add_done_callback(
-            lambda _: self._then_callback(fn, result, deferred=deferred)
-        )
-        return result
-
-    def result_or_cancel(self, timeout=None):
-        try:
-            return self.result(timeout=timeout)
-        except:  # noqa
-            self.cancel()
-            raise
-
-    def __await__(self):
-        if not self.done():
-            self._eventloop_future_blocking = True
-            yield self  # This tells _Task to wait for completion.
-        if not self.done():
-            raise RuntimeError("await wasn't used with future")
-        return self.result()  # May raise too.
-
-    __iter__ = __await__  # make compatible with 'yield from'.
+@types.coroutine
+def async_yield(obj):
+    return (yield obj)
 
 
-class _Task(Future):
-    """
-    Adapted from asyncio.Task class under Python License
-    """
-
-    def __init__(self, loop, corofunc, *args, **kwds):
-        super().__init__(loop)
-        self._coro = corofunc(*args, **kwds)
-        self._fut_waiter = None
-        self._must_cancel = False
-
-    def cancel(self):
-        if self.done():
-            return False
-        if self._fut_waiter is not None:
-            if self._fut_waiter.cancel():
-                # Leave self._fut_waiter; it may be a Task that
-                # catches and ignores the cancellation so we may have
-                # to cancel it again later.
-                return True
-        self._must_cancel = True
-        self._cancelled_exc = None
-        return True
-
-    def _step_blocking_impl(self, blocking, result):
-        # Yielded Future must come from Future.__iter__().
-        if isinstance(result, Future) and result._loop is not self._loop:
-            new_exc = RuntimeError(
-                f"Task {self!r} got Future {result!r} attached to a different"
-                " loop"
-            )
-            self._loop.run_later(self.step, new_exc)
-        elif blocking:
-            if result is self:
-                new_exc = RuntimeError(f"Task cannot await on itself: {self!r}")
-                self._loop.run_later(self.__step, new_exc)
-            else:
-                result._eventloop_future_blocking = False
-                result.add_done_callback(self._wakeup)
-                self._fut_waiter = result
-                if self._must_cancel:
-                    if self._fut_waiter.cancel():
-                        self._must_cancel = False
-        else:
-            new_exc = RuntimeError(
-                "yield was used instead of yield from "
-                f"in task {self!r} with {result!r}"
-            )
-            self._loop.run_later(self.step, new_exc)
-
-    def step(self, exc=None):
-        if self.done():
-            raise RuntimeError("Task already done")
-
-        # Call either coro.throw(exc) or coro.send(None).
-        try:
-            if exc is None:
-                # We use the `send` method directly, because coroutines
-                # don't have `__iter__` and `__next__` methods.
-                result = self._coro.send(None)
-            else:
-                self._coro.throw(exc)
-        except StopIteration as stop_exc:
-            if self._must_cancel:
-                # Task is cancelled right before coro stops.
-                self._must_cancel = False
-                super().cancel()
-            elif exc is not None:
-                super().set_exception(exc)
-            else:
-                super().set_result(stop_exc.value)
-        except concurrent.futures.CancelledError as exc:
-            # Save the original exception so we can chain it later.
-            self._cancelled_exc = exc
-            super().set_exception(exc)
-        except (KeyboardInterrupt, SystemExit) as exc:
-            super().set_exception(exc)
-            raise
-        except BaseException as exc:
-            super().set_exception(exc)
-        else:
-            blocking = getattr(result, "_eventloop_future_blocking", None)
-            if blocking is not None:
-                self._step_blocking_impl(blocking, result)
-            elif result is None:
-                # Bare yield relinquishes control for one event loop iteration.
-                self._loop.run_later(self.__step)
-            elif inspect.isgenerator(result):
-                # Yielding a generator is just wrong.
-                new_exc = RuntimeError(
-                    "yield was used instead of yield from for "
-                    f"generator in task {self!r} with {result!r}"
-                )
-                self._loop.run_later(self.step, new_exc)
-            else:
-                # Yielding something else is an error.
-                new_exc = RuntimeError(f"Task got bad yield: {result!r}")
-                self._loop.run_later(self.step, new_exc)
-        finally:
-            self = None  # Needed to break cycles when an exception occurs.
-
-    def _wakeup(self, future):
-        try:
-            future.result()
-        except BaseException as exc:
-            # This may also be a cancellation.
-            self.step(exc)
-        else:
-            # Don't pass the value of `future.result()` explicitly,
-            # as `Future.__iter__` and `Future.__await__` don't need it.
-            # If we call `_step(value, None)` instead of `_step()`,
-            # Python eval loop would use `.send(value)` method call,
-            # instead of `__next__()`, which is slower for futures
-            # that return non-generator iterators from their `__iter__`.
-            self.step()
-        self = None  # Needed to break cycles when an exception occurs.
+async def reschedule(deadline=None):
+    return await async_yield(_Reschedule(deadline))
 
 
-class PompLoopThread(threading.Thread):
+async def wait_reschedule():
+    return await async_yield(_WaitReschedule)
+
+
+class Loop(threading.Thread):
     """
     Class running a pomp loop in a pomp thread.
     It performs all calls to pomp and arsdk-ng within the loop (except init and destruction)
     """
 
-    def __init__(self, logger, name=None, parent=None):
+    def __init__(self, logger, name=None, parent=None, max_workers=None):
         self.logger = logger
 
         if parent is None:
@@ -313,18 +111,26 @@ class PompLoopThread(threading.Thread):
         self.pomp_loop = None
         self.pomp_timers = {}
         self.pomp_timer_callbacks = {}
+        self._scheduled_tasks = PriorityQueue()
         self.evt_userdata = dict()
         self.fd_userdata = dict()
         self.c_fd_userdata = dict()
         self.c_evt_userdata = dict()
         self.pomp_fd_callbacks = dict()
-        self.cleanup_functions = []
+        self.cleanup_functions = dict()
         self.futures = []
         self.async_cleanup_running = False
+        self._watchdog_cb_imp = od.pomp_watchdog_cb_t(lambda *_: self._watchdog_cb())
+        self._watchdog_user_cb = None
+
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            thread_name_prefix=f"{name}_executor", max_workers=max_workers
+        )
 
         self._create_pomp_loop()
+        self._task_timer = self.create_timer(self._task_timer_cb)
 
-        super(PompLoopThread, self).__init__(name=name)
+        super().__init__(name=name)
 
     def destroy(self):
         if self.running:
@@ -361,10 +167,54 @@ class PompLoopThread(threading.Thread):
         if not self.running:
             return False
         self.running = False
-        if threading.current_thread().ident != self.ident:
+        if self.is_alive() and threading.current_thread().ident != self.ident:
             self._wake_up()
             self.join()
         return True
+
+    def _task_timer_cb(self, *_):
+        if self._scheduled_tasks.empty():
+            return
+        now = int(time.time() * 1000)
+        deadline, task = self._scheduled_tasks.queue[0]
+        while deadline <= now:
+            self.run_later(task.step)
+            self._scheduled_tasks.get_nowait()
+            if self._scheduled_tasks.empty():
+                break
+            deadline, task = self._scheduled_tasks.queue[0]
+        if self._scheduled_tasks.empty():
+            return
+        delay = deadline - now
+        self.set_timer(self._task_timer, delay, 0)
+
+    def _reschedule(self, task, deadline=None):
+        now = int(time.time() * 1000)
+        if deadline is not None:
+            deadline = int(deadline * 1000)
+        if deadline is None or deadline < now:
+            self.run_async(task.step)
+        else:
+            current_deadline = None
+            if not self._scheduled_tasks.empty():
+                current_deadline = self._scheduled_tasks.queue[0].priority
+            self._scheduled_tasks.put_nowait(_TaskQueueItem(deadline, task))
+            if current_deadline is None or current_deadline > deadline:
+                delay = deadline - now
+                self.set_timer(self._task_timer, delay, 0)
+
+    def _ensure_from_sync_future(self, func, *args, **kwds):
+        if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(
+            func
+        ):
+            assert callable(func), (
+                "_ensure_from_sync_future first parameter must be callable or a coroutine, got"
+                f" {type(func)}"
+            )
+            return Future(self), func, args, kwds
+        else:
+            task = _Task(self, True, func, *args, **kwds)
+            return task, task.step, tuple(), dict()
 
     def _ensure_future(self, func, *args, **kwds):
         if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(
@@ -376,15 +226,20 @@ class PompLoopThread(threading.Thread):
             )
             return Future(self), func, args, kwds
         else:
-            task = _Task(self, func, *args, **kwds)
+            task = _Task(self, False, func, *args, **kwds)
             return task, task.step, tuple(), dict()
+
+    def run_in_executor(self, func, *args, **kwds):
+        fut = Future(self)
+        self._executor.submit(func, *args, **kwds).add_done_callback(fut.set_from)
+        return fut
 
     def run_async(self, func, *args, **kwds):
         """
         Fills in a list with the function to be executed in the pomp thread
         and wakes up the pomp thread.
         """
-        future, func, args, kwds = self._ensure_future(func, *args, **kwds)
+        future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
 
         if threading.current_thread() is not self:
             self.async_pomp_task.append((future, func, args, kwds))
@@ -396,7 +251,13 @@ class PompLoopThread(threading.Thread):
                 self.logger.exception("Unhandled exception in async task function")
                 future.set_exception(e)
             else:
-                if not isinstance(ret, Future):
+                if future.done():
+                    assert isinstance(future, _Task)
+                    # _Task.step has set itself
+                elif isinstance(future, _Task):
+                    # Let _Task.step do its thing
+                    pass
+                elif not isinstance(ret, Future):
                     future.set_result(ret)
                 else:
                     ret.chain(future)
@@ -406,59 +267,63 @@ class PompLoopThread(threading.Thread):
         """
         Fills in a list with the function to be executed later in the pomp thread
         """
-        future, func, args, kwds = self._ensure_future(func, *args, **kwds)
+        future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
         if threading.current_thread() is self:
             future.set_running_or_notify_cancel()
         self.deferred_pomp_task.append((future, func, args, kwds))
         return future
 
-    def _run_delayed_wrapper(self, func):
-        class Wrapper:
-            def __init__(wrapper, func):
-                wrapper.func = func
-                wrapper.timer = None
-
-            @functools.wraps(func)
-            def __call__(wrapper, *args, **kwds):
-                self.destroy_timer(wrapper.timer)
-                return wrapper.func(*args, **kwds)
-        return Wrapper(func)
+    def _run_delayed_wrapper(self, delay, func):
+        async def wrapper(*args, **kwds):
+            await self.asleep(delay)
+            if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(func):
+                func(*args, **kwds)
+            else:
+                await func(*args, **kwds)
+        return wrapper
 
     def run_delayed(self, delay, func, *args, **kwds):
-        f = Future(self)
-        func = self._run_delayed_wrapper(func)
-        func.timer = self.create_timer(
-            lambda *_: self.run_later(func, *args, **kwds).chain(f)
-        )
-        delay = int(1000 * delay)  # convert to milliseconds
-        self.set_timer(func.timer, delay, 0)
-        return f
+        func = self._run_delayed_wrapper(delay, func)
+        return self.run_async(func, *args, **kwds)
 
     def complete_futures(self, *fs, timeout=None):
-        f = Future(self)
+        ret = Future(self)
         done_count = 0
+        exception = None
         fs_count = len(fs)
 
-        def waiter(f):
+        def waiter(fut):
+            nonlocal ret
             nonlocal done_count
-            if f.done():
+            nonlocal fs_count
+            nonlocal exception
+
+            if ret.done():
                 return
+
+            if fut.exception() is not None:
+                exception = fut.exception()
             done_count += 1
             if done_count == fs_count:
-                f.set_result(True)
+                if exception is not None:
+                    ret.set_exception(exception)
+                else:
+                    ret.set_result(True)
 
-        def release_waiter(self, fut):
-            if not f.done():
-                fut.set_result(False)
+        def release_waiter():
+            nonlocal ret
+            if not ret.done():
+                ret.set_result(False)
 
         for f in fs:
             f.add_done_callback(waiter)
         self.run_delayed(timeout or 0, release_waiter)
 
-        return f
+        return ret
 
     async def asleep(self, delay):
-        await self.run_delayed(delay, lambda: None)
+        deadline = time.time() + delay
+        await reschedule(deadline)
 
     async def _cancel_and_wait(self, fut):
         waiter = Future(self)
@@ -542,8 +407,8 @@ class PompLoopThread(threading.Thread):
                 self.running = False
                 continue
             if isinstance(future, _Task):
-                # Let Task.step do its thing
-                return
+                # Let _Task.step do its thing
+                continue
             if not isinstance(ret, Future):
                 future.set_result(ret)
             else:
@@ -557,17 +422,25 @@ class PompLoopThread(threading.Thread):
             self.wakeup_evt, lambda *args: self._wake_up_event_cb(*args)
         )
 
-        # Before running our event loop we must ensure that our parent thread has already
-        # started. This is necessary for example when 4 threads A, B, C and D are starting
-        # concurrently with A calling B.start(), C calling D.start() while B is the parent
-        # thread of D.
-        parent_thread_grace_period = 1.
-        deadline = time.time() + parent_thread_grace_period
-        while not self.parent.is_alive():
-            time.sleep(0.005)
-            if deadline < time.time():
-                self.running = False
-                self.logger.error("Parent thread failed to start")
+        if not self.is_alive():
+            # self.run() is called directly
+            self.running = True
+        else:
+            # self.run() is called in a dedicated thread
+            # Before running our event loop we must ensure that our parent thread has already
+            # started. This is necessary for example when 4 threads A, B, C and D are starting
+            # concurrently with A calling B.start(), C calling D.start() while B is the parent
+            # thread of D.
+            parent_thread_grace_period = 1.0
+            deadline = time.time() + parent_thread_grace_period
+            while not self.parent.is_alive():
+                time.sleep(0.005)
+                if deadline < time.time():
+                    self.running = False
+                    self.logger.error("Parent thread failed to start")
+
+        _set_running_loop(self)
+        assert get_running_loop() is self
 
         # We have to monitor the parent thread exit. This is the simplest way to
         # let the parent (and/or main) thread handle the signals while still being
@@ -699,6 +572,40 @@ class PompLoopThread(threading.Thread):
         if self.pomp_loop is None:
             raise RuntimeError("Cannot create pomp loop")
 
+    def _dump_traceback(self):
+        with TemporaryFile() as f:
+            faulthandler.dump_traceback(file=f)
+            f.seek(0)
+            trace = f.read()
+            self.logger.warning(trace)
+
+    def enable_watchdog(self, delay_ms, callback=None):
+        if self._watchdog_user_cb is not None:
+            self.logger.warning("Event loop watchdog already enabled")
+            return
+        if callback is None:
+            callback = self._dump_traceback
+        self._watchdog_user_cb = callback
+        od.pomp_loop_watchdog_enable(
+            self.pomp_loop, delay_ms, self._watchdog_cb_imp, None
+        )
+
+    def disable_watchdog(self):
+        if self._watchdog_user_cb is None:
+            self.logger.warning("Event loop watchdog already disabled")
+            return
+        od.pomp_loop_watchdog_disable(self.pomp_loop)
+        self._watchdog_user_cb = None
+
+    @callback_decorator()
+    def _watchdog_cb(self):
+        if self._watchdog_user_cb is None:
+            self.logger.error(f"Event loop {self!r} watchdog has no callback")
+            self._dump_traceback()
+            return
+        self.logger.error(f"Event loop {self!r} watchdog triggered")
+        self._watchdog_user_cb()
+
     def _destroy_pomp_loop(self):
         if self.pomp_loop is not None:
             res = od.pomp_loop_destroy(self.pomp_loop)
@@ -715,7 +622,7 @@ class PompLoopThread(threading.Thread):
         self.logger.debug("Creating pomp timer")
         pomp_callback = od.pomp_timer_cb_t(lambda *args: callback(*args))
         pomp_timer = od.pomp_timer_new(self.pomp_loop, pomp_callback, None)
-        if pomp_timer is None:
+        if not pomp_timer:
             raise RuntimeError("Unable to create pomp timer")
 
         self.pomp_timers[id(pomp_timer)] = pomp_timer
@@ -736,6 +643,11 @@ class PompLoopThread(threading.Thread):
         if id(pomp_timer) not in self.pomp_timers:
             return False
 
+        res = od.pomp_timer_clear(pomp_timer)
+        if res != 0:
+            self.logger.error(f"Error while clearing pomp loop timer: {res}")
+            return False
+
         res = od.pomp_timer_destroy(pomp_timer)
 
         if res != 0:
@@ -754,12 +666,20 @@ class PompLoopThread(threading.Thread):
             self.destroy_timer(pomp_timer)
 
     def register_cleanup(self, fn):
-        self.cleanup_functions.append(fn)
+        if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+            task = _Task(self, True, fn)
+            self.cleanup_functions[fn] = task.step
+        else:
+            self.cleanup_functions[fn] = fn
 
     def unregister_cleanup(self, fn, ignore_error=False):
         try:
-            self.cleanup_functions.remove(fn)
-        except ValueError:
+            func = self.cleanup_functions.pop(fn)
+            # async cleanup functions need to be properly cancelled if they've not been runned
+            obj = getattr(func, "__self__", None)
+            if isinstance(obj, _Task) and obj not in current_tasks(self):
+                obj.cancel()
+        except KeyError:
             if not ignore_error:
                 self.logger.error(f"Failed to unregister cleanup function '{fn}'")
 
@@ -768,12 +688,18 @@ class PompLoopThread(threading.Thread):
 
     def _cleanup(self):
         # Execute cleanup functions
-        for cleanup in reversed(self.cleanup_functions):
+        for cleanup in reversed(list(self.cleanup_functions.values())):
             try:
                 cleanup()
             except Exception:
                 self.logger.exception("Unhandled exception in cleanup function")
-        self.cleanup_functions = []
+            try:
+                self._wait_and_process()
+            except RuntimeError as e:
+                self.logger.error(f"Exception caught: {e}")
+            self._run_task_list(self.async_pomp_task)
+            self._run_task_list(self.deferred_pomp_task)
+        self.cleanup_functions = dict()
 
         # Execute asynchronous cleanup actions
         timeout = 3.0  # seconds
@@ -809,3 +735,25 @@ class PompLoopThread(threading.Thread):
         except ValueError:
             if not self.async_cleanup_running and not ignore_error:
                 self.logger.error(f"Failed to unregister future '{f}'")
+
+
+async def asleep(delay):
+    await get_running_loop().asleep(delay)
+
+
+async def exit_loop():
+    get_running_loop().stop()
+
+
+__all__ = [
+    "get_running_loop",
+    "BoundedSemaphore",
+    "Condition",
+    "Event",
+    "Future",
+    "Loop",
+    "Lock",
+    "PompEvent",
+    "Semaphore",
+    "asleep",
+]
