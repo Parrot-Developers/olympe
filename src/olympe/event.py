@@ -28,13 +28,13 @@
 #  SUCH DAMAGE.
 
 
+import black
+
 from boltons.dictutils import OrderedMultiDict
 from collections import OrderedDict
 from datetime import datetime
 from itertools import chain
 from uuid import uuid4
-from yapf.yapflib.yapf_api import FormatCode
-from yapf.yapflib.style import CreateFacebookStyle
 
 from olympe.event_marker import EventMarker
 
@@ -62,18 +62,16 @@ class Event:
         return self._uuid
 
 
-_olympe_dsl_style = CreateFacebookStyle()
-_olympe_dsl_style.update(
-    column_limit=100,
-    split_before_dot=False,
-    split_before_bitwise_operator=True,
-    split_before_first_argument=True,
-)
-
-
 def _format_olympe_dsl(code):
     try:
-        return FormatCode(code, style_config=_olympe_dsl_style)[0]
+        return black.format_str(
+            code, mode=black.Mode(
+                target_versions={black.TargetVersion.PY39},
+                line_length=100,
+                string_normalization=True,
+                is_pyi=False,
+            )
+        )
     except Exception:
         # Fallback, return unformatted olympe dsl code
         return code

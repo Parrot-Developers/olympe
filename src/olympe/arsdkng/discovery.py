@@ -39,7 +39,7 @@ import typing
 
 from . import DeviceInfo, DEVICE_TYPE_LIST
 from .backend import CtrlBackend, CtrlBackendNet, CtrlBackendMuxIp, DeviceHandler
-from olympe.concurrent import Future, Loop, TimeoutError
+from olympe.concurrent import Future, Loop, TimeoutError, CancelledError
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from contextlib import closing
@@ -232,7 +232,11 @@ class Discovery(ABC, DeviceHandler):
             try:
                 yield self._device_queue.get_nowait()
             except queue.Empty:
-                await self._thread_loop.asleep(0.005)
+                try:
+                    await self._thread_loop.asleep(0.005)
+                except CancelledError:
+                    await self.async_stop()
+                    raise
 
     async def async_get_device_count(
         self, max_count: int, timeout: float = None

@@ -476,9 +476,6 @@ class MultipleExpectationMixin:
     def __len__(self):
         return len(self.expectations)
 
-    def __repr__(self):
-        return f"<{self.__class__.__name__}: {repr(self.expectations)}>"
-
     @abstractmethod
     def _combine_method(self):
         pass

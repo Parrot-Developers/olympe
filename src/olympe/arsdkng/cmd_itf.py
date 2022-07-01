@@ -238,6 +238,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
 
         self._cmd_itf = None
         self._connected = False
+        self._connecting = False
         self._reset_instance()
         self._connect_future = None
         self._disconnect_future = None
@@ -257,11 +258,19 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
 
     @property
     def connected(self):
-        return self._connected
+        return self._connected and not self._connecting
 
     @connected.setter
     def connected(self, value):
         self._connected = value
+
+    @property
+    def connecting(self):
+        return self._connecting
+
+    @connecting.setter
+    def connecting(self, value):
+        self._connecting = value
 
     def __enter__(self):
         return self
@@ -273,8 +282,8 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         """
         Define all callbacks
         """
-        self._send_status = od.arsdk_cmd_itf_send_status_cb_t(
-            self._cmd_itf_send_status_cb
+        self._send_status = od.arsdk_cmd_itf_cmd_send_status_cb_t(
+            self._cmd_itf_cmd_send_status_cb
         )
         self._send_status_userdata = {}
         self._userdata = ctypes.c_void_p()
@@ -283,7 +292,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
             {
                 "dispose": self._dispose_cmd_cb,
                 "recv_cmd": self._recv_cmd_cb,
-                "send_status": self._send_status,
+                "cmd_send_status": self._send_status,
                 "link_quality": self._link_quality_cb,
             }
         )
@@ -440,17 +449,20 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self.logger.debug("Dispose callback")
 
     @callback_decorator()
-    def _cmd_itf_send_status_cb(self, _interface, _command, status, done, userdata):
+    def _cmd_itf_cmd_send_status_cb(
+            self, _interface, _command, _type, status, _seq, done, userdata
+    ):
         """
-        Function called when a new command has been received.
-         0 -> ARSDK_CMD_ITF_SEND_STATUS_SENT,
-         1 -> ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
-         2 -> ARSDK_CMD_ITF_SEND_STATUS_TIMEOUT,
-         3 -> ARSDK_CMD_ITF_SEND_STATUS_CANCELED,
+        Function called when a command is processed.
+         0 -> ARSDK_CMD_ITF_CMD_SEND_STATUS_PARTIALLY_PACKED,
+         1 -> ARSDK_CMD_ITF_CMD_SEND_STATUS_PACKED,
+         2 -> ARSDK_CMD_ITF_CMD_SEND_STATUS_ACK_RECEIVED,
+         3 -> ARSDK_CMD_ITF_CMD_SEND_STATUS_TIMEOUT,
+         4 -> ARSDK_CMD_ITF_CMD_SEND_STATUS_CANCELED,
         """
         if not self._connected or not self._cmd_itf:
             return
-        status_repr = od.arsdk_cmd_itf_send_status__enumvalues.get(status, status)
+        status_repr = od.arsdk_cmd_itf_cmd_send_status__enumvalues.get(status, status)
         done = bool(done)
         send_status_userdata = py_object_cast(userdata)
         send_command_future, message, args = send_status_userdata
@@ -460,8 +472,8 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         if not done or send_command_future.done():
             return
         if status in (
-            od.ARSDK_CMD_ITF_SEND_STATUS_ACK_RECEIVED,
-            od.ARSDK_CMD_ITF_SEND_STATUS_SENT,
+            od.ARSDK_CMD_ITF_CMD_SEND_STATUS_ACK_RECEIVED,
+            od.ARSDK_CMD_ITF_CMD_SEND_STATUS_PACKED,
         ):
             send_command_future.set_result(True)
         else:
@@ -535,6 +547,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
     @callback_decorator()
     def _on_device_removed(self):
         self.connected = False
+        self.connecting = False
         for message in self.messages.values():
             message._reset_state()
         event = DisconnectedEvent()
@@ -550,6 +563,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         """
         self._cmd_itf = None
         self.connected = False
+        self.connecting = False
         self._decoding_errors = []
 
     def destroy(self):
@@ -757,7 +771,8 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
     def schedule_hook(self, expectations, **kwds):
         if not isinstance(expectations, ArsdkExpectationBase):
             return None
-        if not self.connected and not isinstance(expectations, (Connect, Disconnect)):
+        if not self._connecting and not self._connected and (
+                not isinstance(expectations, (Connect, Disconnect))):
             return FailedExpectation("Not connected to any device")
         return None
 

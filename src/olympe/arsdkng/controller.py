@@ -168,6 +168,13 @@ class ControllerBase(CommandInterfaceBase):
 
     @callback_decorator()
     def _connected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
+        if not self.connecting:
+            self.logger.warning("This connection attempt has already timedout, disconnecting...")
+            self.async_disconnect()
+            return
+        self._thread_loop.run_async(self._aconnected_cb, arsdk_device_info)
+
+    async def _aconnected_cb(self, arsdk_device_info):
         """
         Notify connection completion.
         """
@@ -181,7 +188,23 @@ class ControllerBase(CommandInterfaceBase):
         except ValueError:
             self.logger.error(f'json contents cannot be parsed: {json_info}')
 
+        # Create the arsdk command interface
+        if self._cmd_itf is None:
+            self.logger.debug(f"Creating cmd_itf for {self._ip_addr_str} ...")
+            self._cmd_itf = self._create_command_interface()
+            if self._cmd_itf is None:
+                self.logger.error(f"Creating cmd_itf for {self._ip_addr_str} failed")
+                self.async_disconnect()
+                if self._connect_future is not None and not self._connect_future.done():
+                    self._connect_future.set_result(False)
+                return
+
         self.connected = True
+        if not await self._on_connected():
+            if self._connect_future is not None and not self._connect_future.done():
+                self._connect_future.set_result(False)
+            return
+        self.connecting = False
 
         if self._connect_future is not None and not self._connect_future.done():
             self._connect_future.set_result(True)
@@ -455,8 +478,8 @@ class ControllerBase(CommandInterfaceBase):
         return True
 
     @callback_decorator()
-    def _connect_impl(self):
-
+    def _connect_impl(self, deadline):
+        self._connection_deadline = deadline
         # Use default values for connection json. If we want to changes values
         # (or add new info), we just need to add them in req (using json format)
         # For instance:
@@ -486,57 +509,55 @@ class ControllerBase(CommandInterfaceBase):
         return self._connect_future
 
     async def _do_connect(self, timeout, retry):
-        grace_period = 5.
-        if self._last_disconnection_time is not None:
-            last_disconnection = (time.time() - self._last_disconnection_time)
-            if last_disconnection < grace_period:
-                await self._thread_loop.asleep(grace_period - last_disconnection)
-        # the deadline does not include the grace period
-        deadline = time.time() + timeout
-        backoff = 2.
-        for i in range(retry):
-            if self.connected:
-                # previous connection attempt timedout but we're connected..
+        self.connecting = True
+        try:
+            grace_period = 5.
+            if self._last_disconnection_time is not None:
+                last_disconnection = (time.time() - self._last_disconnection_time)
+                if last_disconnection < grace_period:
+                    await self._thread_loop.asleep(grace_period - last_disconnection)
+            # the deadline does not include the grace period
+            deadline = time.time() + timeout
+            backoff = 2.
+
+            for i in range(retry):
+                if self.connected:
+                    # previous connection attempt timedout but we're connected..
+                    break
+                if deadline < time.time():
+                    self.logger.error(f"'{self._ip_addr_str} connection timed out")
+                    return False
+                self.logger.debug(f"Discovering device {self._ip_addr_str} ...")
+                if not await self._async_get_device():
+                    self.logger.debug(f"Discovering device {self._ip_addr_str} failed")
+                    await self._thread_loop.asleep(backoff)
+                    backoff *= 2.
+                    continue
+
+                self.logger.debug(f"Connecting device {self._ip_addr_str} ...")
+                connected = await self._connect_impl(deadline)
+                if not connected:
+                    self.logger.debug(f"Connecting device {self._ip_addr_str} failed")
+                    await self._thread_loop.asleep(backoff)
+                    backoff *= 2.
+                    continue
+
+                # We're connected
                 break
-            if deadline < time.time():
-                self.logger.error(f"'{self._ip_addr_str} connection timed out")
+            else:
+                if self._discovery:
+                    await self._discovery.async_stop()
+                self.logger.error(f"'{self._ip_addr_str} connection retries failed")
                 return False
-            self.logger.debug(f"Discovering device {self._ip_addr_str} ...")
-            if not await self._async_get_device():
-                self.logger.debug(f"Discovering device {self._ip_addr_str} failed")
-                await self._thread_loop.asleep(backoff)
-                backoff *= 2.
-                continue
-
-            self.logger.debug(f"Connecting device {self._ip_addr_str} ...")
-            connected = await self._connect_impl()
-            if not connected:
-                self.logger.debug(f"Connecting device {self._ip_addr_str} failed")
-                await self._thread_loop.asleep(backoff)
-                backoff *= 2.
-                continue
-
-            # We're connected
-            break
-        else:
+        except (FutureTimeoutError, CancelledError):
             if self._discovery:
                 await self._discovery.async_stop()
             self.logger.error(f"'{self._ip_addr_str} connection retries failed")
             return False
+        finally:
+            self.connecting = False
 
-        # Create the arsdk command interface
-        if self._cmd_itf is None:
-            self.logger.debug(f"Creating cmd_itf for {self._ip_addr_str} ...")
-            self._cmd_itf = self._create_command_interface()
-            if self._cmd_itf is None:
-                self.logger.error(f"Creating cmd_itf for {self._ip_addr_str} failed")
-                await self.async_disconnect()
-                return False
-
-        if self.connected:
-            return await self._on_connected(deadline)
-        else:
-            return False
+        return self.connected
 
     async def _send_states_settings_cmd(self, command):
         res = await self(command)
@@ -544,11 +565,11 @@ class ControllerBase(CommandInterfaceBase):
             self.logger.error(
                 f"Unable get device state/settings: {command} "
                 f"for {self._ip_addr}")
-            await self.async_disconnect()
+            self.async_disconnect()
             return False
         return True
 
-    async def _on_connected(self, deadline):
+    async def _on_connected(self):
         if not self._ip_addr_str.startswith("10.202") and (
                 not self._ip_addr_str.startswith("127.0")):
             self._synchronize_clock()
@@ -561,7 +582,7 @@ class ControllerBase(CommandInterfaceBase):
                 skyctrl.Common.AllStates(), skyctrl.Settings.AllSettings()]
 
         # Get device specific states and settings
-        timeout = deadline - time.time()
+        timeout = self._connection_deadline - time.time()
         for states_settings_command in all_states_settings_commands:
             res = await self._thread_loop.await_for(
                 timeout,

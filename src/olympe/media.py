@@ -1718,7 +1718,10 @@ class Media(AbstractScheduler):
                 self._websocket = None
 
     def _reset_state(self):
-        self._loop.run_async(self._areset_state).result_or_cancel(timeout=5.)
+        try:
+            self._loop.run_async(self._areset_state).result_or_cancel(timeout=5.)
+        except TimeoutError:
+            pass
 
     @_websocket_exc_handler
     async def aconnect(self):

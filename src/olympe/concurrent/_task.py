@@ -102,6 +102,11 @@ class _Task(Future):
         if self._closed:
             return
 
+        if self._must_cancel:
+            if not isinstance(exc, concurrent.futures.CancelledError):
+                exc = concurrent.futures.CancelledError()
+            self._must_cancel = False
+
         # Call either coro.throw(exc) or coro.send(None).
         _enter_task(self._loop, self)
         self._step_count += 1

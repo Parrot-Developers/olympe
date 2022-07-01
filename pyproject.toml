@@ -34,6 +34,7 @@ classifiers = [
 dependencies = [
     "aenum",
     "asn1tools",
+    "black",
     "boltons",
     "colorlog",
     "dacite",
@@ -51,7 +52,6 @@ dependencies = [
     "requests",
     "six",
     "tzlocal<4.0",
-    "yapf",
     "wsproto"
 ]
 

@@ -47,7 +47,7 @@ class JSONEncoder(json.JSONEncoder):
                 f"{o.__class__.__name__}.{o.to_upper_str()}"
             )
         elif issubclass(o.__class__, ArsdkMessageBase):
-            return f"olympe.messages.{o.feature_name}.{o}"
+            return f"olympe.messages.{o.feature_name}.{o.name}"
         return super().default(o)
 
 
@@ -71,7 +71,7 @@ re_enums = re.compile(
 
 
 re_messages = re.compile(
-    r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$"
+    r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)\.(?P<message>[^\.]+)?$"
 )
 
 
@@ -87,22 +87,15 @@ def replace_arsdk(root, s):
     if m:
         message = m.groupdict()
         if not message["message"]:
-            return ArsdkMessages.get().by_feature[message["feature"]][message["class"]]
+            return ArsdkMessages.get(root).by_feature[message["feature"]][message["class"]]
         else:
-            return ArsdkMessages.get().by_feature[message["feature"]][message["class"]][
+            return ArsdkMessages.get(root).by_feature[message["feature"]][message["class"]][
                 message["message"]
             ]
     return s
 
 
 class JSONDecoder(json.JSONDecoder):
-
-    enums = re.compile(
-        r"^olympe\.enums\.(?P<feature>[^\.]+)\.(?P<enum>[^\.]+)\.(?P<enum_val>[^\.]+)$"
-    )
-    messages = re.compile(
-        r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.|)(?(3)(?P<message>[^\.]+))$"
-    )
 
     def __init__(self, *args, **kwds):
         kwds.update(object_hook=lambda o: self._object_hook(o))
