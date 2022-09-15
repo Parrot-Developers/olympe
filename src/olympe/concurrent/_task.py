@@ -39,7 +39,7 @@ class _Task(Future):
     Adapted from asyncio.Task class under Python License
     """
 
-    def __init__(self, loop, from_sync, corofunc, *args, **kwds):
+    def __init__(self, loop, from_sync, corofunc, /, *args, **kwds):
         super().__init__(loop)
         self._from_sync = from_sync
         self._coro = corofunc(*args, **kwds)
