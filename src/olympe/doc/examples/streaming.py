@@ -17,6 +17,7 @@ from olympe.messages.ardrone3.Piloting import TakeOff, Landing
 from olympe.messages.ardrone3.Piloting import moveBy
 from olympe.messages.ardrone3.PilotingState import FlyingStateChanged
 from olympe.messages.ardrone3.PilotingSettings import MaxTilt
+from olympe.messages.ardrone3.PilotingSettingsState import MaxTiltChanged
 from olympe.messages.ardrone3.GPSSettingsState import GPSFixStateChanged
 from olympe.video.renderer import PdrawRenderer
 
@@ -179,7 +180,9 @@ class StreamingExample:
                 )
             )
         ).wait()
-        self.drone(MaxTilt(40)).wait().success()
+        maxtilt = self.drone.get_state(MaxTiltChanged)["max"]
+        self.drone(MaxTilt(maxtilt)).wait()
+
         for i in range(4):
             print(f"Moving by ({i + 1}/4)...")
             self.drone(moveBy(10, 0, 0, math.pi, _timeout=20)).wait().success()

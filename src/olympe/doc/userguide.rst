@@ -922,8 +922,8 @@ postprocessing.
 .. literalinclude:: examples/streaming.py
     :language: python
     :linenos:
-    :lineno-start: 197
-    :lines: 197-206
+    :lineno-start: 200
+    :lines: 200-209
 
 Before we start the video streaming, we must connect to the drone and optionally
 register our callback functions and output files for the recorded video stream.

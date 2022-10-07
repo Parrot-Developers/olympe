@@ -164,7 +164,7 @@ class MissionHttpApiError(Enum):
 
     UidExistsError = (
         403,
-        "A mission with the same uid already exists (allow_overwrite = no?)",
+        "A mission with the same uid already exists (allow_downgrade = no?)",
     )
     RequestError = 405, "Request error"
     TarballReadError = (
@@ -312,7 +312,7 @@ class MissionController(LogMixin):
         mission,
         verify=True,
         ca_pub_key_der=None,
-        allow_overwrite=None,
+        allow_downgrade=None,
         is_default=None,
         timeout=30,
         **kwds,
@@ -321,8 +321,8 @@ class MissionController(LogMixin):
             self._open(mission, verify=verify, ca_pub_key_der=ca_pub_key_der)
             mission._relocate_in_mission_dir()
         params = kwds
-        if allow_overwrite is not None:
-            params.update(allow_overwrite=allow_overwrite)
+        if allow_downgrade is not None:
+            params.update(allow_downgrade=allow_downgrade)
         if is_default is not None:
             params.update(is_default=is_default)
 
@@ -462,14 +462,14 @@ class Mission:
         self._subscribers = []
         self._closed = True
 
-    def install(self, allow_overwrite=None, is_default=None, timeout=30, **kwds):
+    def install(self, allow_downgrade=None, is_default=None, timeout=30, **kwds):
         """
         Install this mission onto the remote drone. The drone must be rebooted
         before this mission becomes available.
         """
         return self._controller._install(
             self,
-            allow_overwrite=allow_overwrite,
+            allow_downgrade=allow_downgrade,
             is_default=is_default,
             timeout=timeout,
             **kwds,

@@ -109,11 +109,11 @@ Messages Reference Documentation
     arsdkng_debug
 
 .. toctree::
-    :caption: DroneManager feature
+    :caption: Developer feature
     :maxdepth: 1
     :titlesonly:
 
-    arsdkng_drone_manager
+    arsdkng_developer
 
 .. toctree::
     :caption: DeviceManager feature
@@ -121,6 +121,13 @@ Messages Reference Documentation
     :titlesonly:
 
     arsdkng_device_manager
+
+.. toctree::
+    :caption: DroneManager feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_drone_manager
 
 .. toctree::
     :caption: DRI feature

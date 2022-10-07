@@ -56,7 +56,10 @@ MediaInfo = namedtuple(
     [
         "media_id",
         "type",
+        "title",
         "datetime",
+        "boot_date",
+        "flight_date",
         "size",
         "run_id",
         "custom_id",
@@ -80,7 +83,10 @@ MediaInfo.__doc__ = (
 
   - media_id (str): unique id of the media
   - type ( :py:class:`~olympe.media.MediaType`): type of the media
+  - title (str): title of the media
   - datetime (str) :iso8601 datetime of the media
+  - boot_date (str) :iso8601 datetime of the drone boot
+  - flight_date (str) :iso8601 datetime of the flight
   - size (int): size (in bytes) of the media (total size of all its resources)
   - duration (int): duration (in milliseconds) of the video media (total
     duration of all its resources)
@@ -237,6 +243,7 @@ ResourceInfo = namedtuple(
         "media_id",
         "resource_id",
         "type",
+        "path",
         "format",
         "datetime",
         "size",
@@ -245,6 +252,7 @@ ResourceInfo = namedtuple(
         "height",
         "duration",
         "thumbnail",
+        "preview",
         "signature",
         "gps",
         "video_mode",
@@ -267,14 +275,17 @@ ResourceInfo.__doc__ = (
   - media_id (str): unique id of the media
   - resource_id (str): unique id of the resource
   - type ( :py:class:`~olympe.media.MediaType`): type of the resource
+  - path (str): path to the resource on the file system, relative to the storage root path
   - format ( :py:class:`~olympe.media.ResourceFormat`): format of the resource
-  - datetime (str) :iso8601 datetime of the media
+  - datetime (str): iso8601 datetime of the media
   - size (int): size (in bytes) of the media (total size of all its resources)
   - duration (int): duration (in milliseconds) of the video media (total
     duration of all its resources)
   - url (str): relative url to be used in a GET request to download the resource
   - thumbnail (str): relative url to be used in a GET request to download the
     resource thumbnail (if available)
+  - preview (str): elative url to be used in a GET request to download the resource preview
+    (if available)
   - signature (str): resource signature (optional)
   - gps (:py:class:`~olympe.media.GPS`): gps coordinates of the media (if
     available)
@@ -1065,6 +1076,8 @@ class _download_resource(Expectation):
                 )
                 self._media._loop.remove_fd_from_loop(self._fd)
                 self.cancel()
+            self._media.logger.info(f"{resource_id} integrity check done")
+
         self._media.logger.info(
             "Download {} {} 100% done".format(
                 self._resource_id, "thumbnail" if self._thumbnail else ""

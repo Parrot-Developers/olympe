@@ -422,6 +422,9 @@ class Pdraw(LogMixin):
         """
         if self.state is PdrawState.Closed:
             return True
+        elif self.state is PdrawState.Created:
+            self.state = PdrawState.Closed
+            return True
         if self.state in (
                 PdrawState.Opened,
                 PdrawState.Paused,
