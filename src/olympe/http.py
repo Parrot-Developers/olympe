@@ -184,7 +184,7 @@ class Response:
             return
         while True:
             event = await self._connection._get_next_event()
-            if event == h11.EndOfMessage():
+            if event == h11.EndOfMessage() or event == h11.ConnectionClosed():
                 break
             if not isinstance(event, h11.Data):
                 self.logger.error(f"Unexpected event {event} for {self._request.url}")
@@ -244,8 +244,12 @@ class WebSocket:
         data = self._connection._conn.send(close_event)
         self._connection._events.put_nowait(close_event)
         self._connection._event_sem.release()
-        ws_closed = await self._connection.awrite(data)
-        return await self._connection.adisconnect() and ws_closed
+        ws_closed = False
+        try:
+            ws_closed = await self._connection.awrite(data)
+        finally:
+            ws_closed = await self._connection.adisconnect() and ws_closed
+        return ws_closed
 
 
 class ConnectionListener(olympe.networking.DataListener):
@@ -476,6 +480,10 @@ class Connection:
     @property
     def connected(self):
         return self._client.connected
+
+    @property
+    def fd(self):
+        return self._client.fd
 
 
 class Session:

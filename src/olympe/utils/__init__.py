@@ -175,8 +175,6 @@ def update_mapping(mapping, updater):
     for k, v in updater.items():
         if isinstance(v, Mapping):
             mapping[k] = update_mapping(mapping.get(k, type(v)()), v)
-        elif isinstance(v, (list, tuple)):
-            mapping[k] = mapping.get(k, type(v)()) + v
         else:
             mapping[k] = v
     return mapping

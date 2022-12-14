@@ -47,6 +47,9 @@ class _Task(Future):
         self._fut_waiter = None
         self._must_cancel = False
 
+    def __repr__(self):
+        return super().__repr__() + f" <{self._coro}>"
+
     def cancel(self):
         if self.done():
             return False
@@ -86,6 +89,7 @@ class _Task(Future):
                 result.add_done_callback(self._wakeup)
                 self._fut_waiter = result
                 if self._must_cancel:
+                    self.cancel()
                     if self._fut_waiter.cancel():
                         self._must_cancel = False
         else:
@@ -114,7 +118,6 @@ class _Task(Future):
             if exc is None:
                 # We use the `send` method directly, because coroutines
                 # don't have `__iter__` and `__next__` methods.
-                self._loop
                 result = self._coro.send(None)
             else:
                 result = self._coro.throw(exc)

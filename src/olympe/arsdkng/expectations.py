@@ -30,7 +30,7 @@
 import pprint
 
 from abc import abstractmethod
-from concurrent.futures import Future
+from olympe.concurrent import CancelledError, Future
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from olympe.utils import (
@@ -379,6 +379,13 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             self.set_timedout()
         return super().timedout()
 
+    def cancel(self):
+        if self._command_future is not None and not self._command_future.done():
+            # Futures associated to running callbacks are non-cancellable
+            # We have to use Future.set_exception() here instead.
+            self._command_future.set_exception(CancelledError())
+        return super().cancel()
+
     def cancelled(self):
         if super().cancelled():
             return True
@@ -407,14 +414,17 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
         if self.success():
             return self
         self._check_command_event(received_event)
-        if (
-            self._command_future is None
-            or not self._command_future.done()
-            or (not self._command_future.result())
-        ):
-            return self
+        command_sent = False
+        if self._command_future is not None and self._command_future.done():
+            if self._command_future.cancelled():
+                return self
+            elif self._command_future.exception():
+                return self
+            elif self._command_future.result():
+                command_sent = True
         if self._no_expect:
-            self.set_success()
+            if command_sent:
+                self.set_success()
             return self
         for expectation in self.expectations:
             if (
@@ -423,8 +433,26 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
                 self.matched_expectations.add(expectation)
 
         if len(self.expectations) == len(self.matched_expectations):
-            self.set_success()
+            if command_sent:
+                self.set_success()
         return self
+
+    def on_subexpectation_done(self, expectation):
+        if not expectation.success():
+            return
+        self.matched_expectations.add(expectation)
+
+        if self._command_future is None or not self._command_future.done():
+            return
+        if self._command_future.cancelled():
+            return
+        elif self._command_future.exception():
+            return
+
+        # the command has been sent, this command is successful if its
+        # expectations matched.
+        if len(self.expectations) == len(self.matched_expectations):
+            self.set_success()
 
     def _fill_default_arguments(self, message, args):
         super()._fill_default_arguments(message, args)
@@ -449,6 +477,7 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             self._command_future = controller._send_command_raw(
                 self.command_message, self.command_args
             )
+            self._command_future.add_done_callback(lambda _: self.check(None))
         super()._schedule(scheduler)
         for expectation in self.expectations:
             scheduler._schedule(expectation, monitor=expectation.always_monitor)
@@ -485,6 +514,13 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
         self._no_expect = False
         self.expected_event_type = self.command_message._event_type()
 
+    def cancel(self):
+        if self._command_future is not None and not self._command_future.done():
+            # Futures associated to running callbacks are non-cancellable
+            # We have to use Future.set_exception() here instead.
+            self._command_future.set_exception(CancelledError())
+        return super().cancel()
+
     def _check_command_event(self, received_event):
         if self._command_future is not None:
             return
@@ -504,19 +540,28 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
         if self.success():
             return self
         self._check_command_event(received_event)
-        if self._command_future is None or (
-            not self._command_future.done() or not self._command_future.result()
-        ):
-            return self
         if self.success():
             return self
-        if self._no_expect:
-            self.set_success()
-            return self
-        if self.expectation is None or self.expectation.success():
-            self.set_success()
-        elif self.expectation.check(received_event).success():
-            self.set_success()
+        command_sent = False
+        if self._command_future is not None and self._command_future.done():
+            if self._command_future.cancelled():
+                return self
+            elif self._command_future.exception():
+                return self
+            elif self._command_future.result():
+                command_sent = True
+                if self._no_expect:
+                    self.set_success()
+                elif self.expectation is None or self.expectation.success():
+                    self.set_success()
+        if (
+                self.expectation is not None and (
+                    self.expectation.always_monitor or not
+                    self.expectation.success()
+                ) and self.expectation.check(received_event).success()
+        ):
+            if command_sent:
+                self.set_success()
         return self
 
     def _fill_default_arguments(self, message, args):
@@ -544,6 +589,7 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
             self._command_future = controller._send_protobuf_command(
                 self.command_message, self.command_args
             )
+            self._command_future.add_done_callback(lambda _: self.check(None))
         super()._schedule(scheduler)
 
     def no_expect(self, value):

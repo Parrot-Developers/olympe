@@ -45,7 +45,7 @@ class StreamingExample:
         self.renderer = None
 
     def start(self):
-        # Connect the the drone
+        # Connect to drone
         assert self.drone.connect(retry=3)
 
         if DRONE_RTSP_PORT is not None:

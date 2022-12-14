@@ -118,7 +118,7 @@ class Loop(threading.Thread):
         self.c_evt_userdata = dict()
         self.pomp_fd_callbacks = dict()
         self.cleanup_functions = dict()
-        self.futures = []
+        self.futures = set()
         self.async_cleanup_running = False
         self._watchdog_cb_imp = od.pomp_watchdog_cb_t(lambda *_: self._watchdog_cb())
         self._watchdog_user_cb = None
@@ -177,15 +177,25 @@ class Loop(threading.Thread):
             return
         now = int(time.time() * 1000)
         deadline, task = self._scheduled_tasks.queue[0]
-        while deadline <= now:
+        seen = set()
+        delay = deadline - now
+        while delay <= 0:
             self.run_later(task.step)
+            seen.add(task)
             self._scheduled_tasks.get_nowait()
             if self._scheduled_tasks.empty():
-                break
+                return
             deadline, task = self._scheduled_tasks.queue[0]
-        if self._scheduled_tasks.empty():
+            delay = deadline - now
+            if task in seen:
+                if self.running:
+                    self.run_later(self._task_timer_cb)
+                return
+        if not self.running:
+            while not self._scheduled_tasks.empty():
+                _, task = self._scheduled_tasks.get_nowait()
+                task.set_exception(CancelledError())
             return
-        delay = deadline - now
         self.set_timer(self._task_timer, delay, 0)
 
     def _reschedule(self, task, deadline=None):
@@ -193,15 +203,20 @@ class Loop(threading.Thread):
         if deadline is not None:
             deadline = int(deadline * 1000)
         if deadline is None or deadline < now:
-            self.run_async(task.step)
+            self.run_later(task.step)
         else:
             current_deadline = None
             if not self._scheduled_tasks.empty():
                 current_deadline = self._scheduled_tasks.queue[0].priority
-            self._scheduled_tasks.put_nowait(_TaskQueueItem(deadline, task))
+            delay = deadline - now
             if current_deadline is None or current_deadline > deadline:
-                delay = deadline - now
-                self.set_timer(self._task_timer, delay, 0)
+                if delay > 0:
+                    self._scheduled_tasks.put_nowait(_TaskQueueItem(deadline, task))
+                    self.set_timer(self._task_timer, delay, 0)
+                else:
+                    self.run_later(task.step)
+            else:
+                self._scheduled_tasks.put_nowait(_TaskQueueItem(deadline, task))
 
     def _ensure_from_sync_future(self, func, *args, **kwds):
         if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(
@@ -245,11 +260,15 @@ class Loop(threading.Thread):
             self.async_pomp_task.append((future, func, args, kwds))
             self._wake_up()
         else:
+            future.set_running_or_notify_cancel()
             try:
                 ret = func(*args, **kwds)
             except Exception as e:
                 self.logger.exception("Unhandled exception in async task function")
                 future.set_exception(e)
+            except:  # noqa
+                future.cancel()
+                self.running = False
             else:
                 if future.done():
                     assert isinstance(future, _Task)
@@ -280,6 +299,7 @@ class Loop(threading.Thread):
                 func(*args, **kwds)
             else:
                 await func(*args, **kwds)
+        wrapper.__qualname__ = f"<delayed_wapper>{func}"
         return wrapper
 
     def run_delayed(self, delay, func, *args, **kwds):
@@ -334,8 +354,6 @@ class Loop(threading.Thread):
             return fut.result()
         except concurrent.futures.CancelledError as exc:
             raise concurrent.futures.TimeoutError() from exc
-        else:
-            raise concurrent.futures.TimeoutError()
 
     def _release_waiter(self, waiter, fut):
         if not waiter.done():
@@ -372,8 +390,6 @@ class Loop(threading.Thread):
                 return fut.result()
             except concurrent.futures.CancelledError as exc:
                 raise concurrent.futures.TimeoutError() from exc
-            else:
-                raise concurrent.futures.TimeoutError()
 
     def _wake_up_event_cb(self, pomp_evt, _userdata):
         """
@@ -666,6 +682,9 @@ class Loop(threading.Thread):
             self.destroy_timer(pomp_timer)
 
     def register_cleanup(self, fn):
+        if fn in self.cleanup_functions:
+            # Do not register the same cleanup functions twice
+            self.unregister_cleanup(fn)
         if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
             task = _Task(self, True, fn)
             self.cleanup_functions[fn] = task.step
@@ -675,7 +694,7 @@ class Loop(threading.Thread):
     def unregister_cleanup(self, fn, ignore_error=False):
         try:
             func = self.cleanup_functions.pop(fn)
-            # async cleanup functions need to be properly cancelled if they've not been runned
+            # async cleanup functions need to be properly cancelled if they've not been run
             obj = getattr(func, "__self__", None)
             if isinstance(obj, _Task) and obj not in current_tasks(self):
                 obj.cancel()
@@ -684,7 +703,7 @@ class Loop(threading.Thread):
                 self.logger.error(f"Failed to unregister cleanup function '{fn}'")
 
     def _collect_futures(self):
-        self.futures = list(filter(lambda f: f.running(), self.futures))
+        self.futures = set(filter(lambda f: f.running(), self.futures))
 
     def _cleanup(self):
         # Execute cleanup functions
@@ -699,6 +718,9 @@ class Loop(threading.Thread):
                 self.logger.error(f"Exception caught: {e}")
             self._run_task_list(self.async_pomp_task)
             self._run_task_list(self.deferred_pomp_task)
+        for cleanup_fn in reversed(list(self.cleanup_functions.keys())):
+            # unregister self registering cleanup functions.
+            self.unregister_cleanup(cleanup_fn, ignore_error=True)
         self.cleanup_functions = dict()
 
         # Execute asynchronous cleanup actions
@@ -723,16 +745,16 @@ class Loop(threading.Thread):
 
         self.async_pomp_task = []
         self.deferred_pomp_task = []
-        self.futures = []
+        self.futures = set()
         self.async_cleanup_running = False
 
     def _register_future(self, f):
-        self.futures.append(f)
+        self.futures.add(f)
 
     def _unregister_future(self, f, ignore_error=False):
         try:
             self.futures.remove(f)
-        except ValueError:
+        except KeyError:
             if not self.async_cleanup_running and not ignore_error:
                 self.logger.error(f"Failed to unregister future '{f}'")
 

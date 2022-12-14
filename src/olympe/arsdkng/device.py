@@ -320,7 +320,6 @@ class DeviceBase(CommandInterfaceBase):
                 if res < 0:
                     self.logger.error(f"arsdk_backend_mux_stop_listen: {res}")
                     ret = False
-        self._backend.destroy()
         self.connected = False
         self._listening = False
         return ret
@@ -352,3 +351,4 @@ class DeviceBase(CommandInterfaceBase):
         """
         self.stop()
         super().destroy()
+        self._backend.destroy()

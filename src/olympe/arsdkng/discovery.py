@@ -33,16 +33,15 @@ import ctypes
 import logging
 import olympe_deps as od
 import queue
-import socket
 import time
 import typing
 
 from . import DeviceInfo, DEVICE_TYPE_LIST
 from .backend import CtrlBackend, CtrlBackendNet, CtrlBackendMuxIp, DeviceHandler
 from olympe.concurrent import Future, Loop, TimeoutError, CancelledError
+from olympe.networking import TcpClient
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from contextlib import closing
 from olympe.utils import callback_decorator
 
 
@@ -50,7 +49,7 @@ class Discovery(ABC, DeviceHandler):
 
     timeout = 3.0
 
-    def __init__(self):
+    def __init__(self, *, timeout: typing.Optional[float] = None):
         self._backend: CtrlBackend
         self._thread_loop: Loop
         self.logger: logging.Logger
@@ -59,6 +58,10 @@ class Discovery(ABC, DeviceHandler):
 
         self.userdata = ctypes.c_void_p()
         self.discovery = None
+        if timeout is None:
+            timeout = Discovery.timeout
+        self.timeout: float = timeout
+        self.deadline: float = 0.0
 
     @property
     def discovery_name(self) -> str:
@@ -130,6 +133,7 @@ class Discovery(ABC, DeviceHandler):
             self._device_queue = queue.Queue()
 
     def async_start(self) -> "Future":
+        self.deadline = time.time() + self.timeout
         return self._thread_loop.run_async(self._do_start)
 
     def async_stop(self) -> "Future":
@@ -173,7 +177,9 @@ class Discovery(ABC, DeviceHandler):
 
     @callback_decorator()
     def _device_added_cb(
-        self, arsdk_device: "od.POINTER_T[od.struct_arsdk_device]", _user_data: "od.POINTER_T[None]"
+        self,
+        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
+        _user_data: "od.POINTER_T[None]",
     ) -> None:
         """
         Called when a new device is detected.
@@ -188,7 +194,9 @@ class Discovery(ABC, DeviceHandler):
 
     @callback_decorator()
     def _device_removed_cb(
-        self, arsdk_device: "od.POINTER_T[od.struct_arsdk_device]", _user_data: "od.POINTER_T[None]"
+        self,
+        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
+        _user_data: "od.POINTER_T[None]",
     ) -> None:
         """
         Called when a device disappear from the discovery search
@@ -220,15 +228,11 @@ class Discovery(ABC, DeviceHandler):
     def destroy(self) -> None:
         self._thread_loop.run_later(self._destroy)
 
-    async def async_devices(
-        self, timeout: float = None
-    ) -> typing.AsyncGenerator[DeviceInfo, None]:
-        if not self.start():
+    async def async_devices(self) -> typing.AsyncGenerator[DeviceInfo, None]:
+        if not await self.async_start():
+            self.logger.error("async_start false")
             return
-        if timeout is None:
-            timeout = self.timeout
-        deadline = time.time() + timeout
-        while deadline > time.time():
+        while self.deadline > time.time():
             try:
                 yield self._device_queue.get_nowait()
             except queue.Empty:
@@ -238,48 +242,34 @@ class Discovery(ABC, DeviceHandler):
                     await self.async_stop()
                     raise
 
-    async def async_get_device_count(
-        self, max_count: int, timeout: float = None
-    ) -> typing.List[DeviceInfo]:
+    async def async_get_device_count(self, max_count: int) -> typing.List[DeviceInfo]:
         devices: typing.List[DeviceInfo] = []
-        if timeout is None:
-            timeout = self.timeout
         if max_count <= 0:
             return devices
         count = 0
-        async for device in self.async_devices(timeout=timeout):
+        async for device in self.async_devices():
             devices.append(device)
             count += 1
             if count == max_count:
                 break
         return devices
 
-    async def async_get_device(
-        self, timeout: float = None
-    ) -> typing.Optional[DeviceInfo]:
-        if timeout is None:
-            timeout = self.timeout
-        async for device in self.async_devices(timeout=timeout):
+    async def async_get_device(self) -> typing.Optional[DeviceInfo]:
+        async for device in self.async_devices():
             return device
         return None
 
     def get_device_count(
-        self, max_count: int, timeout: float = None
+        self, max_count: int
     ) -> typing.Optional[typing.List[DeviceInfo]]:
-        if timeout is None:
-            timeout = self.timeout
-        t = self._thread_loop.run_async(
-            self.async_get_device_count, max_count, timeout=timeout
-        )
+        t = self._thread_loop.run_async(self.async_get_device_count, max_count)
         try:
-            return t.result_or_cancel(timeout=timeout)
+            return t.result_or_cancel(timeout=self.timeout)
         except concurrent.futures.TimeoutError:
             return None
 
-    def get_device(self, timeout: float = None) -> typing.Optional[DeviceInfo]:
-        if timeout is None:
-            timeout = self.timeout
-        devices = self.get_device_count(max_count=1, timeout=timeout)
+    def get_device(self) -> typing.Optional[DeviceInfo]:
+        devices = self.get_device_count(max_count=1)
         if not devices:
             return None
         else:
@@ -293,13 +283,14 @@ class DiscoveryNet(Discovery):
         *,
         ip_addr: str,
         device_types: typing.Optional[typing.List[int]] = None,
+        timeout: typing.Optional[float] = None,
         **kwds,
     ):
         self._backend: CtrlBackendNet = backend
         self._thread_loop = self._backend._thread_loop
         self._thread_loop.register_cleanup(self._destroy)
         self.logger = self._backend.logger
-        super().__init__()
+        super().__init__(timeout=timeout)
         if device_types is None:
             device_types = DEVICE_TYPE_LIST
         self._device_types = device_types
@@ -354,13 +345,14 @@ class DiscoveryNetRaw(Discovery):
         *,
         ip_addr: str,
         check_port: typing.Optional[bool] = True,
+        timeout: typing.Optional[float] = None,
         **kwds,
     ):
         self._backend: CtrlBackendNet = backend
         self._thread_loop = self._backend._thread_loop
         self._thread_loop.register_cleanup(self._destroy)
         self.logger = self._backend.logger
-        super().__init__()
+        super().__init__(timeout=timeout)
         self._check_port = check_port
         devices = kwds.pop("devices", None)
         self._raw_devices = []
@@ -382,21 +374,18 @@ class DiscoveryNetRaw(Discovery):
                 if device.ip_addr == "192.168.53.1":
                     device.type = od.ARSDK_DEVICE_TYPE_SKYCTRL_3
                     device.name = "Skycontroller 3"
-                elif (
-                    device.ip_addr
-                    in (
-                        "192.168.42.1",
-                        "192.168.43.1",
-                    )
-                    or device.ip_addr.startswith("10.202.0.")
-                ):
+                elif device.ip_addr in (
+                    "192.168.42.1",
+                    "192.168.43.1",
+                ) or device.ip_addr.startswith("10.202.0."):
                     device.type = od.ARSDK_DEVICE_TYPE_ANAFI4K
                     device.name = "ANAFI-{}".format(7 * "X")
 
-    def start(self) -> bool:
-        super().start()
+    async def _do_start(self) -> bool:
+        if not await super()._do_start():
+            return False
         for device in self._raw_devices:
-            self._add_device(device)
+            await self._add_device(device)
         return True
 
     def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery]":
@@ -423,32 +412,19 @@ class DiscoveryNetRaw(Discovery):
     def _destroy_discovery(self) -> int:
         return od.arsdk_discovery_destroy(self.discovery)
 
-    def _add_device(self, device: DeviceInfo) -> None:
+    async def _add_device(self, device: DeviceInfo) -> None:
         if self._check_port:
-            # check that the device port is opened
-            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-                sock.settimeout(self.timeout)
-                try:
-                    res = sock.connect_ex((device.ip_addr, device.port))
-                except OSError:
-                    self.logger.debug(
-                        f"{self.discovery_name}: {device.ip_addr} is unreachable"
-                    )
+            timeout = self.deadline - time.time()
+            client = TcpClient(self._thread_loop)
+            try:
+                if not await client.aconnect(
+                    device.ip_addr, device.port, timeout=timeout
+                ):
                     return
-                if res != 0:
-                    self.logger.debug(
-                        f"{self.discovery_name}: {device.ip_addr}:{device.port} is"
-                        " closed"
-                    )
-                    return
+            finally:
+                await client.adestroy()
         # add this device to the "discovered" devices
-        f = self._thread_loop.run_async(self._do_add_device, device)
-        try:
-            f.result_or_cancel(timeout=self.timeout)
-        except concurrent.futures.TimeoutError:
-            self.logger.error(
-                f"{self.discovery_name}: timedout for {device.ip_addr}:{device.port}"
-            )
+        self._do_add_device(device)
 
     @callback_decorator()
     def _do_add_device(self, device: DeviceInfo) -> None:
@@ -471,13 +447,14 @@ class DiscoveryMux(Discovery):
         self,
         backend: CtrlBackendMuxIp,
         device_types: typing.Optional[typing.List[int]] = None,
+        timeout: typing.Optional[float] = None,
         **kwds,
     ):
         self._backend: CtrlBackendMuxIp = backend
         self._thread_loop = self._backend._thread_loop
         self._thread_loop.register_cleanup(self._destroy)
         self.logger = self._backend.logger
-        super().__init__()
+        super().__init__(timeout=timeout)
         if device_types is None:
             device_types = DEVICE_TYPE_LIST
         self._device_types = device_types

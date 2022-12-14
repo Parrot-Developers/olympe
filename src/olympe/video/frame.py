@@ -164,9 +164,7 @@ class VideoFrame:
         res = self._mbuf.copy(
             self._mbuf_video_frame,
             self._packed_buffer,
-            False,  # FIXME: remove_stride=True is buggy
-            # the ffmpeg decoder has no stride, so this is OK-ish
-            # for now
+            True,
             ctypes.byref(self._packed_video_frame),
         )
         if res < 0:

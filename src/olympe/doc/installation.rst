@@ -217,7 +217,7 @@ What's a Python virtual environment
 A Python virtual environment is a Python environment isolated from the system-wide Python
 environment. A package installed in one virtual environment does not change anything in the
 system-wide environment (or any other virtual environment). Python virtual environment can be
-created by any user without any specific priviledges. A "virtual env" resides in a directory
+created by any user without any specific privileges. A "virtual env" resides in a directory
 chosen by the user and contains a "site-packages" where Python packages are installed. To use a
 specific virtual environment, the user usually has to source or execute a specific script that will
 activate the environment, set up environment variables and change the current shell prompt. Once a
@@ -311,6 +311,6 @@ little virtual experience, we can safely remove this virtual environment from ou
    $ rm -rf my-virtual-env/
 
 Note: On Debian-based distros, you have little to no use for the apt provided `pip` (the
-`python3-pip` package). I personaly use it just to install `virtualenv
+`python3-pip` package). I personally use it just to install `virtualenv
 <https://virtualenv.pypa.io/en/latest/>`_ (a better/faster version of `venv
 <https://docs.python.org/3/tutorial/venv.html>`_).

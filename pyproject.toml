@@ -46,6 +46,7 @@ dependencies = [
     "importlib_metadata; python_version < '3.8'",
     "numpy",
     "typing-protocol; python_version < '3.8'",
+    "protobuf==3.19.4",
     "pycryptodomex",
     "pytz",
     "PyYAML",
@@ -87,11 +88,10 @@ olympe = "olympe.app:main"
 top-levels = [
     "olympe",
     "olympe_deps",
+    "olympe_protobuf",
     "arsdkparser.py",
     "arsdk",
-    "google",
     "logness",
-    "parrot",
     "ulog.py",
     "_ulog"
 ]

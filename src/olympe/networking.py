@@ -44,6 +44,7 @@ except ImportError:
 import collections
 import concurrent.futures
 import ctypes
+import errno
 import ipaddress
 import logging
 import olympe_deps as od
@@ -560,13 +561,22 @@ class SocketContext(ABC):
         if self._ctx is None:
             return
         await self.astop()
-        await self._loop.asleep(1.)
         if self._ctx is None:
             return
         res = od.pomp_ctx_destroy(self._ctx)
         if res != 0:
-            self.logger.error(f"Failed to destroy pomp context: {os.strerror(-res)}")
-        self._ctx = None
+            if res != -errno.EBUSY:
+                self.logger.error(f"Failed to destroy pomp context: {os.strerror(-res)}")
+            else:
+                # Device or resource busy... The connection is still in use.
+                pass
+            # Destroying the pomp context is the only way to unregister internal pomp_timer fd,
+            # so we have to try harder to prevent unnecessary pomp_loop_destroy errors about
+            # unregisted fds.
+            self._destroying = False
+            self._loop.register_cleanup(self.adestroy)
+        else:
+            self._ctx = None
 
     def destroy(self):
         self._loop.run_later(self.adestroy)
@@ -603,7 +613,7 @@ class SocketContext(ABC):
         elif event == od.POMP_EVENT_DISCONNECTED:
             self._on_disconnected_cb(conn)
         elif event == od.POMP_EVENT_MSG:
-            # pomp message API is not implented, so we should't get here
+            # pomp message API is not implemented, so we shouldn't get here
             self.logger.error("Unhandled pomp message event")
         else:
             self.logger.error(f"Unknown pomp event {event}")
@@ -709,7 +719,7 @@ class SocketContext(ABC):
             addrlen = ctypes.sizeof(sockaddr_in6)
             data = sockaddr_in6
         else:
-            raise ValueError(f"Unsupported address familly: {addr}")
+            raise ValueError(f"Unsupported address family: {addr}")
         return sockaddr, addrlen, data
 
 
@@ -917,6 +927,10 @@ class TcpClient(SocketContext):
     @property
     def connected(self):
         return self._connected and self._client_connection is not None
+
+    @property
+    def fd(self):
+        return self._client_connection.fileno if self._client_connection else -1
 
 
 class TlsClient(TcpClient):

@@ -55,15 +55,12 @@ class Subscriber:
         # elements as new elements are appended.
         self._event_queue = deque([], queue_size)
 
-        # Await the expectation, this prevent monitored command expectations
-        # from sending messages
-        if self._expectation is not None:
-            self._expectation._await(self._scheduler)
-
     def __enter__(self):
         pass
 
     def __exit__(self, *args, **kwds):
+        if self._expectation is not None:
+            self._expectation.cancel()
         self._scheduler.unsubscribe(self)
 
     def _add_event(self, event):
@@ -76,6 +73,9 @@ class Subscriber:
             self._add_event(event)
             return True
         else:
+            # Await the expectation (this is a no-op if already done).
+            # This prevent monitored command expectations from sending messages
+            self._expectation._await(self._scheduler)
             if self._expectation.success() or self._expectation.cancelled():
                 # reset already succeeded or cancelled expectations
                 self._expectation = self._expectation.copy()
@@ -100,4 +100,6 @@ class Subscriber:
         return self._timeout
 
     def unsubscribe(self):
+        if self._expectation is not None:
+            self._expectation.cancel()
         self._scheduler.unsubscribe(self)

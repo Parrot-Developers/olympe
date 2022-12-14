@@ -887,6 +887,63 @@ class _RESTDeleteAllMediaExpectation(_RESTExpectation):
         super().__init__("delete_all_media", "_delete_all_media", _timeout=_timeout)
 
 
+class ResourceDownloadProgressEvent(Event):
+    def __init__(self, resource_id, download_percent, policy=None):
+        super().__init__(policy=policy)
+        self.resource_id = resource_id
+        self.download_percent = download_percent
+
+    def copy(self):
+        return self.__class__(
+            self.resource_id, self.download_percent, policy=self._policy
+        )
+
+    def __str__(self):
+        return ("resource_downloaded_progress_event("
+                f"resource_id={self.resource_id}, downloaded_percent={self.download_percent})")
+
+
+class resource_download_progress(Expectation):
+    def __init__(self, resource_id=None, downloaded_percent=None):
+        super().__init__()
+        self.resource_id = resource_id
+        self.downloaded_percent = downloaded_percent
+        self._expected_event = ResourceDownloadProgressEvent(
+            self.resource_id, self.downloaded_percent)
+
+    def copy(self):
+        return super().base_copy(self.resource_id, self.downloaded_percent)
+
+    def check(self, resource_download_progress_event, *args, **kwds):
+        if not isinstance(resource_download_progress_event, ResourceDownloadProgressEvent):
+            return self
+        if self.resource_id is None:
+            self.set_success()
+            return self
+        if self.resource_id != resource_download_progress_event.resource_id:
+            return self
+        self.set_success()
+        return self
+
+    def expected_events(self):
+        return EventContext([self._expected_event])
+
+    def received_events(self):
+        return self.matched_events()
+
+    def matched_events(self):
+        if self._success:
+            return EventContext([self._expected_event])
+        else:
+            return EventContext()
+
+    def unmatched_events(self):
+        if not self._success:
+            return EventContext([self._expected_event])
+        else:
+            return EventContext()
+
+
 class _download_resource(Expectation):
 
     always_monitor = True
@@ -922,11 +979,6 @@ class _download_resource(Expectation):
         self._downloaded_size = 0
         self._downloaded_percent = 0
         self._write_tasks = deque()
-        self.add_done_callback(self._on_done)
-
-    def _on_done(self, _):
-        if self._resource_file is not None:
-            self._resource_file.close()
 
     def copy(self):
         return super().base_copy(
@@ -1108,6 +1160,12 @@ class _download_resource(Expectation):
         self._downloaded_size += len(chunk)
         percent = int(100 * (self._downloaded_size / self._resource_size))
         if percent > self._downloaded_percent:
+            await self._media._process_event(
+                ResourceDownloadProgressEvent(
+                    self._resource.resource_id,
+                    self._downloaded_percent
+                )
+            )
             self._downloaded_percent = percent
             self._media.logger.info(
                 "Downloading {} {} {}%".format(
@@ -1215,6 +1273,14 @@ class MultipleDownloadMixin(MultipleExpectation):
         if len(self.expectations) == len(self.matched_expectations):
             self.set_success()
         return self
+
+    def on_subexpectation_done(self, expectation):
+        if not expectation.success():
+            return
+
+        self.matched_expectations.add(expectation)
+        if len(self.expectations) == len(self.matched_expectations):
+            self.set_success()
 
     def wait(self, _timeout=None):
         if self._scheduler is None:
@@ -1454,7 +1520,7 @@ class MediaSchedulerMixin(StreamSchedulerMixin):
             deadline = self._scheduler.time() + timeout
         super().stream_join(timeout=timeout)
         while True:
-            download = resource_downloaded()
+            download = resource_downloaded() | resource_download_progress()
             self.schedule(download)
             download.wait(_timeout=2.0)
             if not download:
@@ -1633,6 +1699,8 @@ class Media(AbstractScheduler):
         """
         Update the internal media state from a websocket media event
         """
+        if not isinstance(media_event, MediaEvent):
+            return
         if media_event.name == "media_created":
             media_id, media = _make_media(media_event.data["media"])
             if not media_id:
@@ -1852,7 +1920,7 @@ class Media(AbstractScheduler):
             raise ValueError("resource_info: missing media_id or resource_id")
         if self._media_state is None:
             raise RuntimeError(
-                "resource_info: not currently connected the the drone media API"
+                "resource_info: not currently connected to the drone media API"
             )
         try:
             if media_id is not None:

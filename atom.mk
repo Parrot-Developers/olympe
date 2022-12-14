@@ -5,7 +5,8 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := olympe-base
 LOCAL_CATEGORY_PATH := libs
 LOCAL_DESCRIPTION := Olympe pure python module
-LOCAL_DEPENDS_MODULES := python arsdkparser
+LOCAL_DEPENDS_MODULES := python arsdkparser parrot-protobuf-extensions-proto protobuf-base
+LOCAL_LIBRARIES := arsdkparser parrot-protobuf-extensions-proto
 
 PRIVATE_OLYMPE_OUT_DIR=$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})
 
@@ -23,6 +24,22 @@ LOCAL_COPY_FILES := \
 	$(foreach __f,$(olympe_source_files), \
 		$(__f):$(PRIVATE_OLYMPE_OUT_DIR)/lib/python/site-packages/$(strip $(patsubst src/%, %, $(__f))) \
 	)
+
+# Install .proto files in python site-packages/olympe_protobuf staging directory
+PRIVATE_OLYMPE_PROTOBUF_SRC_DIRS := $(PRIVATE_OLYMPE_OUT_DIR)/share/protobuf:$(PRIVATE_OLYMPE_OUT_DIR)/lib/python/site-packages
+PRIVATE_OLYMPE_PROTOBUF_DST_DIR := $(PRIVATE_OLYMPE_OUT_DIR)/lib/python/site-packages/olympe_protobuf
+define LOCAL_CMD_POST_INSTALL
+    while read -d ':' src_dir; do \
+        protobuf_src_files=$$(find $$src_dir -type f -name '*.proto'); \
+        protobuf_dst_files=$$(echo $$protobuf_src_files | xargs -I{} -d' ' bash -c "echo \"{}\" | \
+            sed 's#\s*$$src_dir#$(PRIVATE_OLYMPE_PROTOBUF_DST_DIR)#g'"); \
+        while read -ra src <&3 && read -ra dst <&4; do \
+            echo "$$src is in $$dst"; \
+            install -Dp -m0660 $$src $$dst; \
+        done 3<<<"$$protobuf_src_files" 4<<<"$$protobuf_dst_files"; \
+    done <<< $(PRIVATE_OLYMPE_PROTOBUF_SRC_DIRS):; \
+    echo $$protobuf_files;
+endef
 
 include $(BUILD_CUSTOM)
 

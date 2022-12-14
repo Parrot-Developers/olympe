@@ -42,7 +42,7 @@ from textwrap import indent
 from types import ModuleType
 
 # Preload olympe_deps bundled libprotobuf so that we don't rely on system installed libprotobuf.
-olympe_deps._load_library("libprotobuf.so.18")  # noqa
+olympe_deps._load_library("libprotobuf.so.30")  # noqa
 
 from .arsdkng.enums import ArsdkEnums, ArsdkEnum, ArsdkBitfield, ArsdkProtoEnum  # noqa
 from .arsdkng.messages import ArsdkMessages, ArsdkMessageBase, ArsdkProtoMessage  # noqa

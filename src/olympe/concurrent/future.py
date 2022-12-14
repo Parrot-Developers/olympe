@@ -28,7 +28,7 @@
 #  SUCH DAMAGE.
 
 
-import concurrent
+import concurrent.futures
 import inspect
 import threading
 
@@ -46,7 +46,10 @@ class Future(concurrent.futures.Future):
     def __init__(self, loop=None):
         super().__init__()
         self._loop = loop or _get_running_loop()
+
+    def set_running_or_notify_cancel(self):
         self._register()
+        return super().set_running_or_notify_cancel()
 
     @property
     def loop(self):
@@ -57,12 +60,13 @@ class Future(concurrent.futures.Future):
         if self._loop is not None:
             raise RuntimeError("Future is already attached to a loop")
         self._loop = loop
-        self._register()
 
     def _register(self):
-        if self._loop is not None:
-            self._loop._register_future(self)
-            self.add_done_callback(lambda _: self._loop._unregister_future(self))
+        if not self._loop:
+            self._loop = _get_running_loop()
+        assert self._loop
+        self._loop._register_future(self)
+        self.add_done_callback(lambda _: self._loop._unregister_future(self))
 
     def set_from(self, source):
         if self.done():

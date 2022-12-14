@@ -336,6 +336,12 @@ class ArsdkMessageMeta(type):
             else argname
             for argname in cls.args_name + ["**kwds"]
         )
+        cls.decoded_args = list(
+            map(lambda ctype: ctypes.pointer(ctype()), cls.decode_ctypes_args)
+        )
+        cls.decoded_args_type = list(
+            map(lambda ctype: ctypes.POINTER(ctype), cls.decode_ctypes_args)
+        )
 
         # docstring
         cls.doc_todos = ""
@@ -841,14 +847,13 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         )
 
         # bitfield conversion
-        args = OrderedDict(
-            starmap(
-                lambda name, value: (name, cls.args_bitfield[name](value))
-                if name in cls.args_bitfield
-                else (name, value),
-                args.items(),
-            )
-        )
+        for name, value in args.copy().items():
+            if name in cls.args_bitfield:
+                try:
+                    args[name] = cls.args_bitfield[name](value)
+                except ValueError:
+                    # Bits values outside the bitfield mask are unspecified
+                    pass
 
         args = OrderedDict(starmap(lambda k, v: (k, v), args.items()))
         return args
@@ -1006,6 +1011,9 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         args, send_command, policy, float_tol, no_expect, timeout = cls._expect_args(
             *args, **kwds
         )
+        for arg_name in args:
+            if arg_name not in cls.args_name:
+                raise ValueError(f"'{cls.fullName}' message has no such '{arg_name}' parameter")
         if policy != ExpectPolicy.check:
             if not send_command and cls.message_type == ArsdkMessageType.CMD:
                 expectations = ArsdkWhenAllExpectations(
@@ -1165,57 +1173,35 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         Decode a ctypes message buffer into a list of python typed arguments. This also perform the
         necessary enum, bitfield and unicode conversions.
         """
-        decoded_args = list(
-            map(lambda ctype: ctypes.pointer(ctype()), cls.decode_ctypes_args)
-        )
-        decoded_args_type = list(
-            map(lambda ctype: ctypes.POINTER(ctype), cls.decode_ctypes_args)
-        )
-        od.arsdk_cmd_dec.argtypes = od.arsdk_cmd_dec.argtypes[:2] + decoded_args_type
+        od.arsdk_cmd_dec.argtypes = od.arsdk_cmd_dec.argtypes[:2] + cls.decoded_args_type
 
-        res = od.arsdk_cmd_dec(message_buffer, cls.arsdk_desc, *decoded_args)
+        res = od.arsdk_cmd_dec(message_buffer, cls.arsdk_desc, *cls.decoded_args)
 
-        # ctypes -> python type conversion (exception: arsdk_binary -> c_char array)
-        decoded_args = list(
-            map(
-                lambda a: a.contents.value
-                if not isinstance(a.contents, od.struct_arsdk_binary)
-                else (ctypes.c_char * a.contents.len).from_address(a.contents.cdata),
-                decoded_args,
-            )
-        )
+        decoded_args = cls.decoded_args[:]
+        for i, (name, arg) in enumerate(zip(cls.args_name, decoded_args)):
+            # ctypes -> python type conversion (exception: arsdk_binary -> c_char array)
+            if not isinstance(arg.contents, od.struct_arsdk_binary):
+                decoded_args[i] = arg = arg.contents.value
+            else:
+                decoded_args[i] = arg = (ctypes.c_char * arg.contents.len).from_address(
+                    arg.contents.cdata)
+            # bytes utf-8 -> str conversion
+            if isinstance(arg, bytes):
+                decoded_args[i] = arg = str(arg, "utf-8")
+            # ctypes c_char array -> bytes
+            elif isinstance(arg, ctypes.Array):
+                decoded_args[i] = arg = bytes(arg)
 
-        # bytes utf-8 -> str conversion
-        decoded_args = list(
-            map(lambda a: str(a, "utf-8") if isinstance(a, bytes) else a, decoded_args)
-        )
-
-        # ctypes c_char array -> bytes
-        decoded_args = list(
-            map(lambda a: bytes(a) if isinstance(a, ctypes.Array) else a, decoded_args)
-        )
-
-        # enum conversion
-        decoded_args = list(
-            starmap(
-                lambda name, value: cls.args_enum[name](value)
-                if name in cls.args_enum
-                and value in cls.args_enum[name]._value2member_map_
-                else value,
-                zip(cls.args_name, decoded_args),
-            )
-        )
-
-        # bitfield conversion
-        decoded_args = list(
-            map(
-                lambda t: cls.args_bitfield[t[0]](t[1])
-                if t[0] in cls.args_bitfield
-                else t[1],
-                zip(cls.args_name, decoded_args),
-            )
-        )
-
+            if name in cls.args_enum:
+                # enum conversion
+                decoded_args[i] = arg = cls.args_enum[name](arg)
+            elif name in cls.args_bitfield:
+                # bitfield conversion
+                try:
+                    decoded_args[i] = arg = cls.args_bitfield[name](arg)
+                except ValueError:
+                    # Bits values outside the bitfield mask are unspecified
+                    pass
         return (res, decoded_args)
 
 

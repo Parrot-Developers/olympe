@@ -45,6 +45,10 @@ class MediaControllerMixin:
             scheduler=self._scheduler
         )
 
+    def destroy(self):
+        self._media.shutdown()
+        super().destroy()
+
     @callback_decorator()
     def _connected_cb(self, *args):
         super()._connected_cb(*args)

@@ -167,6 +167,14 @@ class Disconnect(Expectation):
     def unmatched_events(self):
         self._disconnected.unmatched_events()
 
+    def cancel(self):
+        disconnected_cancel = self._disconnected.cancel()
+        return super().cancel() or disconnected_cancel
+
+    def cancelled(self):
+        disconnected_cancelled = self._disconnected.cancelled()
+        return super().cancelled() and disconnected_cancelled
+
 
 class Connect(Expectation):
 
@@ -207,6 +215,14 @@ class Connect(Expectation):
     def unmatched_events(self):
         self._connected.unmatched_events()
 
+    def cancel(self):
+        connected_cancel = self._connected.cancel()
+        return super().cancel() or connected_cancel
+
+    def cancelled(self):
+        connected_cancelled = self._connected.cancelled()
+        return super().cancelled() and connected_cancelled
+
 
 class CommandInterfaceBase(LogMixin, AbstractScheduler):
     def __init__(self, *, name=None, drone_type=0, proto_v_min=1, proto_v_max=3, **kwds):
@@ -244,7 +260,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self._disconnect_future = None
         self._declare_callbacks()
         self._thread_loop.register_cleanup(self.destroy)
-        self.subscribe(
+        self._drone_manager_subscriber = self.subscribe(
             self._on_connection_state_changed, drone_manager.connection_state()
         )
 
@@ -573,6 +589,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         if self._thread_loop is not None:
             self._thread_loop.unregister_cleanup(self.destroy, ignore_error=True)
             self._on_device_removed()
+        self._drone_manager_subscriber.unsubscribe()
         self._scheduler.destroy()
         if self._thread_loop is not None:
             self._thread_loop.stop()

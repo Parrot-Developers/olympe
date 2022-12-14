@@ -52,8 +52,10 @@ class ExpectationBase(ABC):
     always_monitor = False
     _eventloop_future_blocking = False
 
-    def __init__(self):
-        self._future = Future()
+    def __init__(self, future=None):
+        if future is None:
+            future = Future()
+        self._future = future
         self._awaited = False
         self._scheduler = None
         self._success = False
@@ -81,6 +83,8 @@ class ExpectationBase(ABC):
         ret = not self._awaited
         self._awaited = True
         self._scheduler = scheduler
+        if self._future.loop is None and ret:
+            self._future.loop = self._scheduler.expectation_loop
         return ret
 
     def success(self):
@@ -136,8 +140,7 @@ class ExpectationBase(ABC):
     def cancel(self):
         if self._future.done():
             return False
-        self._future.cancel()
-        return True
+        return self._future.cancel()
 
     def cancelled(self):
         return self._future.cancelled()
@@ -159,7 +162,6 @@ class ExpectationBase(ABC):
 
     def base_copy(self, *args, **kwds):
         other = self.__class__(*args, **kwds)
-        ExpectationBase.__init__(other)
         other._timeout = self._timeout
         return other
 
@@ -242,8 +244,7 @@ class FailedExpectation(ExpectationBase):
 
 class FutureExpectation(ExpectationBase):
     def __init__(self, future, status_checker=lambda status: True):
-        super().__init__()
-        self._future = future
+        super().__init__(future)
         self._status_checker = status_checker
         self._future.add_done_callback(self._on_done)
 
@@ -330,22 +331,23 @@ class CheckWaitStateExpectationMixin:
         if not ret:
             return False
         self._checked = self._check_expectation.success()
-        self._success = self._checked
-        if self._success:
+        if self._checked:
+            self._wait_expectation.cancel()
             self.set_success()
         return ret
 
     def _schedule(self, scheduler):
         super()._schedule(scheduler)
-        self._check_expectation._schedule(scheduler)
+        scheduler._schedule(self._check_expectation)
         self._checked = self._check_expectation.success()
-        self._success = self._checked
-        if not self._success:
+        if not self._checked:
             scheduler._schedule(
                 self._wait_expectation, monitor=self._wait_expectation.always_monitor
             )
+            self._check_expectation.cancel()
         else:
             self.set_success()
+            self._wait_expectation.cancel()
 
     def copy(self):
         other = super().base_copy(
@@ -400,24 +402,39 @@ class CheckWaitStateExpectationMixin:
                 self.set_timedout()
             return self._wait_expectation.timedout()
 
+    def cancel(self):
+        check_cancelled = self._check_expectation.cancel()
+        wait_cancelled = self._wait_expectation.cancel()
+        return super().cancel() or check_cancelled or wait_cancelled
+
     def cancelled(self):
-        return self._wait_expectation.cancelled()
+        return self._check_expectation.cancelled() and self._wait_expectation.cancelled()
 
 
 class CheckWaitStateExpectation(CheckWaitStateExpectationMixin, Expectation):
     pass
 
 
-class MultipleExpectationMixin:
+class MultipleExpectationMixin(ABC):
     def __init__(self, expectations=None):
         super().__init__()
         if expectations is None:
             self.expectations = []
         else:
             self.expectations = expectations
-        for expectation in self.expectations:
-            expectation.add_done_callback(self.check)
         self.matched_expectations = IndexedSet()
+
+    def _register_subexpectations(self, *expectations):
+        for expectation in expectations:
+            expectation.add_done_callback(self.on_subexpectation_done)
+
+    @abstractmethod
+    def on_subexpectation_done(self, expectation):
+        pass
+
+    def _schedule(self, scheduler):
+        super()._schedule(scheduler)
+        scheduler.expectation_loop.run_async(self._register_subexpectations, *self.expectations)
 
     def _await(self, scheduler):
         ret = True
@@ -425,6 +442,8 @@ class MultipleExpectationMixin:
             ret = False
         if not all(list(map(lambda e: e._await(scheduler), self.expectations))):
             ret = False
+
+        scheduler.expectation_loop.run_async(self._register_subexpectations, *self.expectations)
         return ret
 
     def copy(self):
@@ -434,11 +453,15 @@ class MultipleExpectationMixin:
     def append(self, expectation):
         if not isinstance(expectation, self.__class__):
             self.expectations.append(expectation)
-            expectation.add_done_callback(self.check)
+
+            if self._scheduler is not None:
+                self._scheduler.expectation_loop.run_async(
+                    self._register_subexpectations, expectation)
         else:
             self.expectations.extend(expectation.expectations)
-            for expectation in expectation.expectations:
-                expectation.add_done_callback(self.check)
+            if self._scheduler is not None:
+                self._scheduler.expectation_loop.run_async(
+                    self._register_subexpectations, expectation.expectations)
         return self
 
     def expected_events(self):
@@ -521,6 +544,13 @@ class MultipleExpectationMixin:
                 timeout = end_time - time.monotonic()
         raise FutureTimeoutError()
 
+    def cancel(self):
+        cancelled = False
+        for expectation in self.expectations:
+            if expectation.cancel():
+                cancelled = True
+        return super().cancel() or cancelled
+
 
 class MultipleExpectation(MultipleExpectationMixin, Expectation):
     pass
@@ -557,14 +587,34 @@ class WhenAnyExpectationMixin:
             return False
 
     def check(self, *args, **kwds):
+        success = False
         for expectation in self.expectations:
             if (
                 expectation.always_monitor or not expectation.success()
             ) and expectation.check(*args, **kwds).success():
                 self.matched_expectations.add(expectation)
+                success = True
                 self.set_success()
-                return self
+                break
+
+        if success:
+            # Cancel every non successful expectations
+            for expectation in self.expectations:
+                if not expectation.success():
+                    expectation.cancel()
         return self
+
+    def on_subexpectation_done(self, expectation):
+        if not expectation.success():
+            return
+
+        self.matched_expectations.add(expectation)
+        self.set_success()
+
+        # Cancel every non successful expectations
+        for expectation in self.expectations:
+            if not expectation.success():
+                expectation.cancel()
 
     def __or__(self, other):
         return self.append(other)
@@ -617,6 +667,14 @@ class WhenAllExpectationsMixin:
             self.set_success()
         return self
 
+    def on_subexpectation_done(self, expectation):
+        if not expectation.success():
+            return
+
+        self.matched_expectations.add(expectation)
+        if len(self.expectations) == len(self.matched_expectations):
+            self.set_success()
+
     def __and__(self, other):
         return self.append(other)
 
@@ -649,19 +707,25 @@ class WhenSequenceExpectationsMixin:
         # Schedule all available expectations in this sequence until we
         # encounter a pending asynchronous expectation
         while self._current_expectation() is not None:
-            if not self._current_expectation()._awaited:
+            current = self._current_expectation()
+            if not current._awaited:
                 self._scheduler._schedule(
-                    self._current_expectation(),
-                    monitor=self._current_expectation().always_monitor,
+                    current,
+                    monitor=current.always_monitor,
                 )
-            if not self._current_expectation().success():
+            if not current.success():
                 break
-            self.matched_expectations.add(self._current_expectation())
+            self.matched_expectations.add(current)
 
         if len(self.expectations) == len(self.matched_expectations):
             self.set_success()
         elif any(expectation.cancelled() for expectation in self.expectations):
             self.cancel()
+
+    def on_subexpectation_done(self, expectation):
+        if not expectation.success():
+            return
+        self._scheduler.expectation_loop.run_async(self._do_schedule)
 
     def timedout(self):
         if super().timedout():
@@ -708,8 +772,6 @@ class WhenSequenceExpectationsMixin:
             )
             and (self._current_expectation().check(*args, **kwds).success())
         ):
-            # Consume the current expectation
-            self.matched_expectations.add(self._current_expectation())
             # Schedule the next expectation(s), if any.
             # This may also consume one or more synchronous expectations
             # (i.e. events with policy="check").

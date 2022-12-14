@@ -235,8 +235,8 @@ class ArsdkProto:
             od_path = od_path.parent
         site_path = od_path.parent
         root_path = site_path.parent.parent.parent
-        self.arsdk_proto_path = site_path / "arsdk"
-        self.shared_proto_path = site_path
+        self.shared_proto_path = site_path / "olympe_protobuf"
+        self.arsdk_proto_path = self.shared_proto_path / "arsdk"
         self.parrot_proto_path = self.shared_proto_path / "parrot"
         self.google_proto_path = self.shared_proto_path / "google"
         self.proto_def_path = root_path / "include"

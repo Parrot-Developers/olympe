@@ -54,8 +54,12 @@ from warnings import warn
 
 
 class PilotingCommand:
-    def __init__(self):
+    def __init__(self, time_function=None):
         self.set_default_piloting_command()
+        if time_function:
+            self.time_function = time_function
+        else:
+            self.time_function = time.time
 
     def update_piloting_command(self, roll, pitch, yaw, gaz, piloting_time):
         self.roll = roll
@@ -63,7 +67,7 @@ class PilotingCommand:
         self.yaw = yaw
         self.gaz = gaz
         self.piloting_time = piloting_time
-        self.initial_time = datetime.datetime.now()
+        self.initial_time = self.time_function()
 
     def set_default_piloting_command(self):
         self.roll = 0
@@ -92,7 +96,11 @@ class ControllerBase(CommandInterfaceBase):
         self._ip_addr = ip_addr.encode('utf-8')
         self._is_skyctrl = is_skyctrl
         self._piloting = False
-        self._piloting_command = PilotingCommand()
+        self._time_function = time_function
+
+        self._piloting_command = PilotingCommand(
+            time_function=self._time_function)
+
         self._backend_type = backend
         if backend is BackendType.Net:
             self._backend_class = CtrlBackendNet
@@ -108,8 +116,10 @@ class ControllerBase(CommandInterfaceBase):
             proto_v_min=1,
             proto_v_max=3,
             device_addr=self._ip_addr)
-        if time_function is not None:
-            self._scheduler.set_time_function(time_function)
+
+        if self._time_function is not None:
+            self._scheduler.set_time_function(self._time_function)
+
         self._connected_future = None
         self._last_disconnection_time = None
         # Setup piloting commands timer
@@ -259,6 +269,8 @@ class ControllerBase(CommandInterfaceBase):
         if not self.connected:
             return f.set_result(True)
 
+        if self._disconnect_future is not None and not self._disconnect_future.done():
+            self._disconnect_future.cancel()
         self._disconnect_future = f
         res = od.arsdk_device_disconnect(self._device.arsdk_device)
         if res != 0:
@@ -332,10 +344,10 @@ class ControllerBase(CommandInterfaceBase):
         if self._piloting_command.piloting_time:
             # Check if piloting time since last pcmd order has been reached
             diff_time = (
-                datetime.datetime.now() -
+                self._piloting_command.time_function() -
                 self._piloting_command.initial_time
             )
-            if diff_time.total_seconds() >= self._piloting_command.piloting_time:
+            if diff_time >= self._piloting_command.piloting_time:
                 self._piloting_command.set_default_piloting_command()
 
         # Flag to activate movement on roll and pitch. 1 activate, 0 deactivate
@@ -439,10 +451,11 @@ class ControllerBase(CommandInterfaceBase):
         )
         return self.piloting(roll, pitch, yaw, gaz, piloting_time)
 
-    async def _async_discover_device(self):
+    async def _async_discover_device(self, deadline):
         # Try to identify the device type we are attempting to connect to...
         await self._backend.ready()
-        discovery = self._discovery_class(self._backend, ip_addr=self._ip_addr)
+        timeout = (deadline - time.time()) / 2
+        discovery = self._discovery_class(self._backend, ip_addr=self._ip_addr, timeout=timeout)
         device = await discovery.async_get_device()
         if device is not None:
             return device, discovery
@@ -451,16 +464,17 @@ class ControllerBase(CommandInterfaceBase):
             self.logger.info(f"Net discovery failed for {self._ip_addr}")
             self.logger.info(f"Trying 'NetRaw' discovery for {self._ip_addr} ...")
             assert await discovery.async_stop()
-            discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr)
+            timeout = (deadline - time.time()) / 4
+            discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr, timeout=timeout)
             device = await discovery.async_get_device()
             if device is None:
                 await discovery.async_stop()
         return device, discovery
 
-    async def _async_get_device(self):
+    async def _async_get_device(self, deadline):
         if self._device is not None:
             return True
-        device, discovery = await self._async_discover_device()
+        device, discovery = await self._async_discover_device(deadline)
 
         if device is None:
             self.logger.info(f"Unable to discover the device: {self._ip_addr}")
@@ -490,10 +504,12 @@ class ControllerBase(CommandInterfaceBase):
         device_id = b""
 
         device_conn_cfg = od.struct_arsdk_device_conn_cfg(
-            ctypes.create_string_buffer(b"arsdk-ng"), ctypes.create_string_buffer(b"desktop"),
+            ctypes.create_string_buffer(b"olympe"), ctypes.create_string_buffer(b"desktop"),
             ctypes.create_string_buffer(bytes(device_id)), ctypes.create_string_buffer(req))
 
         # Send connection command
+        if self._connect_future is not None and not self._connect_future.done():
+            self._connect_future.cancel()
         self._connect_future = Future(self._thread_loop)
         res = od.arsdk_device_connect(
             self._device.arsdk_device,
@@ -528,8 +544,11 @@ class ControllerBase(CommandInterfaceBase):
                     self.logger.error(f"'{self._ip_addr_str} connection timed out")
                     return False
                 self.logger.debug(f"Discovering device {self._ip_addr_str} ...")
-                if not await self._async_get_device():
+                if not await self._async_get_device(deadline):
                     self.logger.debug(f"Discovering device {self._ip_addr_str} failed")
+                    if deadline < (time.time() + backoff):
+                        self.logger.error(f"'{self._ip_addr_str} connection (would) have timed out")
+                        return False
                     await self._thread_loop.asleep(backoff)
                     backoff *= 2.
                     continue
@@ -673,12 +692,12 @@ class ControllerBase(CommandInterfaceBase):
             self._stop_piloting_impl()
         self._disconnection_impl()
         self._last_disconnection_time = time.time()
-        self._piloting_command = PilotingCommand()
+        self._piloting_command = PilotingCommand(time_function=self._time_function)
         super()._on_device_removed()
 
     def _reset_instance(self):
         self._piloting = False
-        self._piloting_command = PilotingCommand()
+        self._piloting_command = PilotingCommand(time_function=self._time_function)
         self._device = None
         self._device_name = None
         self._discovery = None
