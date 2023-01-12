@@ -228,6 +228,7 @@ class PanoramaType(MediaEnumBase):
     horizontal_180 = "HORIZONTAL_180", "degrees on the horizontal plane"
     vertical_180 = "VERTICAL_180", "degrees on the vertical plane"
     spherical = "SPHERICAL", "360 degrees on the horizontal and vertical planes"
+    super_wide = "SUPER_WIDE", "photos at different camera yaw for several camera pitch"
 
 
 class ResourceFormat(MediaEnumBase):

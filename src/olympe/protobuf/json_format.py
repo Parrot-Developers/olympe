@@ -621,7 +621,7 @@ class _Parser:
                     self._ConvertMapFieldValue(value, message, field)
                 elif field.label == descriptor.FieldDescriptor.LABEL_REPEATED:
                     message.ClearField(field.name)
-                    if not isinstance(value, list):
+                    if not isinstance(value, (list, tuple)):
                         raise ParseError(
                             "repeated field {} must be in [] which is "
                             "{}.".format(name, value)

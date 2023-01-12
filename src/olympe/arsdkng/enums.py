@@ -563,7 +563,7 @@ class ArsdkEnums:
             if part not in context:
                 context[part] = OrderedDict()
             context = context[part]
-        values = {k: v.index for k, v in enum_desc.enum.values_by_name.items()}
+        values = {k: v.number for k, v in enum_desc.enum.values_by_name.items()}
         # Add short form enum aliases for convenience
         # For example: CameraMode.photo for CameraMode.CAMERA_MODE_PHOTO
         aliases = {}

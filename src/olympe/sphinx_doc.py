@@ -5,7 +5,8 @@ from sphinx.ext.autodoc import ClassDocumenter
 from sphinx.domains.python import PyFunction, PyClasslike
 from sphinx.util.logging import getLogger
 from docutils.parsers.rst import Directive, directives
-from typing import Any
+from docutils.nodes import Node, Text, unescape
+from typing import Any, List
 
 try:
     from olympe.arsdkng.messages import ArsdkMessageBase, ArsdkMessageType
@@ -16,6 +17,11 @@ except Exception:
 
 
 logger = getLogger(__name__)
+
+
+class FixedText(Text):
+    def astext(self):
+        return str(unescape(self, respect_whitespace=True))
 
 
 class ArsdkMessageDocumenter(FunctionDocumenter):
@@ -141,8 +147,8 @@ class PyArsdkCmdMessageDirective(PyArsdkMessageDirectiveBase):
     def needs_arglist(self) -> bool:
         return True
 
-    def get_signature_prefix(self, sig: str) -> str:
-        return "command message"
+    def get_signature_prefix(self, sig: str) -> List[Node]:
+        return [FixedText(" command message ")]
 
     def get_index_text(self, modname: str, name_cls: str) -> str:
         return "command_message"
@@ -158,8 +164,8 @@ class PyArsdkEventMessageDirective(PyArsdkMessageDirectiveBase):
     def needs_arglist(self) -> bool:
         return True
 
-    def get_signature_prefix(self, sig: str) -> str:
-        return "event message"
+    def get_signature_prefix(self, sig: str) -> List[Node]:
+        return [FixedText(" event message ")]
 
     def get_index_text(self, modname, name_cls: str) -> str:
         return "event_message"
@@ -175,8 +181,8 @@ class PyArsdkMessageDirective(PyArsdkMessageDirectiveBase):
     def needs_arglist(self) -> bool:
         return True
 
-    def get_signature_prefix(self, sig: str) -> str:
-        return "message"
+    def get_signature_prefix(self, sig: str) -> List[Node]:
+        return [FixedText(" message ")]
 
     def get_index_text(self, modname: str, name_cls: str) -> str:
         return "message"
@@ -189,8 +195,8 @@ class PyArsdkEnumDirective(PyClasslike):
 
     allow_nesting = True
 
-    def get_signature_prefix(self, sig: str) -> str:
-        return "enum"
+    def get_signature_prefix(self, sig: str) -> List[Node]:
+        return [FixedText(" enum ")]
 
     def get_index_text(self, modname: str, name_cls: str) -> str:
         return "enum"
