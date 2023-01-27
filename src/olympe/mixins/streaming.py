@@ -54,9 +54,9 @@ class StreamingControllerMixin:
     def _create_pdraw_interface(self):
         return Pdraw(
             name=self._name,
-            server_addr=self._ip_addr.decode(),
-            device_name=self._device_name,
             buffer_queue_size=self._video_buffer_queue_size,
+            controller=self,
+            pdraw_thread_loop=self._thread_loop,
         )
 
     def connect(self, **kwds):

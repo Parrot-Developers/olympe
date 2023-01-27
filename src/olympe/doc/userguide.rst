@@ -816,8 +816,8 @@ Bitfield example:
 
 Additional usage examples are available in the unit tests of `olympe.arsdkng.enums`.
 
-Using Olympe exptectation eDSL
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Using Olympe expectation eDSL
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Before continuing with this Olympe example, you might want to read the :ref:`Olympe eDSL <Olympe eDSL>` section.
 

@@ -273,6 +273,7 @@ ResourceInfo.__doc__ = (
     "Namedtuple class "
     + ResourceInfo.__doc__
     + """
+
   - media_id (str): unique id of the media
   - resource_id (str): unique id of the resource
   - type ( :py:class:`~olympe.media.MediaType`): type of the resource

@@ -65,9 +65,7 @@ class Renderer(ABC, LogMixin):
             sdl2.SDL_WINDOWPOS_UNDEFINED,
             self.width,
             self.height,
-            sdl2.SDL_WINDOW_OPENGL
-            | sdl2.SDL_WINDOW_RESIZABLE
-            | sdl2.SDL_WINDOW_UTILITY,
+            sdl2.SDL_WINDOW_OPENGL,
         )
 
         # Create an OpenGL context
@@ -218,6 +216,7 @@ class PdrawRenderer(Renderer):
         self._render_zone = od.struct_pdraw_rect(0, 0, self.width, self.height)
         self._renderer_params = od.struct_pdraw_video_renderer_params.bind(
             {
+                "scheduling_mode": od.PDRAW_VIDEO_RENDERER_SCHEDULING_MODE_ADAPTIVE,
                 "fill_mode": od.PDRAW_VIDEO_RENDERER_FILL_MODE_FIT_PAD_BLUR_EXTEND,
                 "enable_transition_flags": od.PDRAW_VIDEO_RENDERER_TRANSITION_FLAG_ALL,
                 "enable_hmd_distortion_correction": 0,

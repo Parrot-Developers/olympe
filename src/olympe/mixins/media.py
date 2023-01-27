@@ -29,21 +29,22 @@
 
 from olympe.media import Media
 from olympe.utils import callback_decorator
+from olympe.enums import drone_manager as drone_manager_enums
 
 
 class MediaControllerMixin:
-    def __init__(self, *args, media_autoconnect=True, media_port=80, **kwds):
+    def __init__(
+        self, *args, media_autoconnect: bool = True, media_port: int = 80, **kwds
+    ):
         self._media = None
         super().__init__(*args, **kwds)
         self._media_autoconnect = media_autoconnect
         self._media_port = media_port
-        media_hostname = self._ip_addr_str + f":{self._media_port}"
         self._media = Media(
-            name=self._name,
-            hostname=media_hostname,
-            device_name=self._device_name,
-            scheduler=self._scheduler
+            name=self._name, device_name=self._device_name, scheduler=self._scheduler
         )
+        """Proxy through the skyctrl to access to the drone"""
+        self._proxy = None
 
     def destroy(self):
         self._media.shutdown()
@@ -58,16 +59,41 @@ class MediaControllerMixin:
             self._media.async_disconnect().then(lambda f: self._media.async_connect())
 
     @callback_decorator()
+    def _disconnected_cb(self, *args):
+        super()._disconnected_cb(*args)
+        # If the direct device is disconnected, the proxy is no longer unusable
+        if self._proxy is not None:
+            self._proxy.close()
+            self._proxy = None
+
+    @callback_decorator()
     def _on_connection_state_changed(self, message_event, _):
         super()._on_connection_state_changed(message_event, _)
         # Handle drone connection_state events
         if self._is_skyctrl:
-            # The SkyController forwards port tcp/180 to the drone tcp/80
-            # for the web API endpoints
-            if self._media_autoconnect:
-                media_hostname = self._ip_addr_str + ":180"
-                self._media.set_hostname(media_hostname)
-                self._media.async_disconnect().then(lambda f: self._media.async_connect())
+            if (
+                message_event._args["state"]
+                == drone_manager_enums.connection_state.connected
+            ):
+                if self._proxy is not None:
+                    self._proxy.close()
+
+                self._thread_loop.run_async(self._create_proxy)
+            elif self._proxy is not None:
+                self._proxy.close()
+                self._proxy = None
+
+    async def _create_proxy(self):
+        """
+        Creates the proxy to access to the drone
+        """
+        self._proxy = await self.aopen_tcp_proxy(self._media_port)
+
+        media_hostname = f"{self._proxy.address}:{self._proxy.port}"
+        self._media.set_hostname(media_hostname)
+
+        if self._media_autoconnect:
+            self._media.async_disconnect().then(lambda f: self._media.async_connect())
 
     def _reset_instance(self):
         """
@@ -78,9 +104,9 @@ class MediaControllerMixin:
         super()._reset_instance()
 
     @property
-    def media(self):
+    def media(self) -> Media:
         return self._media
 
     @property
-    def media_autoconnect(self):
+    def media_autoconnect(self) -> bool:
         return self._media_autoconnect

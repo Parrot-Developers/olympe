@@ -28,12 +28,14 @@ Olympe API Reference Documentation
     .. automethod:: __init__
     .. automethod:: play
     .. automethod:: pause
-    .. automethod:: close
+    .. automethod:: resume
+    .. automethod:: stop
     .. automethod:: set_output_files
     .. automethod:: set_callbacks
     .. automethod:: get_session_metadata
     .. autoproperty:: state
     .. automethod:: wait
+    .. automethod:: close
 
 .. autoclass:: olympe.Media()
 

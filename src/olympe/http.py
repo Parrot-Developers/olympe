@@ -32,15 +32,17 @@ import json
 import logging
 import queue
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping as AbstractMapping
 
 import h11
 import wsproto
 import wsproto.connection
 import wsproto.events
 import wsproto.utilities
+from typing import cast, Dict, Generator, Iterable, Mapping, Optional, Tuple, Union
 from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
+from urllib.parse import urlencode
 
 import olympe.networking
 
@@ -61,21 +63,30 @@ _default_headers = {
 
 
 class Request:
-    def __init__(self, url, method=None, params=None, headers=None, data=None):
+    def __init__(
+        self,
+        url: str,
+        method: Optional[str] = None,
+        params: Optional[Mapping[str, str]] = None,
+        headers: Optional[Union[Mapping[str, str], Iterable[Tuple[str, str]]]] = None,
+        data: Optional[bytes] = None,
+    ):
         url = url.lstrip()
         method = method or "GET"
-        self.method = method
-        self.url = url
-        self.params = params or ""
+        self.method: str = method
+        self.url: str = url
+        self.params: Optional[Mapping[str, str]] = params
         if headers:
-            if isinstance(headers, Mapping):
-                headers = {k.lower(): v for k, v in headers.items()}
+            if isinstance(headers, AbstractMapping):
+                headers = {
+                    k.lower(): v for k, v in cast(Mapping[str, str], headers).items()
+                }
             else:
                 headers = {k.lower(): v for (k, v) in headers}
         else:
             headers = _default_headers
-        self.headers = headers
-        self.data = data
+        self.headers: Dict[str, str] = headers
+        self.data: Optional[bytes] = data
 
         try:
             scheme, auth, host, port, path, query, fragment = parse_url(url)
@@ -93,24 +104,37 @@ class Request:
                 port = 80
             elif scheme in ("https", "wss"):
                 port = 443
+            else:
+                port = 80
+        else:
+            port = int(port)
         if path is None:
             path = "/"
 
         if not self.headers.get("host"):
             self.headers["host"] = host
 
-        self.scheme = scheme
-        self.auth = auth
-        self.host = host
-        self.port = port
-        self.path = path
-        self.query = query
-        self.fragment = fragment
+        self.scheme: str = scheme
+        self.auth: Optional[str] = auth
+        self.host: str = host
+        self.port: int = port
+        self.path: str = path
+        self.query: Optional[str] = query
+        self.fragment: Optional[str] = fragment
 
-    def _h11(self):
-        return h11.Request(
-            method=self.method, target=self.path, headers=list(self.headers.items())
+    def _h11(self) -> Generator[h11.Event, None, None]:
+        if self.data and "content-length" not in self.headers:
+            self.headers["content-length"] = str(len(self.data))
+        if self.params is None:
+            target = self.path
+        else:
+            target = f"{self.path}?{urlencode(self.params)}"
+        yield h11.Request(
+            method=self.method, target=target, headers=list(self.headers.items())
         )
+        if self.data:
+            yield h11.Data(data=self.data)
+        yield h11.EndOfMessage()
 
     def _wsproto(self):
         return wsproto.events.Request(
@@ -171,6 +195,12 @@ class Response:
     async def json(self):
         return json.loads(await self.text())
 
+    async def content(self):
+        data = b''
+        async for chunk in self:
+            data += chunk
+        return data
+
     def raise_for_status(self):
         if not self.ok:
             raise HTTPError(
@@ -204,7 +234,7 @@ class WebSocket:
         self._connection = connection
         self._request = request
 
-    async def aread(self):
+    async def aread(self) -> Union[str, bytes, None]:
         if (
             self._connection._conn.state is wsproto.connection.ConnectionState.CLOSED
             and self._connection._events.empty()
@@ -223,7 +253,7 @@ class WebSocket:
         )
         return event.data
 
-    async def awrite(self, data):
+    async def awrite(self, data: bytes):
         if (
             self._connection._conn.state is not wsproto.connection.ConnectionState.OPEN
             or not self._connection.connected
@@ -283,9 +313,11 @@ class Connection:
         self._resolver = session._resolver
         self._scheme = scheme
         if scheme in ("http", "https"):
-            self._conn = h11.Connection(our_role=h11.CLIENT)
+            self._conn_http = h11.Connection(our_role=h11.CLIENT)
+            self._conn = self._conn_http
         else:
-            self._conn = wsproto.WSConnection(wsproto.ConnectionType.CLIENT)
+            self._conn_ws = wsproto.WSConnection(wsproto.ConnectionType.CLIENT)
+            self._conn = self._conn_ws
         if scheme in ("http", "ws"):
             self._client = olympe.networking.TcpClient(self._loop)
         else:
@@ -301,7 +333,10 @@ class Connection:
         self._endpoint = None
         self._request = None
 
-    async def send(self, request: Request, timeout=None):
+    async def send(
+        self, request: Request, timeout=None
+    ) -> Union[Response, WebSocket, None]:
+
         self._sending = True
         self._request = request
         try:
@@ -309,36 +344,42 @@ class Connection:
                 self._endpoint = (request.host, request.port)
             else:
                 assert self._endpoint == (request.host, request.port)
-            for (_, sockaddr) in await self._resolver.resolve(
-                request.host, request.port
-            ):
-                addr, *_ = sockaddr
-                break
+            if self._client.connected:
+                connected = True
             else:
-                raise ConnectionError(f"Cannot resolve {request.host}:{request.port}")
-            if self._scheme in ("http", "ws"):
-                connected = await self._client.aconnect(
-                    addr, request.port, timeout=timeout
-                )
-            else:
-                connected = await self._client.aconnect(
-                    addr, request.port, server_hostname=request.host, timeout=timeout
-                )
+                for (_, sockaddr) in await self._resolver.resolve(
+                    request.host, request.port
+                ):
+                    addr, *_ = sockaddr
+                    break
+                else:
+                    raise ConnectionError(f"Cannot resolve {request.host}:{request.port}")
+                if self._scheme in ("http", "ws"):
+                    connected = await self._client.aconnect(
+                        addr, request.port, timeout=timeout
+                    )
+                else:
+                    connected = await self._client.aconnect(
+                        addr, request.port, server_hostname=request.host, timeout=timeout
+                    )
             if not connected:
                 raise ConnectionError()
             return await self._do_send(request)
         finally:
             self._sending = False
 
-    async def _do_send(self, request: Request):
+    async def _do_send(self, request: Request) -> Union[Response, WebSocket, None]:
         if request.scheme in ("http", "https"):
             return await self._do_send_http(request)
         else:
             return await self._do_send_ws(request)
 
     async def _do_send_http(self, request: Request):
-        data = self._conn.send(request._h11())
-        data += self._conn.send(h11.EndOfMessage())
+        data = bytes()
+        for h11_event in request._h11():
+            chunk = self._conn_http.send(h11_event)
+            if chunk is not None:
+                data += chunk
         self._reusing = False
         await self.awrite(data)
         event = await self._get_next_event()
@@ -346,8 +387,8 @@ class Connection:
         await self._aclosed_http()  # Handle: keep-alive/connection: closed
         return Response(self, request, event)
 
-    async def _do_send_ws(self, request: Request):
-        data = self._conn.send(request._wsproto())
+    async def _do_send_ws(self, request: Request) -> Optional[WebSocket]:
+        data = self._conn_ws.send(request._wsproto())
         self._reusing = False
         await self.awrite(data)
         event = await self._get_next_event()
@@ -357,7 +398,7 @@ class Connection:
         ws = WebSocket(self, request)
         return ws
 
-    async def awrite(self, data):
+    async def awrite(self, data: bytes):
         return await self._client.awrite(data)
 
     async def _get_next_event(self):
@@ -368,36 +409,39 @@ class Connection:
         self._conn.receive_data(data)
         if self._scheme in ("http", "https"):
             while True:
-                event = self._conn.next_event()
+                event = self._conn_http.next_event()
                 if event in (h11.NEED_DATA, h11.PAUSED):
                     return
                 if event == h11.ConnectionClosed():
-                    self._loop.logger.error(f"unexpected end of request for {self._request.url}")
+                    assert self._request is not None
+                    self._loop.logger.error(
+                        f"unexpected end of request for {self._request.url}"
+                    )
                     self._client.disconnect()
                     self._client.destroy()
                     return
                 self._events.put_nowait(event)
                 self._event_sem.release()
                 if isinstance(event, h11.EndOfMessage):
-                    if self._conn.our_state is h11.MUST_CLOSE:
+                    if self._conn_http.our_state is h11.MUST_CLOSE:
                         self._feed_eof()
                         self._client.disconnect()
                         self._client.destroy()
                         return
         else:
-            for event in self._conn.events():
+            for event in self._conn_ws.events():
                 if isinstance(event, wsproto.events.Ping):
-                    pong = self._conn.send(event.response())
+                    pong = self._conn_ws.send(event.response())
                     self._client.write(pong)
                     continue
                 if isinstance(event, wsproto.events.Pong):
                     continue
                 if isinstance(event, wsproto.events.CloseConnection):
-                    if self._conn.state not in (
+                    if self._conn_ws.state not in (
                         wsproto.connection.ConnectionState.CLOSED,
                         wsproto.connection.ConnectionState.LOCAL_CLOSING,
                     ):
-                        close = self._conn.send(event.response())
+                        close = self._conn_ws.send(event.response())
                         self._client.write(close)
                         self._client.disconnect()
                         self._client.destroy()
@@ -408,17 +452,17 @@ class Connection:
     def _feed_eof(self):
         if self._scheme in ("http", "https"):
             close_event = h11.ConnectionClosed()
-            self._conn.send(close_event)
+            self._conn_http.send(close_event)
             self._events.put_nowait(close_event)
             self._event_sem.release()
         else:
             close_event = wsproto.events.CloseConnection(0)
-            if self._conn.state not in (
+            if self._conn_ws.state not in (
                 wsproto.connection.ConnectionState.CLOSED,
                 wsproto.connection.ConnectionState.LOCAL_CLOSING,
             ):
                 try:
-                    data = self._conn.send(close_event)
+                    data = self._conn_ws.send(close_event)
                     if self._client.connected:
                         self._client.write(data)
                 except wsproto.utilities.LocalProtocolError:
@@ -437,13 +481,19 @@ class Connection:
             return self._reuse_websocket()
 
     def _reuse_http(self):
-        if self._conn.our_state is h11.DONE and self._conn.their_state is h11.DONE:
+        if (
+            self._conn_http.our_state is h11.DONE
+            and self._conn_http.their_state is h11.DONE
+        ):
             self._events = queue.Queue()
             self._event_sem = Semaphore(value=0)
-            self._conn.start_next_cycle()
+            self._conn_http.start_next_cycle()
             self._reusing = True
             return True
-        elif self._conn.our_state is h11.IDLE and self._conn.their_state is h11.IDLE:
+        elif (
+            self._conn_http.our_state is h11.IDLE
+            and self._conn_http.their_state is h11.IDLE
+        ):
             self._events = queue.Queue()
             self._event_sem = Semaphore(value=0)
             self._reusing = True
@@ -462,14 +512,14 @@ class Connection:
             return self._closed_websocket()
 
     async def _aclosed_http(self):
-        if self._conn.their_state is h11.CLOSED:
+        if self._conn_http.their_state is h11.CLOSED:
             self._feed_eof()
             await self._client.adisconnect()
             return True
-        return self._conn.our_state is h11.CLOSED
+        return self._conn_http.our_state is h11.CLOSED
 
     def _closed_websocket(self):
-        return self._conn.state is wsproto.connection.ConnectionState.CLOSED
+        return self._conn_ws.state is wsproto.connection.ConnectionState.CLOSED
 
     def disconnect(self):
         return self._client.disconnect()
@@ -495,7 +545,7 @@ class Session:
         self._connection_pools = dict()
         self._loop.register_cleanup(self.astop)
 
-    async def _get_connection(self, scheme, host, port):
+    async def _get_connection(self, scheme: str, host: str, port: int):
         loop = get_running_loop()
         if (scheme, host, port) not in self._connection_pools:
             connection = Connection(loop, self, scheme)
@@ -515,34 +565,40 @@ class Session:
         pool.append(connection)
         return connection
 
-    async def get(self, url, **kwds) -> Response:
-        return await self.request("GET", url, **kwds)
+    async def get(self, url: str, **kwds) -> Response:
+        return cast(Response, await self.request("GET", url, **kwds))
 
-    async def head(self, url, **kwds) -> Response:
-        return await self.request("HEAD", url, **kwds)
+    async def head(self, url: str, **kwds) -> Response:
+        return cast(Response, await self.request("HEAD", url, **kwds))
 
-    async def patch(self, url, **kwds) -> Response:
-        return await self.request("PATCH", url, **kwds)
+    async def patch(self, url: str, **kwds) -> Response:
+        return cast(Response, await self.request("PATCH", url, **kwds))
 
-    async def post(self, url, **kwds) -> Response:
-        return await self.request("POST", url, **kwds)
+    async def post(self, url: str, **kwds) -> Response:
+        return cast(Response, await self.request("POST", url, **kwds))
 
-    async def delete(self, url, **kwds) -> Response:
-        return await self.request("DELETE", url, **kwds)
+    async def delete(self, url: str, **kwds) -> Response:
+        return cast(Response, await self.request("DELETE", url, **kwds))
 
     async def request(
-        self, method, url, params=None, data=None, headers=None, timeout=None
-    ) -> Response:
+        self,
+        method: str,
+        url: str,
+        params: Optional[str] = None,
+        data: Optional[bytes] = None,
+        headers: Optional[Union[Mapping[str, str], Iterable[Tuple[str, str]]]] = None,
+        timeout: Optional[float] = None,
+    ) -> Union[Response, WebSocket, None]:
         req = Request(url, method=method, params=params, data=data, headers=headers)
         assert req.scheme in ("http", "https")
         connection = await self._get_connection(req.scheme, req.host, req.port)
         return await connection.send(req, timeout=timeout)
 
-    async def websocket(self, url, timeout=None):
+    async def websocket(self, url, timeout=None) -> Optional[WebSocket]:
         req = Request(url, method="GET")
         assert req.scheme in ("ws", "wss")
         connection = await self._get_connection(req.scheme, req.host, req.port)
-        return await connection.send(req, timeout=timeout)
+        return cast(Optional[WebSocket], await connection.send(req, timeout=timeout))
 
     def stop(self):
         return self._loop.run_async(self.astop)
@@ -563,15 +619,26 @@ async def main():
     print(await response.text())
     ws = await session.websocket(
         "wss://demo.piesocket.com/v3/channel_1?"
-        "api_key=oCdCMcMPQpbvNjUIzqtvF1d2X2okWpDQj4AwARJuAgtjhzKxVEjQU6IdCjwm&notify_self"
+        "api_key=VCXCEuvhGcBDP7XhiJJUDvR1e1D3eiVjgZ9VRiaV&notify_self"
     )
-    print(json.loads(await ws.aread()))
+    if ws is None:
+        print("Failed to establish websocket connection")
+        return
+    data = await ws.aread()
+    if data is None:
+        print("Failed to read data from websocket")
+        return
+    print(json.loads(data))
     await ws.awrite(
         json.dumps(
             {"type": "event", "name": "test-event", "message": "cmd_ping"}
         ).encode()
     )
-    print(json.loads(await ws.aread()))
+    data = await ws.aread()
+    if data is None:
+        print("Failed to read data from websocket")
+        return
+    print(json.loads(data))
     loop.stop()
 
 

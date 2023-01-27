@@ -18,6 +18,7 @@
 
 import concurrent
 import inspect
+import threading
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from .future import Future
@@ -67,12 +68,17 @@ class _Task(Future):
         return True
 
     def _step_blocking_impl(self, blocking, result):
+        assert self._loop is not None
+        assert threading.current_thread() is self._loop
         # Yielded Future must come from Future.__iter__().
         if isinstance(result, Future) and result._loop is not self._loop:
-            new_exc = RuntimeError(
-                f"Task {self!r} got Future {result!r} attached to a different loop"
-            )
-            self._loop.run_later(self.step, new_exc)
+            if result._loop is None:
+                new_exc = RuntimeError(
+                    f"Task {self!r} got Future {result!r} not attached to any loop"
+                )
+                self._loop.run_later(self.step, new_exc)
+            else:
+                result.add_done_callback(self._wakeup)
         elif blocking:
             if result is self:
                 new_exc = RuntimeError(f"Task cannot await on itself: {self!r}")

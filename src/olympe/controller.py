@@ -31,17 +31,22 @@
 import olympe_deps as od
 from .arsdkng.cmd_itf import Connect, Disconnect, Connected, Disconnected  # noqa
 from .arsdkng.controller import ControllerBase
+from .arsdkng.backend import BackendType
 from .mixins.streaming import StreamingControllerMixin
 from .mixins.media import MediaControllerMixin
 from .mixins.mission import MissionControllerMixin
+from .mixins.ipproxy import IpProxyMixin
+from .mixins.cellular import CellularPairerMixin
 from .utils import callback_decorator
 
 
 class ControllerBase(
-        StreamingControllerMixin,
-        MissionControllerMixin,
-        MediaControllerMixin,
-        ControllerBase):
+    IpProxyMixin,
+    StreamingControllerMixin,
+    MissionControllerMixin,
+    MediaControllerMixin,
+    ControllerBase,
+):
     pass
 
 
@@ -49,23 +54,18 @@ class Drone(ControllerBase):
     pass
 
 
-class SkyController(ControllerBase):
-    def __init__(self, *args, **kwds):
-        super().__init__(*args, is_skyctrl=True, **kwds)
+class SkyController(CellularPairerMixin, ControllerBase):
+    def __init__(self, *args, backend: BackendType = BackendType.MuxIp, **kwds):
+        super().__init__(*args, is_skyctrl=True, backend=backend, **kwds)
 
     @callback_decorator()
-    def _link_status_cb(
-            self,
-            _arsdk_device,
-            _arsdk_device_info,
-            status,
-            _user_data):
+    def _link_status_cb(self, _arsdk_device, _arsdk_device_info, status, _user_data):
         """
-         Notify link status. At connection completion, it is assumed to be
-         initially OK. If called with KO, user is responsible to take action.
-         It can either wait for link to become OK again or disconnect
-         immediately. In this case, call arsdk_device_disconnect and the
-         'disconnected' callback will be called.
+        Notify link status. At connection completion, it is assumed to be
+        initially OK. If called with KO, user is responsible to take action.
+        It can either wait for link to become OK again or disconnect
+        immediately. In this case, call arsdk_device_disconnect and the
+        'disconnected' callback will be called.
         """
         self.logger.info(f"Link status: {status}")
         if status == od.ARSDK_LINK_STATUS_KO:

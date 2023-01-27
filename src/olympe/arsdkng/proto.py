@@ -318,11 +318,13 @@ class ArsdkProto:
         for enum_type in message_type.enum_types:
             package = message_type.file.package
             path = enum_type.full_name[len(package) + 1 :]
-            feature_name = enum_type.full_name[
-                : len(enum_type.full_name) - len(path) - 1
-            ]
             enum_types.append(self._make_enum(feature_name, path, enum_type))
-            self.features_package_map[message_type.file.package] = feature_name
+            if message_type.file.package not in self.features_package_map:
+                self.features_package_map[message_type.file.package] = feature_name
+            else:
+                assert (
+                    self.features_package_map[message_type.file.package] == feature_name
+                )
         return message_type, enum_types
 
     def list_oneof_messages(self, feature_name, oneof_descriptor):
@@ -648,7 +650,12 @@ class ArsdkProto:
                 )
                 feature_name = filename
         if module.DESCRIPTOR.package:
-            self.features_package_map[module.DESCRIPTOR.package] = feature_name
+            if module.DESCRIPTOR.package not in self.features_package_map:
+                self.features_package_map[module.DESCRIPTOR.package] = feature_name
+            else:
+                assert (
+                    self.features_package_map[module.DESCRIPTOR.package] == feature_name
+                )
         services = []
         if hasattr(module, "Command"):
             services.append(
