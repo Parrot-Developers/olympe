@@ -47,8 +47,11 @@ class SkyControllerExample:
         print("Known drones: ", ", ".join(self.known_drones))
         print("Visible drones: ", ", ".join(self.visible_drones))
 
-    def connect_drone(self, drone_serial, drone_security_key=""):
+    def pair_drone(self, drone_serial, drone_security_key=""):
         self.update_drones()
+        if drone_serial is None:
+            print(f"No drone serial provided.")
+            return False
         if self.active_drone == drone_serial:
             print(f"SkyController is already connected to {drone_serial}")
             return True
@@ -63,17 +66,18 @@ class SkyControllerExample:
             print(
                 f"{drone_serial} is a known drone but is not currently visible"
             )
-            return
-        elif drone_serial is not None:
+            return False
+        else:
             print(
                 f"{drone_serial} is an unknown drone and not currently visible"
             )
-            return
+            return False
         if connection.success():
             print(f"Connected to {drone_serial}")
             return True
         else:
             print(f"Failed to connect to {drone_serial}")
+            return False
 
     def forget_drone(self, drone_serial):
         if drone_serial == self.active_drone:
@@ -95,14 +99,15 @@ class SkyControllerExample:
 def main():
     example = SkyControllerExample()
     print("@ Connection to SkyController")
-    example.skyctrl_connect()
-    example.update_drones()
-    print("@ Connection to a drone")
-    if example.connect_drone(DRONE_SERIAL, DRONE_SECURITY_KEY):
+        example.skyctrl_connect()
         example.update_drones()
-        print("@ Forgetting a drone")
-        example.forget_drone(DRONE_SERIAL)
-        example.update_drones()
+        if DRONE_SERIAL not in example.known_drones:
+            print("@ Connection to a drone")
+            if example.pair_drone(DRONE_SERIAL, DRONE_SECURITY_KEY):
+                example.update_drones()
+            print("@ Forgetting a drone")
+            example.forget_drone(DRONE_SERIAL)
+            example.update_drones()
     print("@ Disconnection from SkyController")
     example.disconnect_skyctrl()
 

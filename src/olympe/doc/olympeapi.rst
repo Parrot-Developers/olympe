@@ -16,6 +16,29 @@ Olympe API Reference Documentation
     .. automethod:: start_piloting
     .. automethod:: piloting(roll, pitch, yaw, gaz, piloting_time)
     .. automethod:: stop_piloting
+    .. autoproperty:: media
+    .. autoproperty:: mission
+    .. autoproperty:: streaming
+
+.. autoclass:: olympe.SkyController()
+
+    .. automethod:: __init__
+    .. automethod:: connect
+    .. automethod:: disconnect
+    .. automethod:: connection_state
+    .. automethod:: __call__
+    .. automethod:: get_state
+    .. automethod:: check_state
+    .. automethod:: query_state
+    .. automethod:: subscribe
+    .. automethod:: unsubscribe
+    .. automethod:: start_piloting
+    .. automethod:: piloting(roll, pitch, yaw, gaz, piloting_time)
+    .. automethod:: stop_piloting
+    .. autoproperty:: cellular
+    .. autoproperty:: media
+    .. autoproperty:: mission
+    .. autoproperty:: streaming
 
 .. autoclass:: olympe.EventListener()
 
