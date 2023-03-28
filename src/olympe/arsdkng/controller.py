@@ -45,8 +45,9 @@ from olympe.utils import callback_decorator
 from olympe.concurrent import Future
 from olympe.messages import ardrone3
 from olympe.messages import common
-from olympe.messages import drone_manager
 from olympe.messages import mission
+from olympe.messages import network
+from olympe.messages import controllerNetwork
 from olympe.messages import skyctrl
 from olympe.video.pdraw import (PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT)
 from tzlocal import get_localzone
@@ -180,7 +181,7 @@ class ControllerBase(CommandInterfaceBase):
     def _connected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         if not self.connecting:
             self.logger.warning("This connection attempt has already timedout, disconnecting...")
-            self.async_disconnect()
+            self._fdisconnect()
             return
         self._thread_loop.run_async(self._aconnected_cb, arsdk_device_info)
 
@@ -595,11 +596,26 @@ class ControllerBase(CommandInterfaceBase):
         # We're connected to the device, get all device states and settings if necessary
         if not self._is_skyctrl:
             all_states_settings_commands = [
-                common.Common.AllStates(), common.Settings.AllSettings()]
+                common.Common.AllStates(), common.Settings.AllSettings()
+            ]
+            if self._device_type != od.ARSDK_DEVICE_TYPE_ANAFI4K:
+                all_states_settings_commands.extend(
+                    [network.Command.GetState(), mission.custom_msg_enable()]
+                )
         else:
             all_states_settings_commands = [
-                skyctrl.Common.AllStates(), skyctrl.Settings.AllSettings()]
-
+                skyctrl.Common.AllStates(),
+                skyctrl.Settings.AllSettings(),
+            ]
+            if self._device_type not in [
+                od.ARSDK_DEVICE_TYPE_SKYCTRL,
+                od.ARSDK_DEVICE_TYPE_SKYCTRL_NG,
+                od.ARSDK_DEVICE_TYPE_SKYCTRL_2,
+                od.ARSDK_DEVICE_TYPE_SKYCTRL_2P,
+                od.ARSDK_DEVICE_TYPE_SKYCTRL_3,
+                od.ARSDK_DEVICE_TYPE_SKYCTRL_UA,
+            ]:
+                all_states_settings_commands.append(controllerNetwork.Command.GetState())
         # Get device specific states and settings
         timeout = self._connection_deadline - time.time()
         for states_settings_command in all_states_settings_commands:
@@ -608,27 +624,6 @@ class ControllerBase(CommandInterfaceBase):
                 self._send_states_settings_cmd, states_settings_command
             )
             if not res:
-                return False
-
-        if self._is_skyctrl:
-            # If the skyctrl is connected to a drone get the drone states and settings too
-            if self(drone_manager.connection_state(
-                    state="connected", _policy="check")):
-                all_states = await self(
-                    common.CommonState.AllStatesChanged() &
-                    common.SettingsState.AllSettingsChanged(),
-                )
-                if not all_states.success():
-                    self.logger.error("Unable get connected drone states and/or settings")
-                    return False
-                # Enable airsdk mission support from the drone
-                if not await self(mission.custom_msg_enable()):
-                    self.logger.error("Failed to send mission.custom_msg_enable")
-                    return False
-        else:
-            # Enable airsdk mission support from the drone
-            if not await self(mission.custom_msg_enable()):
-                self.logger.error("Failed to send mission.custom_msg_enable")
                 return False
 
         # Process the ConnectedEvent

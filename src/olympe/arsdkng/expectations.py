@@ -32,7 +32,7 @@ import pprint
 from abc import abstractmethod
 from olympe.concurrent import CancelledError, Future
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from olympe.utils import (
     equals,
     DEFAULT_FLOAT_TOL,
@@ -47,6 +47,7 @@ from olympe.expectations import (
     WhenAllExpectationsMixin,
     WhenSequenceExpectationsMixin,
 )
+from olympe.arsdkng.proto_this import ArsdkProtoThis
 
 
 class ArsdkExpectationBase(Expectation):
@@ -82,17 +83,33 @@ class ArsdkExpectationBase(Expectation):
 
 class ArsdkFillDefaultArgsExpectationMixin:
     def _fill_default_arguments(self, message, args):
-        for argname, argval in self.expected_args.copy().items():
-            if callable(argval):
-                # command message expectation args mapping
-                self.expected_args[argname] = argval(message, args)
-            elif argval is None:
-                if argname in args:
-                    # default argument handling
-                    self.expected_args[argname] = args[argname]
+        definition = False
+        for argname, argdef in args.items():
+            if isinstance(argdef, ArsdkProtoThis):
+                definition = True
+        if definition:
+            self.expected_args = args
+            return
+
+        def set_defaults(message, args, expected_args):
+            ret = OrderedDict()
+            for argname, argval in expected_args.items():
+                if callable(argval):
+                    # command message expectation args mapping
+                    ret[argname] = argval(message, args)
+                elif isinstance(argval, MutableMapping):
+                    ret[argname] = set_defaults(message, args, argval)
+                elif argval is None:
+                    if argname in args:
+                        # default argument handling
+                        ret[argname] = args[argname]
+                    else:
+                        # filter out None value
+                        pass
                 else:
-                    # filter out None value
-                    del self.expected_args[argname]
+                    ret[argname] = argval
+            return ret
+        self.expected_args = set_defaults(message, args, self.expected_args)
 
 
 def _match(received, expected, float_tol):
@@ -125,10 +142,11 @@ def _match_mapping(received_args, expected_args, float_tol):
 
 
 def _match_iterable(received_args, expected_args, float_tol):
-    if len(received_args) != len(expected_args):
-        return False
-    for received_arg, expected_arg in zip(received_args, expected_args):
-        if not _match(received_arg, expected_arg, float_tol=float_tol):
+    for expected_arg in expected_args:
+        for received_arg in received_args:
+            if _match(received_arg, expected_arg, float_tol=float_tol):
+                break
+        else:
             return False
     return True
 

@@ -109,7 +109,7 @@ class ArsdkProtoEnum(
 class ArsdkProtoFieldDoc(
     namedtuple(
         "ArsdkProtoFieldDoc",
-        ["name", "type", "label", "doc"],
+        ["name", "type", "label", "exclusive_with", "doc"],
     )
 ):
     pass
@@ -420,11 +420,19 @@ class ArsdkProto:
                     label = None
                     if field.label:
                         label = ProtoFieldLabel(field.label)
+                    exclusive_with = []
+                    if field.containing_oneof is not None:
+                        exclusive_with = list(filter(
+                            lambda n: n != field.name,
+                            map(lambda f: f.name, field.containing_oneof.fields)
+                        ))
+
                     field_docs.append(
                         ArsdkProtoFieldDoc(
                             field.name,
                             type_,
                             label,
+                            exclusive_with,
                             field.GetOptions().Extensions[self.field_doc_ext],
                         )
                     )

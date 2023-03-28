@@ -27,14 +27,16 @@
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 
-from olympe.concurrent import Loop
+from olympe.concurrent import Loop, Future, TimeoutError
 from olympe.log import LogMixin
 from olympe.arsdkng.controller import ControllerBase
 from olympe.utils import callback_decorator
 from olympe.enums import drone_manager as drone_manager_enums
 from olympe.http import Session, HTTPError
 from olympe.messages.security import Command
-from olympe.controller import Disconnected
+from olympe.controller import Disconnected, Connected
+from olympe.event import Event, EventContext
+from olympe.expectations import Expectation
 
 from logging import getLogger
 from typing import Dict, Optional
@@ -80,73 +82,6 @@ class Cellular(LogMixin):
     """Drone WEB API port."""
     _DRONE_WEB_API_PORT = 80
 
-    def __init__(
-        self, controller: "ControllerBase", *args, autoconnect: bool = False, **kwds
-    ):
-        """
-        Constructor
-
-        :param controller: Controller owner of the Cellular instance
-        :param autoconnect: `True` to anable the automatic cellular connection, `False` otherwise.
-            (defaults to `False`)
-        """
-
-        super().__init__(controller._name, controller._device_name, "Cellular")
-
-        if controller._device_name is not None:
-            self.logger = getLogger(f"olympe.cellular.{controller._device_name}")
-        else:
-            self.logger = getLogger("olympe.cellular")
-
-        self._controller = controller
-        self._loop = Loop(self.logger)
-        self._session = Session(loop=self._loop)
-        self._loop.start()
-        self._proxy = None
-        self._drone_http_url = None
-        self._autoconnect = autoconnect
-        self._disconnect_subscriber = self._controller.subscribe(
-            self._on_disconnection, Disconnected()
-        )
-
-    @property
-    def autoconnect(self) -> bool:
-        """`True` if the automatic cellular connection is enabled, `False` otherwise."""
-        return self._autoconnect
-
-    def pair(self, timeout: Optional[float] = None) -> bool:
-        """
-        Pairs in cellular the SkyController with the Drone currently connected in wifi.
-
-        :return: `True` if the pairing successful, `False` otherwise.
-        """
-
-        return self.fpair().result_or_cancel(timeout=timeout)
-
-    def fpair(self):
-        """
-        Retrives a future of :py:func:`pair`
-        """
-
-        return self._loop.run_async(self._apair)
-
-    def _destroy(self):
-        """
-        Destructor
-        """
-        self._disconnect_subscriber.unsubscribe()
-
-        self._session.stop()
-        self._loop.stop()
-
-    def _on_disconnection(self, *_):
-        """
-        Called at the controller disconnection.
-        """
-        if self._proxy is not None:
-            self._proxy.close()
-            self._proxy = None
-
     @classmethod
     def _format_acp_query_items(
         cls, apc_key: str, params: Dict[str, str] = {}
@@ -171,9 +106,201 @@ class Cellular(LogMixin):
         token = hashlib.md5(pre_str.encode()).hexdigest()
         return {"ts": f"{ts}", "token": f"{token}"}
 
+    def __init__(
+        self,
+        controller: "ControllerBase",
+        autoconfigure: bool = False,
+        user_apc_token: Optional[str] = None,
+    ):
+        """
+        :param autoconfigure: `True` to run :py:func:`configure` automatically when
+            :py:attr:`user_apc_token` is set and the SkyController is connected to
+            a drone, `False` otherwise. (defaults to `False`)
+        :param user_apc_token: User APC token to use for the cellular configuration;
+            set :py:attr:`user_apc_token`. If `None` and `autoconfigure` is `True`,
+            the drone will be paired with a new anonymous APC token automatically
+            assigned to :py:attr:`user_apc_token` when the SkyController is connected
+            to the drone. If not `None` force `autoconfigure`
+            to `True` and sets :py:attr:`user_apc_token`. (defaults to `None`)
+        """
+
+        super().__init__(controller._name, controller._device_name, "Cellular")
+
+        if controller._device_name is not None:
+            self.logger = getLogger(f"olympe.cellular.{controller._device_name}")
+        else:
+            self.logger = getLogger("olympe.cellular")
+
+        self._controller = controller
+        self._loop = Loop(self.logger)
+        self._session = Session(loop=self._loop)
+        self._loop.start()
+        self._proxy = None
+        self._drone_http_url = None
+        self._autoconfigure = autoconfigure
+        self._user_apc_token = user_apc_token
+        self._connect_subscriber = self._controller.subscribe(
+            self._on_connection, Connected()
+        )
+        self._disconnect_subscriber = self._controller.subscribe(
+            self._on_disconnection, Disconnected()
+        )
+
+    @property
+    def autoconfigure(self) -> bool:
+        """
+        `True` if the automatic cellular configuration is enabled, `False` otherwise.
+        """
+        return self._autoconfigure
+
+    @property
+    def user_apc_token(self) -> Optional[str]:
+        """Current user APC token used."""
+        return self._user_apc_token
+
+    def pair(
+        self, user_apc_token: Optional[str] = None, timeout: Optional[float] = None
+    ) -> str:
+        """
+        Pairs a user APC token with the currently connected Drone.
+
+        :param user_apc_token: User APC token to pair with the drone.
+            If `None`, another anonymous APC token will be generated. (defaults
+            to `None`)
+        :param timeout: the timeout in seconds or None for infinite timeout
+            (the default)
+
+        :raises HTTPError: in case of failure.
+        :raises TimeoutError: in case of timeout.
+
+        :return: the user APC token paired with the Drone.
+        """
+
+        return self._fpair(user_apc_token=user_apc_token).result_or_cancel(
+            timeout=timeout
+        )
+
+    def _fpair(self, user_apc_token: Optional[str] = None) -> Future:
+        """
+        Retrives a future of :py:func:`pair`
+
+        :param user_apc_token: User APC token to pair with the drone.
+            if `None`, another anonymous APC token will be generated. (defaults
+            to `None`)
+        """
+
+        return self._loop.run_async(self._apair, user_apc_token)
+
+    def configure(
+        self, user_apc_token: Optional[str] = None, timeout: Optional[float] = None
+    ):
+        """Configures the cellular connection using a user APC token.
+
+        :param user_apc_token: User APC token to used for the cellular connection.
+            If not `None`, user_apc_token is set as :py:attr:`user_apc_token`.
+            If `None`, :py:attr:`user_apc_token` will be used (the default).
+        :param timeout: the timeout in seconds or None for infinite timeout
+            (the default)
+
+        :raises HTTPError: in case of failure.
+        :raises TimeoutError: in case of timeout.
+        """
+
+        self._fconfigure(user_apc_token=user_apc_token).result_or_cancel(timeout=timeout)
+
+    def _fconfigure(self, user_apc_token: Optional[str] = None) -> Future:
+        """Retrives a future of :py:func:`configure`
+
+        :param user_apc_token: User APC token to used to connect.
+            if not `None`, user_apc_token is set as :py:attr:`user_apc_token`.
+            if `None`, :py:attr:`user_apc_token` will be used (the default).
+        """
+
+        return self._loop.run_async(self._aconfigure, user_apc_token)
+
+    def _destroy(self):
+        """
+        Destructor
+        """
+
+        self._disconnect_subscriber.unsubscribe()
+
+        self._session.stop()
+        self._loop.stop()
+
+    def _on_connection(self, *_):
+        """
+        Called at the controller connection.
+        """
+
+        if self._user_apc_token is not None:
+            # run asynchronous auto configure.
+            self._controller._thread_loop.run_async(self._autoconfigure_run)
+
+    async def _autoconfigure_run(self):
+        """
+        Configures the skycontroller to use the apc token to the cellular connection.
+        """
+        self.logger.info("cellular auto configuration")
+        try:
+            # configure the SkyCtrl to use this apc token for the cellular connection.
+            await self._aconfigure()
+        except (HTTPError, TimeoutError, RuntimeError) as e:
+            # raises an autoconfigure failure Event
+            event = CellularAutoconfigureFailureEvent(exception=e)
+            self.logger.info(str(event))
+            self._controller.scheduler.process_event(event)
+
+    def _on_disconnection(self, *_):
+        """
+        Called at the controller disconnection.
+        """
+
+        if self._proxy is not None:
+            self._proxy.close()
+            self._proxy = None
+
+    async def _aconfigure(self, user_apc_token: Optional[str] = None):
+        """
+        Configures cellular connection using an user APC token.
+
+        :param user_apc_token: User APC token to used to connect.
+            if not `None`, user_apc_token is set as :py:attr:`user_apc_token`.
+            if `None`, :py:attr:`user_apc_token` will be used (the default).
+        :param timeout: the timeout in seconds or None for infinite timeout
+            (the default)
+
+        :raises HTTPError: in case of failure.
+        :raises TimeoutError: in case of timeout.
+        """
+
+        # use given APC token otherwise use the current.
+        _user_apc_token = (
+            user_apc_token if user_apc_token is not None else self.user_apc_token
+        )
+
+        # get the drone list paired with the user APC token (raise HTTPError
+        # in failure)
+        drone_list = await self._get_drone_list(_user_apc_token)
+
+        # send the user APC token to the skycontroller
+        self.logger.info("send the user APC token to the skycontroller")
+        if not await self._controller(Command.RegisterApcToken(token=_user_apc_token)):
+            raise TimeoutError
+
+        # send drone list to the skycontroller
+        self.logger.info("send the drone list to the skycontroller")
+        if not await self._controller(Command.RegisterApcDroneList(list=drone_list)):
+            raise TimeoutError
+
+        # Update the current user APC token
+        self._user_apc_token = _user_apc_token
+
     async def _get_anonymous_token(self) -> str:
         """
         Retrieves an anonymous APC token.
+
+        :raises HTTPError: in case of failure.
 
         :return: an anonymous APC token.
         """
@@ -190,7 +317,10 @@ class Cellular(LogMixin):
         apc_query_items = Cellular._format_acp_query_items(Cellular._APC_SECRECT_KEY)
 
         response = await self._session.post(
-            url, headers=headers, params=apc_query_items
+            url,
+            headers=headers,
+            params=apc_query_items,
+            timeout=Cellular._TIMEOUT,
         )
 
         response.raise_for_status()
@@ -204,6 +334,8 @@ class Cellular(LogMixin):
         Retrieves a drone association challenge.
 
         :param apc_token: user authentication APC token.
+
+        :raises HTTPError: in case of failure.
 
         :return: a drone association challenge.
         """
@@ -234,11 +366,13 @@ class Cellular(LogMixin):
 
         return challenge
 
-    async def _sign_challenge_by_drone(self, challenge) -> bytes:
+    async def _sign_challenge_by_drone(self, challenge: str) -> bytes:
         """
         Signs an association challenge by the connected drone.
 
         :param challenge: drone challenge association to sign.
+
+        :raises HTTPError: in case of failure.
 
         :return: a message containing the signed drone association challenge.
         """
@@ -260,8 +394,12 @@ class Cellular(LogMixin):
         """
         Associates a user and a drone.
 
-        :param apc_token: authentication APC token of the user to associate with the drone.
-        :param drone_signed_challenge: message containing the association challenge signed by drone to associate with the drone.
+        :param apc_token: authentication APC token of the user to associate with the
+            drone.
+        :param drone_signed_challenge: message containing the association challenge
+            signed by drone to associate with the drone.
+
+        :raises HTTPError: in case of failure.
         """
 
         url = f"{Cellular._ACADEMY_BASE_URL}/apiv1/4g/pairing"
@@ -282,7 +420,7 @@ class Cellular(LogMixin):
         )
         response.raise_for_status()
 
-    async def _get_drone_list(self, apc_token):
+    async def _get_drone_list(self, apc_token: str) -> str:
         """
         Retrieves the drone list paired with this an APC token.
 
@@ -309,47 +447,36 @@ class Cellular(LogMixin):
 
         return drone_list
 
-    async def _apair(self):
+    async def _apair(self, user_apc_token: Optional[str] = None) -> str:
         """
-        Pairs in cellular the SkyController with the Drone currently connected in wifi.
+        Pairs an user APC token with the Drone currently connected.
 
-        :return: `True` if the pairing successful, `False` otherwise.
+        :param user_apc_token: User APC token to pair with the drone.
+            if `None`, another anonymous APC token will be generated. (defaults
+            to `None`)
+
+        :raises HTTPError: in case of failure.
+
+        :return: the user APC token paired with the Drone.
         """
 
-        try:
-            # get anonymous user apc token
+        if user_apc_token is not None:
+            # use given user apc token.
+            token = user_apc_token
+        else:
+            # get anonymous user apc token. (raise HTTPError in failure)
             token = await self._get_anonymous_token()
 
-            # get challenge association
-            challenge = await self._get_association_challenge(token)
+        # get challenge association. (raise HTTPError in failure)
+        challenge = await self._get_association_challenge(token)
 
-            # Sign the challenge association by the drone
-            drone_signed_challenge = await self._sign_challenge_by_drone(challenge)
+        # Sign the challenge association by the drone. (raise HTTPError in failure)
+        drone_signed_challenge = await self._sign_challenge_by_drone(challenge)
 
-            # associate the user and the drone.
-            await self._associate_user_drone(token, drone_signed_challenge)
-        except HTTPError as e:
-            self.logger.warning(f"{e}")
-            return False
+        # associate the user and the drone. (raise HTTPError in failure)
+        await self._associate_user_drone(token, drone_signed_challenge)
 
-        # send the user APC token to the skycontroller
-        self.logger.info("send the user APC token to the skycontroller")
-        if not await self._controller(Command.RegisterApcToken(token=token)):
-            return False
-
-        try:
-            # get drone list
-            drone_list = await self._get_drone_list(token)
-        except HTTPError as e:
-            self.logger.warning(f"{e}")
-            return False
-
-        # send drone list to the skycontroller
-        self.logger.info("send the drone list to the skycontroller")
-        if not await self._controller(Command.RegisterApcDroneList(list=drone_list)):
-            return False
-
-        return True
+        return token
 
     async def _create_proxy(self):
         """
@@ -361,9 +488,41 @@ class Cellular(LogMixin):
 
         self._drone_http_url = f"http://{self._proxy.address}:{self._proxy.port}"
 
-        # start the pairing if the automatic cellular connection is enabled
-        if self._autoconnect:
-            self.fpair()
+        if self._autoconfigure and self._user_apc_token is None:
+            self.logger.info("cellular auto pairing and configuration")
+            # generate a new anonymous user APC token and configure the cellular.
+            self._fautoconfigure_with_new_token()
+
+    def _fautoconfigure_with_new_token(self) -> Future:
+        """
+        Retrives a future of :py:func:`_autoconfigure_with_new_token`
+        """
+
+        return self._controller._thread_loop.run_async(
+            self._autoconfigure_with_new_token
+        )
+
+    async def _autoconfigure_with_new_token(self) -> Future:
+        """
+        Configures cellular connection with a new anonymous user APC token generated.
+        """
+        try:
+            self._fpair().then(self._autopaired)
+        except (HTTPError, TimeoutError, RuntimeError) as e:
+            # raise an autoconfigure failure Event
+            event = CellularAutoconfigureFailureEvent(exception=e)
+            self.logger.info(str(event))
+            self._controller.scheduler.process_event(event)
+
+    async def _autopaired(self, new_user_apc_token: str):
+        """
+        Called at the auto pairing result.
+
+        :param new_user_apc_token: new user authentication APC token result of the
+            auto pairing.
+        """
+        self._user_apc_token = new_user_apc_token
+        self._fconfigure()
 
     @callback_decorator()
     def _on_drone_connection_state_change(
@@ -388,14 +547,34 @@ class CellularPairerMixin:
     Controller mixin providing the cellular API.
     """
 
-    def __init__(self, *args, cellular_autoconnect: bool = False, **kwds):
+    def __init__(
+        self,
+        *args,
+        cellular_autoconfigure: bool = False,
+        user_apc_token: Optional[str] = None,
+        **kwds,
+    ):
         """
-        Constructor
+        :param cellular_autoconfigure: `True` to run :py:func:`Cellular.configure`
+            automatically when :py:attr:`Cellular.user_apc_token` is set and the
+            SkyController is connected, `False` otherwise. (defaults to `False`)
+        :param user_apc_token: User APC token to use for the cellular configuration;
+            set :py:attr:`Cellular.user_apc_token`. If `None` and
+            `cellular_autoconfigure` is `True`, the drone will be paired with a new
+            anonymous APC token that will be automatically assigned to
+            :py:attr:`Cellular.user_apc_token` when the SkyController is connected
+            to the drone. If not `None` force
+            `cellular_autoconfigure` to `True` and sets
+            :py:attr:`Cellular.user_apc_token`. (defaults to `None`)
 
-        :param cellular_autoconnect: `True` to enable the automatic cellular connection, `False` otherwise.
+        .. seealso::
+            :py:func:`Cellular.pair` to pair the drone with an user APC token.
+            :py:func:`Cellular.configure` to configure the cellular.
         """
         super().__init__(*args, **kwds)
-        self._cellular = Cellular(self, autoconnect=cellular_autoconnect)
+        self._cellular = Cellular(
+            self, autoconfigure=cellular_autoconfigure, user_apc_token=user_apc_token
+        )
 
     def destroy(self):
         """
@@ -409,11 +588,6 @@ class CellularPairerMixin:
         """Cellular API."""
         return self._cellular
 
-    @property
-    def cellular_autoconnect(self) -> bool:
-        """`True` if the automatic cellular connection is enabled, `False` otherwise."""
-        return self._cellular.autoconnect
-
     @callback_decorator()
     def _on_connection_state_changed(self, message_event, _):
         super()._on_connection_state_changed(message_event, _)
@@ -424,3 +598,48 @@ class CellularPairerMixin:
     def set_device_name(self, device_name):
         super().set_device_name(device_name)
         self._cellular.set_device_name(device_name)
+
+
+class CellularAutoconfigureFailureEvent(Event):
+    def __init__(self, policy=None, exception: Exception = None):
+        super().__init__(policy)
+        self._exception = exception
+
+    @property
+    def exception(self) -> Exception:
+        """The exception raising the event."""
+        return self._exception
+
+
+class CellularAutoconfigureFailure(Expectation):
+    def __init__(self):
+        self._received_event = None
+        super().__init__()
+
+    def copy(self):
+        return self.base_copy()
+
+    def check(self, event, *args, **kwds):
+        if not isinstance(event, CellularAutoconfigureFailureEvent):
+            return self
+        self._received_event = event
+        self.set_success()
+        return self
+
+    def expected_events(self):
+        if self:
+            return EventContext()
+        else:
+            return EventContext([CellularAutoconfigureFailureEvent()])
+
+    def received_events(self):
+        if not self:
+            return EventContext()
+        else:
+            return EventContext([self._received_event])
+
+    def matched_events(self):
+        return self.received_events()
+
+    def unmatched_events(self):
+        return self.expected_events()

@@ -47,7 +47,7 @@ class MediaControllerMixin:
         self._proxy = None
 
     def destroy(self):
-        self._media.shutdown()
+        self._media.destroy()
         super().destroy()
 
     @callback_decorator()

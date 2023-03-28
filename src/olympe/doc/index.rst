@@ -3,11 +3,12 @@
 Olympe Documentation
 ====================
 
+.. include:: overview.rst
 
 .. toctree::
-   :maxdepth: 2
+   :hidden:
+   :maxdepth: 1
 
-   overview
    installation
    userguide
    olympeapi

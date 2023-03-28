@@ -71,7 +71,7 @@ re_enums = re.compile(
 
 
 re_messages = re.compile(
-    r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)\.(?P<message>[^\.]+)?$"
+    r"^olympe\.messages\.(?P<feature>[^\.]+)\.(?P<class>[^\.]+)(\.(?P<message>[^\.]+))?$"
 )
 
 

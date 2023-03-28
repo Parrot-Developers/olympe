@@ -44,6 +44,7 @@ from olympe.expectations import Expectation, FailedExpectation
 from olympe.messages import common
 from olympe.messages import drone_manager
 from olympe.messages import mission
+from olympe.messages import network
 from olympe.scheduler import AbstractScheduler, Scheduler
 from collections import OrderedDict
 from olympe.utils import py_object_cast, callback_decorator, DEFAULT_FLOAT_TOL
@@ -259,7 +260,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self._connect_future = None
         self._disconnect_future = None
         self._declare_callbacks()
-        self._thread_loop.register_cleanup(self.destroy)
+        self._thread_loop.register_cleanup(self._cleanup)
         self._drone_manager_subscriber = self.subscribe(
             self._on_connection_state_changed, drone_manager.connection_state()
         )
@@ -453,6 +454,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
                 all_states_settings_commands = [
                     common.Common.AllStates,
                     common.Settings.AllSettings,
+                    network.Command.GetState,
                 ]
                 for all_states_settings_command in all_states_settings_commands:
                     self._send_command_raw(all_states_settings_command, dict())
@@ -506,7 +508,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         Must be run from the pomp loop
         """
 
-        argv = message._encode_args(*args.values())
+        argv = message._encode_args(args)
 
         # Check if we are already sending a command.
         # if it the case, wait for the lock to be released
@@ -582,17 +584,16 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self.connecting = False
         self._decoding_errors = []
 
+    def _cleanup(self):
+        self._on_device_removed()
+        self._drone_manager_subscriber.unsubscribe()
+        self._scheduler.destroy()
+
     def destroy(self):
         """
         explicit destructor
         """
-        if self._thread_loop is not None:
-            self._thread_loop.unregister_cleanup(self.destroy, ignore_error=True)
-            self._on_device_removed()
-        self._drone_manager_subscriber.unsubscribe()
-        self._scheduler.destroy()
-        if self._thread_loop is not None:
-            self._thread_loop.stop()
+        self._thread_loop.stop()
 
     def register_message(self, message):
         self._external_messages[message.id] = message
@@ -622,7 +623,9 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         if proto_message.recipient_id is not None:
             params.update(recipient_id=proto_message.recipient_id)
         params = {name: params[name] for name in proto_message.arsdk_message.args_name}
-        send_future = self._send_command_raw(message, params, quiet=True)
+        send_future = self._thread_loop.run_async(
+            self._send_command_impl, message, params, quiet=True
+        )
         event = ArsdkProtoMessageEvent(proto_message, proto_args)
         if send_future.done() and not send_future.result():
             self.logger.error(f"Error while sending command: {event}")
@@ -642,11 +645,16 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         Just send a command message asynchronously without waiting for the
         command expectations.
         """
-        return self._thread_loop.run_async(
-            self._send_command_impl, message, args, quiet=quiet
-        )
+        if isinstance(message, messages.ArsdkMessage):
+            return self._thread_loop.run_async(
+                self._send_command_impl, message, args, quiet=quiet
+            )
+        elif isinstance(message, messages.ArsdkProtoMessage):
+            return self._send_protobuf_command(message, args, quiet=quiet)
+        else:
+            raise RuntimeError(f"Unknown message type {message}")
 
-    def async_disconnect(self, *, timeout=5):
+    async def _adisconnect(self):
         """
         Disconnects current device (if any)
         Blocks until it is done or abandoned
@@ -654,20 +662,19 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         :rtype: bool
         """
         if not self.connected:
-            f = Future(self._thread_loop)
-            f.set_result(True)
             self.logger.debug("Already disconnected")
-            return f
+            return True
 
         if self._connected_future is not None:
-            f = Future(self._thread_loop)
-            f.set_result(False)
             self.logger.warning("Cannot disconnect while a connection is in progress")
-            return f
+            return False
 
         self.logger.debug("We are not disconnected yet")
-        disconnected = self._thread_loop.run_async(self._disconnection_impl)
+        disconnected = await self._disconnection_impl()
         return disconnected
+
+    def _fdisconnect(self):
+        return self._thread_loop.run_async(self._adisconnect)
 
     def disconnect(self, *, timeout=5):
         """
@@ -676,11 +683,9 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
 
         :rtype: bool
         """
-        disconnected = self.async_disconnect(timeout=timeout)
-
         # wait max 5 sec until disconnection gets done
         try:
-            if not disconnected.result_or_cancel(timeout=timeout):
+            if not self._fdisconnect().result_or_cancel(timeout=timeout):
                 self.logger.error(
                     f"Cannot disconnect properly: {self.connected} {self._discovery}"
                 )

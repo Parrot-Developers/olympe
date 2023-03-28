@@ -133,11 +133,8 @@ class Loop(threading.Thread):
         super().__init__(name=name)
 
     def destroy(self):
-        if self.running:
-            # stop the thread will call self._destroy()
-            self.stop()
-        else:
-            self._destroy()
+        # stop the thread will call self._destroy()
+        self.stop()
 
     def _destroy(self):
         if self.pomp_loop is None:
@@ -624,6 +621,7 @@ class Loop(threading.Thread):
 
     def _destroy_pomp_loop(self):
         if self.pomp_loop is not None:
+            od.pomp_loop_idle_flush(self.pomp_loop)
             res = od.pomp_loop_destroy(self.pomp_loop)
 
             if res != 0:

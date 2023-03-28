@@ -237,7 +237,7 @@ class Pdraw(LogMixin):
             od.VDEF_FRAME_TYPE_RAW: _RawVideoSink,
         }
 
-        self.pdraw_thread_loop.register_cleanup(self._adispose)
+        self.pdraw_thread_loop.register_cleanup(self._acleanup)
 
     @property
     def state(self) -> PdrawState:
@@ -278,19 +278,20 @@ class Pdraw(LogMixin):
             self._state_wait_events[state].append(event)
         return event.wait(timeout=timeout)
 
-    def dispose(self):
-        return self.pdraw_thread_loop.run_async(self._adispose)
+    def _fdestroy(self):
+        return self.pdraw_thread_loop.run_async(self._acleanup)
 
     def destroy(self):
         self.callbacks_thread_loop.stop()
         try:
-            self.dispose().result_or_cancel(timeout=2.0)
+            self._fdestroy().result_or_cancel(timeout=2.0)
         except FutureTimeoutError:
             self.logger.error("Pdraw.destroy() timedout")
-        self.pdraw_thread_loop.stop()
 
-    async def _adispose(self):
-        self.pdraw_thread_loop.unregister_cleanup(self._adispose, ignore_error=True)
+        if self.own_pdraw_thread_loop:
+            self.pdraw_thread_loop.stop()
+
+    async def _acleanup(self):
         await self.aclose()
         if not self._stop():
             return False

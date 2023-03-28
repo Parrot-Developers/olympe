@@ -37,6 +37,13 @@ Olympe API Reference Documentation
     .. automethod:: wait
     .. automethod:: close
 
+.. autoclass:: olympe.Cellular()
+
+    .. automethod:: pair
+    .. automethod:: configure
+    .. autoproperty:: autoconfigure
+    .. autoproperty:: user_apc_token
+
 .. autoclass:: olympe.Media()
 
     .. automethod:: __init__

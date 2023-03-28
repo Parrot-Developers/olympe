@@ -224,10 +224,9 @@ class DefaultScheduler(AbstractScheduler):
         for expectation in self._attr.default.pending_expectations:
             expectation.cancel()
         self._attr.default.pending_expectations = []
+        self._attr.default.subscribers_thread_loop.stop()
 
     def destroy(self):
-        self.stop()
-        self._attr.default.subscribers_thread_loop.stop()
         self._attr.default.subscribers_thread_loop.destroy()
 
     @callback_decorator()

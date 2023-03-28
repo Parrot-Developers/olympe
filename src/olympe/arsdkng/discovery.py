@@ -221,12 +221,9 @@ class Discovery(ABC, DeviceHandler):
             del self._devices[name]
 
     @callback_decorator()
-    def _destroy(self) -> None:
-        self._thread_loop.unregister_cleanup(self._destroy, ignore_error=True)
-        self._do_stop()
-
-    def destroy(self) -> None:
-        self._thread_loop.run_later(self._destroy)
+    def _cleanup(self) -> None:
+        if self.discovery is not None:
+            self._do_stop()
 
     async def async_devices(self) -> typing.AsyncGenerator[DeviceInfo, None]:
         if not await self.async_start():
@@ -288,7 +285,7 @@ class DiscoveryNet(Discovery):
     ):
         self._backend: CtrlBackendNet = backend
         self._thread_loop = self._backend._thread_loop
-        self._thread_loop.register_cleanup(self._destroy)
+        self._thread_loop.register_cleanup(self._cleanup)
         self.logger = self._backend.logger
         super().__init__(timeout=timeout)
         if device_types is None:
@@ -350,7 +347,7 @@ class DiscoveryNetRaw(Discovery):
     ):
         self._backend: CtrlBackendNet = backend
         self._thread_loop = self._backend._thread_loop
-        self._thread_loop.register_cleanup(self._destroy)
+        self._thread_loop.register_cleanup(self._cleanup)
         self.logger = self._backend.logger
         super().__init__(timeout=timeout)
         self._check_port = check_port
@@ -452,7 +449,7 @@ class DiscoveryMux(Discovery):
     ):
         self._backend: CtrlBackendMuxIp = backend
         self._thread_loop = self._backend._thread_loop
-        self._thread_loop.register_cleanup(self._destroy)
+        self._thread_loop.register_cleanup(self._cleanup)
         self.logger = self._backend.logger
         super().__init__(timeout=timeout)
         if device_types is None:

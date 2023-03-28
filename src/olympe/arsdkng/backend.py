@@ -440,7 +440,7 @@ class CtrlBackendMuxIp(CtrlBackendBase):
         return 0
 
     async def _aresolve(self, hostname):
-        for (_, sockaddr) in await self._resolver.resolve(hostname, 443):
+        for (_, sockaddr) in await self._resolver.resolve(hostname, 443, family=socket.AF_INET):
             addr, *_ = sockaddr
             res = od.mux_resolve(
                 self._info.mux_ctx,
@@ -546,7 +546,6 @@ class DeviceBackendBase(LogMixin):
 
     async def _adestroy(self) -> None:
         self.logger.debug("Destroying backend done")
-        self._thread_loop.unregister_cleanup(self._adestroy, ignore_error=True)
         self._thread_loop.stop()
 
     @callback_decorator()
@@ -788,7 +787,7 @@ class DeviceBackendMuxIp(DeviceBackendBase):
         return 0
 
     async def _aresolve(self, hostname):
-        for (_, sockaddr) in await self._resolver.resolve(hostname, 443):
+        for (_, sockaddr) in await self._resolver.resolve(hostname, 443, family=socket.AF_INET):
             addr, *_ = sockaddr
             res = od.mux_resolve(
                 self._info.mux_ctx,

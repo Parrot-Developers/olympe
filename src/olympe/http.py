@@ -196,7 +196,7 @@ class Response:
         return json.loads(await self.text())
 
     async def content(self):
-        data = b''
+        data = b""
         async for chunk in self:
             data += chunk
         return data
@@ -213,7 +213,7 @@ class Response:
         if self._response_event.status_code in (300, 301, 302):
             return
         while True:
-            event = await self._connection._get_next_event()
+            event = await self._connection._loop.run_async(self._connection._get_next_event)
             if event == h11.EndOfMessage() or event == h11.ConnectionClosed():
                 break
             if not isinstance(event, h11.Data):
@@ -302,7 +302,8 @@ class ConnectionListener(olympe.networking.DataListener):
         pass
 
     def disconnected(self, connection: "Connection"):
-        self._connection._feed_eof()
+        if self._connection._client is not None:
+            self._connection._feed_eof()
 
 
 class Connection:
@@ -353,14 +354,19 @@ class Connection:
                     addr, *_ = sockaddr
                     break
                 else:
-                    raise ConnectionError(f"Cannot resolve {request.host}:{request.port}")
+                    raise ConnectionError(
+                        f"Cannot resolve {request.host}:{request.port}"
+                    )
                 if self._scheme in ("http", "ws"):
                     connected = await self._client.aconnect(
                         addr, request.port, timeout=timeout
                     )
                 else:
                     connected = await self._client.aconnect(
-                        addr, request.port, server_hostname=request.host, timeout=timeout
+                        addr,
+                        request.port,
+                        server_hostname=request.host,
+                        timeout=timeout,
                     )
             if not connected:
                 raise ConnectionError()
@@ -419,14 +425,13 @@ class Connection:
                     )
                     self._client.disconnect()
                     self._client.destroy()
+                    self._client = None
                     return
                 self._events.put_nowait(event)
                 self._event_sem.release()
                 if isinstance(event, h11.EndOfMessage):
                     if self._conn_http.our_state is h11.MUST_CLOSE:
                         self._feed_eof()
-                        self._client.disconnect()
-                        self._client.destroy()
                         return
         else:
             for event in self._conn_ws.events():
@@ -445,6 +450,7 @@ class Connection:
                         self._client.write(close)
                         self._client.disconnect()
                         self._client.destroy()
+                        self._client = None
                     continue
                 self._events.put_nowait(event)
                 self._event_sem.release()
@@ -471,6 +477,7 @@ class Connection:
             self._event_sem.release()
         self._client.disconnect()
         self._client.destroy()
+        self._client = None
 
     def reuse(self):
         if self._reusing or self._sending or self._reading:
@@ -525,6 +532,9 @@ class Connection:
         return self._client.disconnect()
 
     async def adisconnect(self):
+        if self._client is None:
+            return
+
         return await self._client.adisconnect()
 
     @property
@@ -543,12 +553,11 @@ class Session:
         self._loop = loop
         self._resolver = DNSResolver()
         self._connection_pools = dict()
-        self._loop.register_cleanup(self.astop)
+        self._loop.register_cleanup(self._acleanup)
 
     async def _get_connection(self, scheme: str, host: str, port: int):
-        loop = get_running_loop()
         if (scheme, host, port) not in self._connection_pools:
-            connection = Connection(loop, self, scheme)
+            connection = Connection(self._loop, self, scheme)
             self._connection_pools[(scheme, host, port)] = [connection]
             return connection
         pool = self._connection_pools[(scheme, host, port)]
@@ -561,7 +570,7 @@ class Session:
         for connection in garbage_collected:
             pool.remove(connection)
 
-        connection = Connection(loop, self, scheme)
+        connection = Connection(self._loop, self, scheme)
         pool.append(connection)
         return connection
 
@@ -589,25 +598,45 @@ class Session:
         headers: Optional[Union[Mapping[str, str], Iterable[Tuple[str, str]]]] = None,
         timeout: Optional[float] = None,
     ) -> Union[Response, WebSocket, None]:
+        return await self._loop.run_async(
+            self._request, method, url, params, data, headers, timeout
+        )
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        params: Optional[str] = None,
+        data: Optional[bytes] = None,
+        headers: Optional[Union[Mapping[str, str], Iterable[Tuple[str, str]]]] = None,
+        timeout: Optional[float] = None,
+    ) -> Union[Response, WebSocket, None]:
         req = Request(url, method=method, params=params, data=data, headers=headers)
         assert req.scheme in ("http", "https")
         connection = await self._get_connection(req.scheme, req.host, req.port)
         return await connection.send(req, timeout=timeout)
 
     async def websocket(self, url, timeout=None) -> Optional[WebSocket]:
+        return await self._loop.run_async(self._websocket, url, timeout)
+
+    async def _websocket(self, url, timeout=None) -> Optional[WebSocket]:
         req = Request(url, method="GET")
         assert req.scheme in ("ws", "wss")
         connection = await self._get_connection(req.scheme, req.host, req.port)
         return cast(Optional[WebSocket], await connection.send(req, timeout=timeout))
 
-    def stop(self):
-        return self._loop.run_async(self.astop)
+    def stop(self, timeout=5):
+        return self._loop.run_async(self.astop).result_or_cancel(timeout=timeout)
+
+    async def _acleanup(self):
+        if self._connection_pools:
+            await self.astop()
 
     async def astop(self):
-        self._loop.unregister_cleanup(self.astop)
         for pool in self._connection_pools.values():
             for connection in pool:
                 await connection.adisconnect()
+        self._connection_pools = dict()
 
 
 async def main():

@@ -211,11 +211,9 @@ html_theme_options = {
 html_static_path = ['_static']
 
 custom_html_context = {
-    "python_prompt": "olympe-python3",
     "workspace": "parrot-olympe",
     "olympe_path": "packages/olympe",
     "olympe_product": "olympe-linux",
-    "olympe_scripts_path": "./products/olympe/linux/env",
     "sphinx_doc_url": "https://developer.parrot.com/docs/sphinx",
 }
 

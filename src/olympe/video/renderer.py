@@ -46,7 +46,7 @@ class Renderer(ABC, LogMixin):
         self._glcontext = None
         self._init_kwds = kwds
         initialized = self._loop.run_async(self._async_init)
-        self._loop.register_cleanup(self._dispose)
+        self._loop.register_cleanup(self._cleanup)
         self._loop.start()
         initialized.result_or_cancel(timeout=5.0)
 
@@ -178,10 +178,7 @@ class Renderer(ABC, LogMixin):
         self._loop.run_delayed(next_time, self._on_update)
 
     @callback_decorator()
-    def _dispose(self):
-        self.dispose()
-
-    def dispose(self):
+    def _cleanup(self):
         if self._window is not None:
             sdl2.SDL_HideWindow(self._window)
 
@@ -306,12 +303,12 @@ class PdrawRenderer(Renderer):
     ):
         return
 
-    def dispose(self):
+    def _cleanup(self):
         if self._pdraw_renderer:
             od.pdraw_video_renderer_destroy(self._pdraw.pdraw, self._pdraw_renderer)
         self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
         self._media_infos = dict()
-        super().dispose()
+        super()._cleanup()
 
 
 class TestRenderer(Renderer):

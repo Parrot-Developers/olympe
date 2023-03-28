@@ -533,7 +533,7 @@ class SocketContext(ABC):
         res = od.pomp_ctx_set_raw(self._ctx, raw_cb)
         if res != 0:
             raise RuntimeError("Failed to set pomp context as raw")
-        self._loop.register_cleanup(self.adestroy)
+        self._loop.register_cleanup(self._acleanup)
         self._destroying = False
         self._socket_creation_listeners: typing.List[SocketCreationListener] = []
         self._data_listeners: typing.List[DataListener] = []
@@ -554,15 +554,12 @@ class SocketContext(ABC):
     def remove_data_listener(self, data_listener: DataListener):
         self._data_listeners.remove(data_listener)
 
-    async def adestroy(self):
-        if not self._destroying:
-            self._loop.unregister_cleanup(self.adestroy)
-            self._destroying = True
+    async def _acleanup(self):
         if self._ctx is None:
-            return
+            return True
         await self.astop()
         if self._ctx is None:
-            return
+            return True
         res = od.pomp_ctx_destroy(self._ctx)
         if res != 0:
             if res != -errno.EBUSY:
@@ -570,13 +567,15 @@ class SocketContext(ABC):
             else:
                 # Device or resource busy... The connection is still in use.
                 pass
-            # Destroying the pomp context is the only way to unregister internal pomp_timer fd,
-            # so we have to try harder to prevent unnecessary pomp_loop_destroy errors about
-            # unregisted fds.
-            self._destroying = False
-            self._loop.register_cleanup(self.adestroy)
+            return False
         else:
             self._ctx = None
+            return True
+
+    async def adestroy(self):
+        self._loop.unregister_cleanup(self._acleanup)
+        if not await self._acleanup():
+            self._loop.register_cleanup(self._acleanup)
 
     def destroy(self):
         self._loop.run_later(self.adestroy)
@@ -1181,15 +1180,15 @@ class DNSResolver:
 
     async def resolve(self, host: str, port: int, family: socket.AddressFamily = socket.AF_UNSPEC):
         fut = Future()
-        self._executor.submit(self._resolve, host, port).add_done_callback(fut.set_from)
+        self._executor.submit(self._resolve, host, port, family).add_done_callback(fut.set_from)
         return await fut
 
     def _resolve(self, host: str, port: int, family: socket.AddressFamily = socket.AF_UNSPEC):
         resolved = []
-        for family, _, _, _, sockaddr in socket.getaddrinfo(
-                host, port, family, socket.SOCK_STREAM
+        for family_, _, _, _, sockaddr in socket.getaddrinfo(
+                host, port, family=family, type=socket.SOCK_STREAM
         ):
-            resolved.append((family, sockaddr))
+            resolved.append((family_, sockaddr))
         return resolved
 
     def close(self) -> None:

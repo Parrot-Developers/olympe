@@ -32,7 +32,6 @@ from builtins import str as builtin_str
 
 import arsdkparser
 import ctypes
-import functools
 import textwrap
 
 from aenum import OrderedEnum
@@ -66,6 +65,8 @@ from olympe.arsdkng.events import (
     ArsdkMessageArgs,
 )
 from olympe.arsdkng.proto import ArsdkProto, ProtoFieldLabel, proto_type_to_python
+
+from olympe.arsdkng.proto_this import ArsdkProtoThis
 from olympe.utils import (
     string_from_arsdkxml,
     DEFAULT_FLOAT_TOL,
@@ -478,10 +479,12 @@ class ArsdkMessageMeta(type):
             since = next(versions, None)
             until = next(versions, None)
             mapping = {
-                "ANAFI4K": "Anafi/AnafiFPV",
-                "ANAFI_THERMAL": "AnafiThermal",
+                "ANAFI4K": "ANAFI",
+                "ANAFI_THERMAL": "ANAFI Thermal",
+                "ANAFI_USA": "ANAFI USA",
                 "SKYCTRL_3": "SkyController3",
-                "ANAFI_2": "Anafi Ai",
+                "ANAFI_2": "ANAFI Ai",
+                "SKYCTRL_4": "SkyController4",
             }
             device_str = mapping.get(device_str, device_str)
             if "anafi" in device_str.lower() or "skycontroller" in device_str.lower():
@@ -1105,7 +1108,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         return args
 
     @classmethod
-    def _encode_args(cls, *args):
+    def _encode_args(cls, args):
         """
         Encode python message arguments to ctypes. This also perform the necessary enum, bitfield
         and unicode conversions.
@@ -1117,7 +1120,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
                 )
             )
 
-        encoded_args = args
+        encoded_args = tuple(args.values())
         # enum conversion (string --> enum type)
         encoded_args = list(
             starmap(
@@ -1406,8 +1409,6 @@ class ArsdkMessages:
                         break
                     target_name_path = target_name_path[:-2] + [target_name_path[-1]]
                     same_scope = False
-            if message is not None:
-                break
 
         if message is None:
             message = ArsdkProtoMessageMeta.__new__(
@@ -1490,7 +1491,11 @@ class ArsdkMessages:
                     )
                     message_path = message_full_name.split(".")
                     message = get_mapping(self.by_feature, message_path)
-                    context.args_message[field.name] = message
+                    if not message_type.GetOptions().map_entry:
+                        context.args_message[field.name] = message
+                    else:
+                        # Not actually a message but a map<key, value> protobuf type
+                        context.args_map[field.name] = message
                     break
         for name, message in context.items():
             self._do_resolve_nested_messages(module, f"{path}.{name}", message)
@@ -1511,7 +1516,9 @@ class ArsdkMessages:
 
 class ProtoNestedMixin:
     def __getattr__(cls, key):
-        if key in cls:
+        if key == "nested_messages":
+            raise AttributeError(f"'{cls}' object has no attribute '{key}'")
+        elif key in cls.nested_messages:
             return cls[key]
         elif hasattr(super(), "__getattr__"):
             return super().__getattr__(key)
@@ -1569,6 +1576,7 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         cls.root = root
         cls.nested_messages = OrderedDict()
         cls.args_message = OrderedDict()
+        cls.args_map = OrderedDict()
         cls.dict_type = dict_type
         cls.service = service
         cls.message_desc = message_desc
@@ -1640,12 +1648,10 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         )
 
         cls.args_enum = OrderedDict()
-        for field_desc in cls.message_proto.DESCRIPTOR.fields:
-            if field_desc.type != google.protobuf.descriptor.FieldDescriptor.TYPE_ENUM:
-                continue
 
-            arg = field_desc.name
+        def find_enum(field_desc):
             package = field_desc.enum_type.file.package
+            enum = None
             while package:
                 try:
                     feature = feature_proto.features_package_map[package]
@@ -1670,7 +1676,15 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
                         break
                     except KeyError:
                         package = ".".join(package.split(".")[:-1])
-            cls.args_enum[arg] = enum
+            if enum is None:
+                raise ValueError(f"Cannot find definition of {field_desc}")
+            return enum
+
+        for field_desc in cls.message_proto.DESCRIPTOR.fields:
+            if field_desc.type != google.protobuf.descriptor.FieldDescriptor.TYPE_ENUM:
+                continue
+            cls.args_enum[field_desc.name] = find_enum(field_desc)
+
         return cls
 
     @property
@@ -1747,14 +1761,6 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         return locals()[cls.name]
 
 
-class ArsdkProtoThis:
-    def __getattr__(self, name):
-
-        def resolve(arg_name, command_message, command_args):
-            return command_args.get(arg_name)
-        return functools.partial(resolve, name)
-
-
 class ArsdkProtoMessage(
     ArsdkMessageBase, ProtoNestedMixin, metaclass=ArsdkProtoMessageMeta
 ):
@@ -1764,6 +1770,7 @@ class ArsdkProtoMessage(
         self._messages = ArsdkMessages.get(self.root)
         self.nested_messages = OrderedDict()
         self.args_message = OrderedDict()
+        self.args_map = OrderedDict()
         if self._messages.nested_proto_resolved:
             self._resolve_nested_messages()
 
@@ -1820,9 +1827,16 @@ class ArsdkProtoMessage(
             policy = ExpectPolicy[policy]
         else:
             raise RuntimeError("policy argument must be a string")
-        args = kwds
+        args = self._argsmap_from_args(*args, **kwds)
+        unknown_args = tuple(filter(lambda a: a not in self.args_name, args.keys()))
+        if unknown_args:
+            raise ValueError(
+                f"Unknown {unknown_args} parameter(s) passed to {self.fullName}")
         # filter out None value
         args = remove_from_collection(args, lambda a: a is None)
+        args_to_validate = self._map_enum_to_int(args)
+        args_to_validate = remove_from_collection(args_to_validate, callable)
+        protobuf_json_format.ParseDict(args_to_validate, self.message_proto())
         # convert enums parameters
         args = self._map_enum_type(args)
         args = self._map_message_type(args)
@@ -1845,8 +1859,6 @@ class ArsdkProtoMessage(
             # with protobuf format validation
             return self.dict_type(**args)
 
-        message = self.message_proto()
-
         if policy != ExpectPolicy.check:
             expectations = self._expectation.copy()
             if self.message_type == ArsdkMessageType.CMD:
@@ -1863,19 +1875,23 @@ class ArsdkProtoMessage(
                         args_to_validate.append(
                             (
                                 expectation.expected_args,
-                                expectation.expected_message.message_proto(),
+                                expectation.expected_message,
                             )
                         )
             else:
+                unknown_args = tuple(filter(lambda a: a not in self.args_name, args.keys()))
+                if unknown_args:
+                    raise ValueError(
+                        f"Unknown {unknown_args} parameter(s) passed to {self.fullName}")
                 args = expectations.expected_args
-                args_to_validate.append((args, message))
+                args_to_validate.append((args, self))
 
             # Use protobuf_json_format to validate protobuf message format
             # filter out lambda ArdkProtoThis lambdas before validation
             for expected_args, message in args_to_validate:
-                expected_args = self._map_enum_to_int(expected_args)
+                expected_args = message._map_enum_to_int(expected_args)
                 expected_args = remove_from_collection(expected_args, callable)
-                protobuf_json_format.ParseDict(expected_args, message)
+                protobuf_json_format.ParseDict(expected_args, message.message_proto())
 
             if (
                 policy == ExpectPolicy.check_wait
@@ -1904,8 +1920,6 @@ class ArsdkProtoMessage(
             # with protobuf format validation
             return self.dict_type(**args)
 
-        message = self.message_proto()
-
         if policy != ExpectPolicy.check:
             expectations = self._reverse_expectation.copy()
             if self.message_type == ArsdkMessageType.EVT:
@@ -1922,19 +1936,19 @@ class ArsdkProtoMessage(
                         args_to_validate.append(
                             (
                                 expectation.expected_args,
-                                expectation.expected_message.message_proto(),
+                                expectation.expected_message
                             )
                         )
             else:
                 args = expectations.expected_args
-                args_to_validate.append((args, message))
+                args_to_validate.append((args, self))
 
             # Use protobuf_json_format to validate protobuf message format
             # filter out lambda ArdkProtoThis lambdas before validation
             for expected_args, message in args_to_validate:
-                expected_args = self._map_enum_to_int(expected_args)
+                expected_args = message._map_enum_to_int(expected_args)
                 expected_args = remove_from_collection(expected_args, callable)
-                protobuf_json_format.ParseDict(expected_args, message)
+                protobuf_json_format.ParseDict(expected_args, message.message_proto())
 
             if (
                 policy == ExpectPolicy.check_wait
@@ -2011,9 +2025,17 @@ class ArsdkProtoMessage(
         return args
 
     def _map_enum_type(self, args):
-        if callable(args):
+        if args is None or callable(args):
             return args
         args = args.copy()
+        for argname, argvalue in args.copy().items():
+            if isinstance(argvalue, MutableMapping):
+                if argname == "selected_fields":
+                    continue
+                if argname in self.args_message:
+                    args[argname] = self.args_message[argname]._map_enum_type(argvalue)
+                elif argname in self.args_map:
+                    args[argname] = self.args_map[argname]._map_enum_type(argvalue)
         for arg, enum in self.args_enum.items():
             if arg not in args:
                 continue
@@ -2023,6 +2045,16 @@ class ArsdkProtoMessage(
                 all(map(lambda a: isinstance(a, (bytes, str)), args[arg]))
             ):
                 args[arg] = tuple(enum[a] for a in args[arg])
+        for nested_map_name, nested_map in self.args_map.items():
+            if nested_map_name not in args:
+                continue
+            if "value" in nested_map.args_enum:
+                for k, v in args[nested_map_name].items():
+                    if isinstance(v, ArsdkProtoEnum):
+                        continue
+                    args[nested_map_name][k] = nested_map.args_enum["value"][
+                        args[nested_map_name][k]
+                    ]
         for nested_message_name, nested_message in self.args_message.items():
             if nested_message_name not in args:
                 continue
@@ -2037,9 +2069,19 @@ class ArsdkProtoMessage(
         return args
 
     def _map_enum_to_int(self, args):
-        if callable(args):
+        if args is None or callable(args):
             return args
         args = args.copy()
+        for argname, argvalue in args.copy().items():
+            if isinstance(argvalue, ArsdkProtoEnum):
+                args[argname] = int(argvalue._value_)
+            elif isinstance(argvalue, MutableMapping):
+                if argname == "selected_fields":
+                    continue
+                if argname in self.args_message:
+                    args[argname] = self.args_message[argname]._map_enum_to_int(argvalue)
+                elif argname in self.args_map:
+                    args[argname] = self.args_map[argname]._map_enum_to_int(argvalue)
         for arg, enum in self.args_enum.items():
             if arg not in args:
                 continue
@@ -2049,6 +2091,15 @@ class ArsdkProtoMessage(
                 all(map(lambda a: isinstance(a, ArsdkProtoEnum), args[arg]))
             ):
                 args[arg] = tuple(int(a._value_) for a in args[arg])
+        for nested_map_name, nested_map in self.args_map.items():
+            if nested_map_name not in args:
+                continue
+            if "value" in nested_map.args_enum:
+                for k, v in args[nested_map_name].items():
+                    if isinstance(v, int):
+                        continue
+                    args[nested_map_name][k] = int(
+                        nested_map.args_enum["value"][v]._value_)
         for nested_message_name, nested_message in self.args_message.items():
             if nested_message_name not in args:
                 continue
@@ -2064,9 +2115,19 @@ class ArsdkProtoMessage(
         return args
 
     def _map_enum_to_str(self, args):
-        if callable(args):
+        if args is None or callable(args):
             return args
         args = args.copy()
+        for argname, argvalue in args.copy().items():
+            if isinstance(argvalue, ArsdkProtoEnum):
+                args[argname] = argvalue.to_upper_str()
+            elif isinstance(argvalue, MutableMapping):
+                if argname == "selected_fields":
+                    continue
+                if argname in self.args_message:
+                    args[argname] = self.args_message[argname]._map_enum_to_str(argvalue)
+                elif argname in self.args_map:
+                    args[argname] = self.args_map[argname]._map_enum_to_str(argvalue)
         for arg, enum in self.args_enum.items():
             if arg not in args:
                 continue
@@ -2076,6 +2137,16 @@ class ArsdkProtoMessage(
                 all(map(lambda a: isinstance(a, ArsdkProtoEnum), args[arg]))
             ):
                 args[arg] = tuple(a.to_upper_str() for a in args[arg])
+        for nested_map_name, nested_map in self.args_map.items():
+            if nested_map_name not in args:
+                continue
+            if "value" in nested_map.args_enum:
+                for k, v in args[nested_map_name].items():
+                    if isinstance(v, str):
+                        continue
+                    args[nested_map_name][k] = (
+                        nested_map.args_enum["value"][args[nested_map_name][k]]._name_
+                    ).to_upper_str()
         for nested_message_name, nested_message in self.args_message.items():
             if nested_message_name not in args:
                 continue
@@ -2091,7 +2162,7 @@ class ArsdkProtoMessage(
         return args
 
     def _map_message_type(self, args):
-        if callable(args):
+        if args is None or callable(args):
             return args
         args = args.copy()
         for arg, enum in self.args_message.items():
@@ -2122,15 +2193,15 @@ class ArsdkProtoMessage(
         return ret
 
     def _map_filter_selected_fields(self, proto, args):
+        if "selected_fields" not in args:
+            return args
         ret = type(args)()
-        selected_fields = list(args)
-        if "selected_fields" in args:
-            selected_fields = list(
-                map(
-                    lambda i: proto.DESCRIPTOR.fields_by_number[i].name,
-                    args["selected_fields"].keys(),
-                )
+        selected_fields = list(
+            map(
+                lambda i: proto.DESCRIPTOR.fields_by_number[i].name,
+                args["selected_fields"].keys(),
             )
+        )
         for k, v in args.items():
             if k not in selected_fields:
                 continue
@@ -2206,31 +2277,42 @@ class ArsdkProtoMessage(
 
     @classmethod
     def _argsmap_from_args(cls, *args, **kwds):
-        args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
-        args_set = set(args.keys())
-        kwds_set = set(kwds.keys())
-        if not args_set.isdisjoint(kwds_set):
-            raise RuntimeError(
-                "Message `{}` got multiple values for argument(s) {}".format(
-                    cls.fullName, list(args_set & kwds_set)
+        if not kwds and len(args) == 1 and isinstance(args[0], MutableMapping):
+            args = args[0]
+        else:
+            args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
+            args_set = set(args.keys())
+            kwds_set = set(kwds.keys())
+            if not args_set.isdisjoint(kwds_set):
+                raise RuntimeError(
+                    "Message `{}` got multiple values for argument(s) {}".format(
+                        cls.fullName, list(args_set & kwds_set)
+                    )
                 )
-            )
-        args.update(kwds)
+            args.update(kwds)
 
         # filter out None value
-        args = OrderedDict([(k, v) for k, v in args.items() if v is not None])
+        args = OrderedDict((k, v) for k, v in args.items() if v is not None)
 
         # enum conversion
-        args = OrderedDict(
-            starmap(
-                lambda name, value: (name, cls.args_enum[name][value])
-                if (name in cls.args_enum and isinstance(value, (bytes, str)))
-                else (name, value),
-                args.items(),
-            )
-        )
+        for name, value in args.items():
+            if name in cls.args_enum and isinstance(value, (bytes, str)):
+                args[name] = cls.args_enum[name][value]
 
-        args = OrderedDict(starmap(lambda k, v: (k, v), args.items()))
+        # submessages conversion
+        for nested_message_name, nested_message in cls.args_message.items():
+            if nested_message_name not in args:
+                continue
+            if isinstance(args[nested_message_name], ArsdkProtoThis):
+                continue
+            elif isinstance(args[nested_message_name] , (tuple, list)):
+                args[nested_message_name] = type(args[nested_message_name])(
+                    map(lambda a: nested_message._argsmap_from_args(a), args[nested_message_name])
+                )
+            else:
+                args[nested_message_name] = nested_message._argsmap_from_args(
+                    **args[nested_message_name])
+
         return args
 
     @classmethod
@@ -2273,10 +2355,12 @@ class ArsdkProtoMessage(
             since = next(versions, None)
             until = next(versions, None)
             mapping = {
-                "ANAFI4K": "Anafi/AnafiFPV",
-                "ANAFI_THERMAL": "AnafiThermal",
+                "ANAFI4K": "ANAFI",
+                "ANAFI_THERMAL": "ANAFI Thermal",
+                "ANAFI_USA": "ANAFI USA",
                 "SKYCTRL_3": "SkyController3",
-                "ANAFI_2": "Anafi Ai",
+                "ANAFI_2": "ANAFI Ai",
+                "SKYCTRL_4": "SkyController4",
             }
             device_str = mapping.get(device_str, device_str)
             if "anafi" in device_str.lower() or "skycontroller" in device_str.lower():
@@ -2304,7 +2388,11 @@ class ArsdkProtoMessage(
             for field_doc in cls.doc.fields_doc:
                 if field_doc.name == "selected_fields":
                     continue
-                cls.docstring += f"\n:param {field_doc.name}: {field_doc.doc}\n"
+                exclusive_with = ""
+                if field_doc.exclusive_with:
+                    exclusive_with = ', '.join(field_doc.exclusive_with)
+                    exclusive_with = f" (mutually exclusive with: {exclusive_with})"
+                cls.docstring += f"\n:param {field_doc.name}: {field_doc.doc} {exclusive_with}\n"
                 if field_doc.label is ProtoFieldLabel.Repeated:
                     cls.docstring += (
                         f"\n:type {field_doc.name}: list({field_doc.type})\n"
@@ -2329,3 +2417,5 @@ class ArsdkProtoMessage(
             self.nested_messages[nested_name] = nested()
         for nested_name, nested in self.__class__.args_message.items():
             self.args_message[nested_name] = nested()
+        for nested_name, nested in self.__class__.args_map.items():
+            self.args_map[nested_name] = nested()

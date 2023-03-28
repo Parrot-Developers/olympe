@@ -31,6 +31,8 @@
 from collections.abc import Iterable, Mapping
 from olympe.event import Event
 
+from olympe.arsdkng.proto_this import ArsdkProtoThis
+
 
 class ArsdkMessageArgs(dict):
     pass
@@ -109,6 +111,8 @@ class ArsdkProtoMessageEvent(Event):
 
     def _str(self, argvalue):
         if isinstance(argvalue, (str, bytes)):
+            return f"'{argvalue}'"
+        elif isinstance(argvalue, ArsdkProtoThis):
             return f"'{argvalue}'"
         elif hasattr(argvalue, "pretty"):
             return argvalue.pretty()

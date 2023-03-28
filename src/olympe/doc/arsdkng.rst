@@ -263,6 +263,13 @@ Messages Reference Documentation
     arsdkng_poi
 
 .. toctree::
+    :caption: PointNFly feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_pointnfly
+
+.. toctree::
     :caption: Piloting Style feature
     :maxdepth: 1
     :titlesonly:
@@ -282,7 +289,6 @@ Messages Reference Documentation
     :titlesonly:
 
     arsdkng_rth
-
 
 .. toctree::
     :caption: Security feature

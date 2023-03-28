@@ -1597,7 +1597,7 @@ class Media(AbstractScheduler):
         self._session = Session(loop=self._loop)
         self._websocket = None
 
-        self._loop.register_cleanup(self._shutdown)
+        self._loop.register_cleanup(self._acleanup)
 
         if scheduler is not None:
             self._scheduler = scheduler
@@ -1650,13 +1650,20 @@ class Media(AbstractScheduler):
         Properly close and stop the websocket connection and the media API
         background thread
         """
-        # _shutdown is called by the pomp loop registered cleanup method
+        self.destroy()
+
+    def destroy(self):
+        """
+        Properly close and stop the websocket connection and the media API
+        background thread
+        """
+        # _acleanup is called by the pomp loop registered cleanup method
         self._loop.stop()
-        self._loop.destroy()
         return True
 
-    async def _shutdown(self):
-        self._loop.unregister_cleanup(self._shutdown)
+    async def _acleanup(self):
+        if self._websocket is None:
+            return
         await self.adisconnect()
         if not self._scheduler.remove_context("olympe.media"):
             self.logger.info(

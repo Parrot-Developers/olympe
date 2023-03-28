@@ -1,4 +1,4 @@
-#  Copyright (C) 2019-2021 Parrot Drones SAS
+#  Copyright (C) 2019-2022 Parrot Drones SAS
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions
@@ -27,52 +27,25 @@
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 
-import olympe.module_loader
-from .arsdkng.events import ArsdkMessageEvent
-from .controller import Drone, SkyController
-from .mixins.cellular import Cellular
-from .event import Event
-from .expectations import Expectation
-from .listener import EventListener, listen_event
-from .media import Media, MediaEvent, MediaInfo, ResourceInfo
-from .mission import Mission, MissionController
-from .video import VMetaFrameType
-from .video.frame import VideoFrame
-from .video.pdraw import PdrawState, Pdraw
-import olympe.messages  # noqa
-import olympe.enums  # noqa
-import olympe.log  # noqa
+import functools
 
-from .utils import hashabledict
-from .__version__ import __version__
-import olympe_deps as od
-from olympe_deps import vdef_i420
-from olympe_deps import vdef_nv12
 
-VDEF_I420 = hashabledict(od.struct_vdef_raw_format.as_dict(vdef_i420))
-VDEF_NV12 = hashabledict(od.struct_vdef_raw_format.as_dict(vdef_nv12))
+class ArsdkProtoThis:
+    def __init__(self, path=None, resolve=None):
+        self._path = path or ""
+        self._resolve = resolve
 
-__version__ = __version__
+    def __getattr__(self, name):
 
-__all__ = [
-    "ArsdkMessageEvent",
-    "Cellular",
-    "Drone",
-    "Event",
-    "EventListener",
-    "Expectation",
-    "Media",
-    "MediaEvent",
-    "MediaInfo",
-    "Mission",
-    "MissionController",
-    "Pdraw",
-    "PdrawState",
-    "ResourceInfo",
-    "SkyController",
-    "VDEF_I420",
-    "VDEF_NV12",
-    "VMetaFrameType",
-    "VideoFrame",
-    "listen_event",
-]
+        def resolve(self, arg_name, command_message, command_args):
+            return command_args.get(arg_name)
+        if self._path:
+            path = f"{self._path}.{name}"
+        else:
+            path = self._path
+        return ArsdkProtoThis(path=path, resolve=functools.partial(resolve, self, name))
+
+    def __call__(self, command_message, command_args):
+        if self._resolve is None:
+            raise RuntimeError(f"Cannot resolve {command_message} from {self._path}")
+        return self._resolve(command_message, command_args)
