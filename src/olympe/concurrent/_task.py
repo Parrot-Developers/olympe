@@ -55,11 +55,16 @@ class _Task(Future):
         if self.done():
             return False
         if self._fut_waiter is not None:
-            if self._fut_waiter.cancel():
-                # Leave self._fut_waiter; it may be a Task that
-                # catches and ignores the cancellation so we may have
-                # to cancel it again later.
-                return True
+            if threading.current_thread() is self._loop:
+                if self._fut_waiter.cancel():
+                    # Leave self._fut_waiter; it may be a Task that
+                    # catches and ignores the cancellation so we may have
+                    # to cancel it again later.
+                    return True
+            else:
+                ret = not self._fut_waiter.cancelled()
+                self._loop.run_async(self._fut_waiter.cancel)
+                return ret
         self._must_cancel = True
         self._cancelled_exc = None
         if self._step_count == 0:

@@ -72,6 +72,7 @@ class ExpectationBase(ABC):
         # IMPORTANT NOTE: this function (or its overridden versions) should be non-blocking
         self._awaited = True
         self._scheduler = scheduler
+        assert self._scheduler is not None
         if self._future.loop is None:
             self._future.loop = self._scheduler.expectation_loop
         if self._timeout is not None:
@@ -83,6 +84,7 @@ class ExpectationBase(ABC):
         ret = not self._awaited
         self._awaited = True
         self._scheduler = scheduler
+        assert self._scheduler is not None
         if self._future.loop is None and ret:
             self._future.loop = self._scheduler.expectation_loop
         return ret
@@ -356,6 +358,7 @@ class CheckWaitStateExpectationMixin:
         return other
 
     def check(self, *args, **kwds):
+        assert self._scheduler is not None
         if not self._checked and self._wait_expectation.check(*args, **kwds).success():
             self.set_success()
         return self
@@ -440,7 +443,7 @@ class MultipleExpectationMixin(ABC):
         ret = True
         if not super()._await(scheduler):
             ret = False
-        if not all(list(map(lambda e: e._await(scheduler), self.expectations))):
+        if not all(map(lambda e: e._await(scheduler), self.expectations)):
             ret = False
 
         scheduler.expectation_loop.run_async(self._register_subexpectations, *self.expectations)
@@ -587,6 +590,7 @@ class WhenAnyExpectationMixin:
             return False
 
     def check(self, *args, **kwds):
+        assert self._scheduler is not None
         success = False
         for expectation in self.expectations:
             if (
@@ -657,6 +661,9 @@ class WhenAllExpectationsMixin:
             return False
 
     def check(self, *args, **kwds):
+        assert self._scheduler is not None
+        if self._scheduler is None:
+            return self
         for expectation in self.expectations:
             if (
                 expectation.always_monitor or not expectation.success()
@@ -689,6 +696,8 @@ class WhenAllExpectations(WhenAllExpectationsMixin, MultipleExpectation):
 class WhenSequenceExpectationsMixin:
     def _schedule(self, scheduler):
         super()._schedule(scheduler)
+        for e in self.expectations:
+            e._scheduler = scheduler
         self._do_schedule()
 
     def _await(self, scheduler):
@@ -758,6 +767,7 @@ class WhenSequenceExpectationsMixin:
         )
 
     def check(self, *args, **kwds):
+        assert self._scheduler is not None
         if self._current_expectation() is None:
             self.set_success()
             return self

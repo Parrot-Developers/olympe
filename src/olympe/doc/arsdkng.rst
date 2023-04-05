@@ -67,13 +67,6 @@ Messages Reference Documentation
     arsdkng_camera_v2
 
 .. toctree::
-    :caption: Camera Alert feature
-    :maxdepth: 1
-    :titlesonly:
-
-    arsdkng_camera_alert
-
-.. toctree::
     :caption: Cellular feature
     :maxdepth: 1
     :titlesonly:

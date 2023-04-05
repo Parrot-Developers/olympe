@@ -882,6 +882,20 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         else:
             return self._last_event[key]
 
+    def last_events(self, key=None):
+        if self._last_event is None:
+            return
+        elif self.callback_type == ArsdkMessageCallbackType.STANDARD:
+            yield self._last_event
+        elif self.callback_type == ArsdkMessageCallbackType.MAP:
+            if key is None:
+                for event in self._last_event.values():
+                    if event is not None:
+                        yield event
+            else:
+                if self._last_event[key] is not None:
+                    yield self._last_event[key]
+
     def _set_last_event(self, event):
         if event.message.id != self.id:
             raise RuntimeError(
@@ -1806,6 +1820,55 @@ class ArsdkProtoMessage(
     def __call__(self, *args, **kwds):
         return self._expect(*args, **kwds)
 
+    def _validate_args(self, args):
+        assert isinstance(args, Mapping)
+        args = self._map_enum_to_int(args)
+        args = remove_from_collection(args, callable)
+        for name, field in self.message_proto.DESCRIPTOR.fields_by_name.items():
+            if name not in args:
+                continue
+            elif name in self.args_message:
+                if isinstance(args[name], Mapping):
+                    args[name] = self.args_message[name]._validate_args(args[name])
+                elif field.label == ProtoFieldLabel.Repeated._value_:
+                    assert isinstance(args[name], Iterable)
+                    args[name] = list(map(self.args_message[name]._validate_args, args[name]))
+            elif field.message_type is not None and (
+                    isinstance(args[name], Mapping) and
+                    field.message_type.file.package == "google.protobuf"
+                    and field.message_type.fields
+                    and list(field.message_type.fields)[0].full_name.endswith("Value.value")
+            ):
+                args[name] = args[name].get("value")
+        protobuf_json_format.ParseDict(args, self.message_proto())
+        return args
+
+    def _map_google_protobuf(self, args, unwrap=False):
+        for name, field in self.message_proto.DESCRIPTOR.fields_by_name.items():
+            if name not in args:
+                continue
+            elif name in self.args_message:
+                if isinstance(args[name], Mapping):
+                    args[name] = self.args_message[name]._map_google_protobuf(
+                        args[name], unwrap=unwrap
+                    )
+                elif field.label == ProtoFieldLabel.Repeated._value_:
+                    assert isinstance(args[name], Iterable)
+                    args[name] = list(map(
+                        lambda a: self.args_message[name]._map_google_protobuf(
+                            a, unwrap=unwrap), args[name]
+                    ))
+            elif field.message_type is not None and (
+                    field.message_type.file.package == "google.protobuf"
+                    and field.message_type.fields
+                    and list(field.message_type.fields)[0].full_name.endswith("Value.value")
+            ):
+                if not unwrap:
+                    args[name] = dict(value=args[name])
+                elif isinstance(args[name], Mapping):
+                    args[name] = args[name].get("value")
+        return args
+
     def _expect_args(self, *args, **kwds):
         """
         For a command message, returns the list of expectations for this message with the provided
@@ -1834,10 +1897,7 @@ class ArsdkProtoMessage(
                 f"Unknown {unknown_args} parameter(s) passed to {self.fullName}")
         # filter out None value
         args = remove_from_collection(args, lambda a: a is None)
-        args_to_validate = self._map_enum_to_int(args)
-        args_to_validate = remove_from_collection(args_to_validate, callable)
-        protobuf_json_format.ParseDict(args_to_validate, self.message_proto())
-        # convert enums parameters
+        self._validate_args(args)
         args = self._map_enum_type(args)
         args = self._map_message_type(args)
         return args, policy, float_tol, no_expect, timeout
@@ -1889,9 +1949,7 @@ class ArsdkProtoMessage(
             # Use protobuf_json_format to validate protobuf message format
             # filter out lambda ArdkProtoThis lambdas before validation
             for expected_args, message in args_to_validate:
-                expected_args = message._map_enum_to_int(expected_args)
-                expected_args = remove_from_collection(expected_args, callable)
-                protobuf_json_format.ParseDict(expected_args, message.message_proto())
+                expected_args = self._validate_args(expected_args)
 
             if (
                 policy == ExpectPolicy.check_wait
@@ -1946,9 +2004,7 @@ class ArsdkProtoMessage(
             # Use protobuf_json_format to validate protobuf message format
             # filter out lambda ArdkProtoThis lambdas before validation
             for expected_args, message in args_to_validate:
-                expected_args = message._map_enum_to_int(expected_args)
-                expected_args = remove_from_collection(expected_args, callable)
-                protobuf_json_format.ParseDict(expected_args, message.message_proto())
+                expected_args = self._validate_args(expected_args)
 
             if (
                 policy == ExpectPolicy.check_wait
@@ -1992,12 +2048,13 @@ class ArsdkProtoMessage(
             elif name in cls.args_enum:
                 args[name] = next(iter(cls.args_enum[name]))
             else:
-                args[name] = proto_type_to_python(field.type)()
+                args[name] = proto_type_to_python(field.type, field.message_type)()
         return args
 
     def _encode_args(self, args):
         args = self._map_set_selected_fields(self.message_proto, args)
         args = self._map_enum_to_str(args)
+        args = self._map_google_protobuf(args)
         if self.service_proto.DESCRIPTOR.fields_by_name[self.field_name].message_type is None:
             proto = self.service_proto(**{self.field_name: args['value']})
         else:
@@ -2020,6 +2077,7 @@ class ArsdkProtoMessage(
             args = self._map_filter_selected_fields(self.message_proto, args)
             args = self._map_enum_type(args)
             args = self._map_message_type(args)
+            args = self._map_google_protobuf(args, unwrap=True)
         else:
             args = OrderedDict(value=args)
         return args
@@ -2264,6 +2322,15 @@ class ArsdkProtoMessage(
             return self._last_event
         else:
             return self._last_event[key]
+
+    def last_events(self, key=None):
+        if self._last_event is None:
+            return
+        if key is None:
+            yield self._last_event
+        else:
+            if self._last_event[key] is not None:
+                yield self._last_event[key]
 
     def _set_last_event(self, event):
         if event.id != self.id:

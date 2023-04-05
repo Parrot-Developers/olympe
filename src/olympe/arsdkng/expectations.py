@@ -169,14 +169,20 @@ class ArsdkEventExpectation(ArsdkFillDefaultArgsExpectationMixin, ArsdkExpectati
         )
 
     def check(self, received_event, *args, **kwds):
+        assert self._scheduler is not None
         if not isinstance(received_event, self.expected_event_type):
             return self
         if received_event.message.id != self.expected_message.id:
             return self
         self._received_events.append(received_event)
         self.received_args.append(received_event.args)
+        # Match the event
         if not _match_mapping(received_event.args, self.expected_args, self._float_tol):
-            return self
+            # If the event does not match try matching the new controller state
+            controller = self._scheduler.context("olympe.controller")
+            state_args = controller.get_state(self.expected_message)
+            if not _match_mapping(state_args, self.expected_args, self._float_tol):
+                return self
         if not self._success:
             self.matched_args = received_event.args.copy()
             self.set_success()
@@ -429,6 +435,7 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
         return True
 
     def check(self, received_event, *args, **kwds):
+        assert self._scheduler is not None
         if self.success():
             return self
         self._check_command_event(received_event)
@@ -490,6 +497,8 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
         )
 
     def _schedule(self, scheduler):
+        for expectation in self.expectations:
+            scheduler._schedule(expectation, monitor=expectation.always_monitor)
         if not self._awaited:
             controller = scheduler.context("olympe.controller")
             self._command_future = controller._send_command_raw(
@@ -497,8 +506,6 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             )
             self._command_future.add_done_callback(lambda _: self.check(None))
         super()._schedule(scheduler)
-        for expectation in self.expectations:
-            scheduler._schedule(expectation, monitor=expectation.always_monitor)
 
     def no_expect(self, value):
         self._no_expect = value
@@ -555,6 +562,7 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
         return True
 
     def check(self, received_event, *args, **kwds):
+        assert self._scheduler is not None
         if self.success():
             return self
         self._check_command_event(received_event)
@@ -608,6 +616,8 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
                 self.command_message, self.command_args
             )
             self._command_future.add_done_callback(lambda _: self.check(None))
+            if self.expectation is not None:
+                self.expectation._schedule(scheduler)
         super()._schedule(scheduler)
 
     def no_expect(self, value):

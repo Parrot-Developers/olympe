@@ -43,12 +43,19 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import CancelledError
 from olympe.utils import callback_decorator
 from olympe.concurrent import Future
+from olympe.messages import antiflicker
 from olympe.messages import ardrone3
+from olympe.messages import camera2
+from olympe.messages import connectivity
+from olympe.messages import controllerNetwork
 from olympe.messages import common
+from olympe.messages import developer
 from olympe.messages import mission
 from olympe.messages import network
-from olympe.messages import controllerNetwork
+from olympe.messages import pointnfly
+from olympe.messages import privacy
 from olympe.messages import skyctrl
+from olympe.messages import sleepmode
 from olympe.video.pdraw import (PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT)
 from tzlocal import get_localzone
 from warnings import warn
@@ -600,7 +607,16 @@ class ControllerBase(CommandInterfaceBase):
             ]
             if self._device_type != od.ARSDK_DEVICE_TYPE_ANAFI4K:
                 all_states_settings_commands.extend(
-                    [network.Command.GetState(), mission.custom_msg_enable()]
+                    [
+                        antiflicker.Command.GetState(),
+                        camera2.Command.GetState(),
+                        connectivity.Command.GetState(),
+                        developer.Command.GetState(),
+                        network.Command.GetState(),
+                        pointnfly.Command.GetState(),
+                        privacy.Command.GetState(),
+                        sleepmode.Command.GetState(),
+                        mission.custom_msg_enable()]
                 )
         else:
             all_states_settings_commands = [
@@ -617,12 +633,15 @@ class ControllerBase(CommandInterfaceBase):
             ]:
                 all_states_settings_commands.append(controllerNetwork.Command.GetState())
         # Get device specific states and settings
-        timeout = self._connection_deadline - time.time()
         for states_settings_command in all_states_settings_commands:
-            res = await self._thread_loop.await_for(
-                timeout,
-                self._send_states_settings_cmd, states_settings_command
-            )
+            timeout = self._connection_deadline - time.time()
+            try:
+                res = await self._thread_loop.await_for(
+                    timeout,
+                    self._send_states_settings_cmd, states_settings_command
+                )
+            except FutureTimeoutError:
+                return False
             if not res:
                 return False
 

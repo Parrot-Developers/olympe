@@ -744,3 +744,6 @@ class Mission:
                     # and register this event message so that our arsdk
                     # controller knows about it.
                     controller.register_message(message)
+
+        with self._ready_condition:
+            self._ready_condition.notify_all()

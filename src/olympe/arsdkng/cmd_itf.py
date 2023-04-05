@@ -41,10 +41,17 @@ from concurrent.futures import CancelledError
 from olympe.event import Event, EventContext
 from olympe.enums import drone_manager as drone_manager_enums
 from olympe.expectations import Expectation, FailedExpectation
+from olympe.messages import antiflicker
+from olympe.messages import camera2
+from olympe.messages import connectivity
 from olympe.messages import common
+from olympe.messages import developer
 from olympe.messages import drone_manager
 from olympe.messages import mission
 from olympe.messages import network
+from olympe.messages import pointnfly
+from olympe.messages import privacy
+from olympe.messages import sleepmode
 from olympe.scheduler import AbstractScheduler, Scheduler
 from collections import OrderedDict
 from olympe.utils import py_object_cast, callback_decorator, DEFAULT_FLOAT_TOL
@@ -454,7 +461,14 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
                 all_states_settings_commands = [
                     common.Common.AllStates,
                     common.Settings.AllSettings,
+                    antiflicker.Command.GetState,
+                    camera2.Command.GetState,
+                    connectivity.Command.GetState,
+                    developer.Command.GetState,
                     network.Command.GetState,
+                    pointnfly.Command.GetState,
+                    privacy.Command.GetState,
+                    sleepmode.Command.GetState,
                 ]
                 for all_states_settings_command in all_states_settings_commands:
                     self._send_command_raw(all_states_settings_command, dict())
@@ -571,7 +585,6 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         event = DisconnectedEvent()
         self.logger.info(str(event))
         self._scheduler.process_event(event)
-        self._scheduler.stop()
 
         self._reset_instance()
 
@@ -587,6 +600,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
     def _cleanup(self):
         self._on_device_removed()
         self._drone_manager_subscriber.unsubscribe()
+        self._scheduler.stop()
         self._scheduler.destroy()
 
     def destroy(self):
@@ -708,6 +722,16 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
             raise KeyError(f"Message `{message.fullName}` last event is unavailable")
         return event
 
+    def get_last_events(self, message, key=None):
+        """
+        Returns the drone last event for the event message given in parameter
+        """
+        event = None
+        for event in self._get_message(message.id).last_events(key=key):
+            yield event
+        if event is None:
+            raise KeyError(f"Message `{message.fullName}` last event is unavailable")
+
     def get_state(self, message):
         """
         Returns the drone current state for the event message given in parameter
@@ -727,17 +751,22 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         _float_tol = kwds.pop("_float_tol", DEFAULT_FLOAT_TOL)
         expectation = message._expectation_from_args(*args, **kwds)
         expectation.set_float_tol(_float_tol)
+        expectation._await(self._scheduler)
         if message.callback_type is not messages.ArsdkMessageCallbackType.MAP:
             key = None
         else:
-            key = expectation.expected_args[message.key_name]
+            if message.key_name not in expectation.expected_args:
+                key = None
+            else:
+                key = expectation.expected_args[message.key_name]
         try:
-            last_event = self.get_last_event(message, key=key)
+            for last_event in self.get_last_events(message, key=key):
+                if expectation.check(last_event).success():
+                    return True
         except KeyError:
             return False
-        if last_event is None:
+        else:
             return False
-        return expectation.check(last_event).success()
 
     def query_state(self, query):
         """

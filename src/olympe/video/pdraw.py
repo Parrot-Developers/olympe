@@ -663,7 +663,7 @@ class Pdraw(LogMixin):
         else:
             return 0
 
-    def _media_added(self, pdraw, media_info, userdata):
+    def _media_added(self, pdraw, media_info, element_userdata, userdata):
         id_ = int(media_info.contents.id)
         self.logger.info(f"_media_added id : {id_}")
 
@@ -795,7 +795,7 @@ class Pdraw(LogMixin):
             id_,
         )
 
-    def _media_removed(self, pdraw, media_info, userdata):
+    def _media_removed(self, pdraw, media_info, element_userdata, userdata):
         id_ = media_info.contents.id
         if id_ not in self.streams:
             self.logger.error(f"Received removed event from unknown ID {id_}")

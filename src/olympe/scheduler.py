@@ -297,6 +297,10 @@ class DefaultScheduler(AbstractScheduler):
         return subscriber
 
     def unsubscribe(self, subscriber):
+        self._attr.default.pomp_loop_thread.run_async(
+            self._aunsubscribe, subscriber).result(subscriber.timeout)
+
+    async def _aunsubscribe(self, subscriber):
         """
         Unsubscribe a previously registered subscriber
 
@@ -307,7 +311,7 @@ class DefaultScheduler(AbstractScheduler):
             futures = self._attr.default.running_subscribers.pop(id(subscriber), set())
             for future in futures:
                 try:
-                    future.result(subscriber.timeout)
+                    await future
                 except Exception as e:
                     self._attr.default.logger.exception(e)
             self._attr.default.subscribers.remove(subscriber)

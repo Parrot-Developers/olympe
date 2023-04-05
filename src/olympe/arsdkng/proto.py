@@ -50,27 +50,31 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def proto_type_to_python(proto_type):
-    return {
-        FieldDescriptor.TYPE_DOUBLE: float,
-        FieldDescriptor.TYPE_FLOAT: float,
-        FieldDescriptor.TYPE_INT64: int,
-        FieldDescriptor.TYPE_UINT64: int,
-        FieldDescriptor.TYPE_INT32: int,
-        FieldDescriptor.TYPE_FIXED64: int,
-        FieldDescriptor.TYPE_FIXED32: int,
-        FieldDescriptor.TYPE_BOOL: bool,
-        FieldDescriptor.TYPE_STRING: str,
-        FieldDescriptor.TYPE_GROUP: list,
-        FieldDescriptor.TYPE_MESSAGE: dict,
-        FieldDescriptor.TYPE_BYTES: bytes,
-        FieldDescriptor.TYPE_UINT32: int,
-        FieldDescriptor.TYPE_ENUM: str,
-        FieldDescriptor.TYPE_SFIXED32: int,
-        FieldDescriptor.TYPE_SFIXED64: int,
-        FieldDescriptor.TYPE_SINT32: int,
-        FieldDescriptor.TYPE_SINT64: int,
-    }[proto_type]
+def proto_type_to_python(proto_type, message_type):
+    if message_type is None or not message_type.full_name.startswith("google.protobuf"):
+        return {
+            FieldDescriptor.TYPE_DOUBLE: float,
+            FieldDescriptor.TYPE_FLOAT: float,
+            FieldDescriptor.TYPE_INT64: int,
+            FieldDescriptor.TYPE_UINT64: int,
+            FieldDescriptor.TYPE_INT32: int,
+            FieldDescriptor.TYPE_FIXED64: int,
+            FieldDescriptor.TYPE_FIXED32: int,
+            FieldDescriptor.TYPE_BOOL: bool,
+            FieldDescriptor.TYPE_STRING: str,
+            FieldDescriptor.TYPE_GROUP: list,
+            FieldDescriptor.TYPE_MESSAGE: dict,
+            FieldDescriptor.TYPE_BYTES: bytes,
+            FieldDescriptor.TYPE_UINT32: int,
+            FieldDescriptor.TYPE_ENUM: str,
+            FieldDescriptor.TYPE_SFIXED32: int,
+            FieldDescriptor.TYPE_SFIXED64: int,
+            FieldDescriptor.TYPE_SINT32: int,
+            FieldDescriptor.TYPE_SINT64: int,
+        }[proto_type]
+    else:
+        field = list(message_type.fields)[0]
+        return lambda: {field.name: proto_type_to_python(field.type, None)()}
 
 
 class ProtoFieldLabel(aenum.Enum):
