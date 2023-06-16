@@ -46,12 +46,13 @@ from olympe.messages import camera2
 from olympe.messages import connectivity
 from olympe.messages import common
 from olympe.messages import developer
+from olympe.messages import devicemanager
 from olympe.messages import drone_manager
+from olympe.messages import microhard
 from olympe.messages import mission
 from olympe.messages import network
 from olympe.messages import pointnfly
 from olympe.messages import privacy
-from olympe.messages import sleepmode
 from olympe.scheduler import AbstractScheduler, Scheduler
 from collections import OrderedDict
 from olympe.utils import py_object_cast, callback_decorator, DEFAULT_FLOAT_TOL
@@ -461,20 +462,29 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
                 all_states_settings_commands = [
                     common.Common.AllStates,
                     common.Settings.AllSettings,
-                    antiflicker.Command.GetState,
-                    camera2.Command.GetState,
-                    connectivity.Command.GetState,
-                    developer.Command.GetState,
-                    network.Command.GetState,
-                    pointnfly.Command.GetState,
-                    privacy.Command.GetState,
-                    sleepmode.Command.GetState,
                 ]
                 for all_states_settings_command in all_states_settings_commands:
                     self._send_command_raw(all_states_settings_command, dict())
 
                 # Enable airsdk mission support from the drone
                 self._send_command_raw(mission.custom_msg_enable, dict())
+                self._send_command_raw(developer.Command.GetState, dict())
+
+                get_state_commands = [
+                    antiflicker.Command.GetState,
+                    camera2.Command.GetState,
+                    connectivity.Command.GetState,
+                    devicemanager.Command.GetState,
+                    microhard.Command.GetState,
+                    network.Command.GetState,
+                    pointnfly.Command.GetState,
+                    privacy.Command.GetState,
+                ]
+
+                for get_state_command in get_state_commands:
+                    self._send_command_raw(
+                        get_state_command, dict(include_default_capabilities=True)
+                    )
 
     @callback_decorator()
     def _dispose_cmd_cb(self, _interface, _user_data):

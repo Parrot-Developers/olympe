@@ -110,9 +110,9 @@ class ArsdkProtoEnum(
     pass
 
 
-class ArsdkProtoFieldDoc(
+class ArsdkProtoField(
     namedtuple(
-        "ArsdkProtoFieldDoc",
+        "ArsdkProtoField",
         ["name", "type", "label", "exclusive_with", "doc"],
     )
 ):
@@ -122,7 +122,7 @@ class ArsdkProtoFieldDoc(
 class ArsdkProtoMessageDoc(
     namedtuple(
         "ArsdkProtoMessageDoc",
-        ["doc", "fields_doc", "support"],
+        ["doc", "support"],
     )
 ):
     pass
@@ -131,7 +131,7 @@ class ArsdkProtoMessageDoc(
 class ArsdkProtoMessage(
     namedtuple(
         "ArsdkProtoMessage",
-        ["name", "path", "message", "feature_name", "doc"],
+        ["name", "path", "message", "feature_name", "doc", "fields"],
     )
 ):
     pass
@@ -149,6 +149,7 @@ class ArsdkProtoServiceMessage(
             "service_type",
             "service",
             "message",
+            "fields",
             "on_success",
             "on_failure",
         ],
@@ -176,7 +177,6 @@ class ArsdkProtoFeature(
 
 
 class ArsdkProto:
-
     _store = {}
 
     @classmethod
@@ -269,7 +269,7 @@ class ArsdkProto:
             self.field_doc_ext = self.parent.field_doc_ext
             self.support_ext = self.parent.support_ext
 
-    def create_service(self, feature_name, service_descriptor):
+    def create_service(self, feature_name, module_descriptor, service_descriptor):
         service_type = service_descriptor.name
         service_name = service_descriptor.full_name
         service_id = self.service_id(service_name)
@@ -284,10 +284,11 @@ class ArsdkProto:
             field_type,
             field_enums,
             message,
+            fields,
             success,
             failure,
         ) in self.list_oneof_messages(
-            feature_name, service_descriptor.oneofs_by_name["id"]
+            feature_name, module_descriptor, service_descriptor.oneofs_by_name["id"]
         ):
             messages.append(
                 ArsdkProtoServiceMessage(
@@ -299,6 +300,7 @@ class ArsdkProto:
                     service_type,
                     service,
                     message,
+                    fields,
                     success,
                     failure,
                 )
@@ -331,7 +333,7 @@ class ArsdkProto:
                 )
         return message_type, enum_types
 
-    def list_oneof_messages(self, feature_name, oneof_descriptor):
+    def list_oneof_messages(self, feature_name, module_descriptor, oneof_descriptor):
         for field in oneof_descriptor.fields:
             if field.message_type is None:
                 message_type, enum_types = self.message_type_from_field(
@@ -352,6 +354,7 @@ class ArsdkProto:
             if self.on_success_ext is not None:
                 success_exp = message_type.GetOptions().Extensions[self.on_success_ext]
                 failure_exp = message_type.GetOptions().Extensions[self.on_failure_ext]
+            fields = self.message_fields(feature_name, module_descriptor, prototype)
             yield (
                 field.number,
                 message_name,
@@ -360,6 +363,7 @@ class ArsdkProto:
                 message_type,
                 enum_types,
                 prototype,
+                fields,
                 success_exp,
                 failure_exp,
             )
@@ -397,6 +401,33 @@ class ArsdkProto:
                 FieldDescriptor.TYPE_SINT64: "i64",
             }[field_descriptor.type]
 
+    def message_fields(self, feature_name, module_descriptor, message):
+        fields = []
+        for field in message.DESCRIPTOR.fields:
+            type_ = self._get_field_type(module_descriptor, feature_name, field)
+            label = None
+            if field.label:
+                label = ProtoFieldLabel(field.label)
+            exclusive_with = []
+            if field.containing_oneof is not None:
+                exclusive_with = list(
+                    filter(
+                        lambda n: n != field.name,
+                        map(lambda f: f.name, field.containing_oneof.fields),
+                    )
+                )
+
+            fields.append(
+                ArsdkProtoField(
+                    field.name,
+                    type_,
+                    label,
+                    exclusive_with,
+                    field.GetOptions().Extensions[self.field_doc_ext],
+                )
+            )
+        return fields
+
     def feature_messages(
         self, root, filename, feature_name, module_descriptor, services
     ):
@@ -418,32 +449,11 @@ class ArsdkProto:
                 message_doc = message.DESCRIPTOR.GetOptions().Extensions[
                     self.message_doc_ext
                 ]
-                field_docs = []
-                for field in message.DESCRIPTOR.fields:
-                    type_ = self._get_field_type(module_descriptor, feature_name, field)
-                    label = None
-                    if field.label:
-                        label = ProtoFieldLabel(field.label)
-                    exclusive_with = []
-                    if field.containing_oneof is not None:
-                        exclusive_with = list(filter(
-                            lambda n: n != field.name,
-                            map(lambda f: f.name, field.containing_oneof.fields)
-                        ))
-
-                    field_docs.append(
-                        ArsdkProtoFieldDoc(
-                            field.name,
-                            type_,
-                            label,
-                            exclusive_with,
-                            field.GetOptions().Extensions[self.field_doc_ext],
-                        )
-                    )
-                doc = ArsdkProtoMessageDoc(message_doc, field_docs, support)
+                doc = ArsdkProtoMessageDoc(message_doc, support)
+            fields = self.message_fields(feature_name, module_descriptor, message)
             ret.append(
                 ArsdkProtoMessage(
-                    message.DESCRIPTOR.name, path, message, feature_name, doc
+                    message.DESCRIPTOR.name, path, message, feature_name, doc, fields
                 )
             )
         for service in services:
@@ -462,6 +472,7 @@ class ArsdkProto:
                             svc_message_desc.field_type,
                             feature_name,
                             None,
+                            [],
                         )
                     )
         return ret
@@ -671,10 +682,16 @@ class ArsdkProto:
         services = []
         if hasattr(module, "Command"):
             services.append(
-                self.create_service(feature_name, module.Command.DESCRIPTOR)
+                self.create_service(
+                    feature_name, module.DESCRIPTOR, module.Command.DESCRIPTOR
+                )
             )
         if hasattr(module, "Event"):
-            services.append(self.create_service(feature_name, module.Event.DESCRIPTOR))
+            services.append(
+                self.create_service(
+                    feature_name, module.DESCRIPTOR, module.Event.DESCRIPTOR
+                )
+            )
         feature = ArsdkProtoFeature(
             feature_name,
             module,

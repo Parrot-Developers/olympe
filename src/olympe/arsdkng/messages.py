@@ -32,6 +32,7 @@ from builtins import str as builtin_str
 
 import arsdkparser
 import ctypes
+import math
 import textwrap
 
 from aenum import OrderedEnum
@@ -135,7 +136,6 @@ FLOAT_TOLERANCE_BY_FEATURE = {
 
 
 class ArsdkMessageMeta(type):
-
     _base = None
 
     def __new__(mcls, *args, **kwds):
@@ -495,9 +495,7 @@ class ArsdkMessageMeta(type):
                         )
                     )
                 else:
-                    ret.append(
-                        f"    :{device_str}: with an up to date firmware"
-                    )
+                    ret.append(f"    :{device_str}: with an up to date firmware")
         if not ret:
             return unsupported_notice
 
@@ -608,9 +606,7 @@ class ArsdkMessageMeta(type):
         elif isinstance(argval, ArsdkBitfield):
             return argval.pretty()
         elif callable(argval):
-            command_args = OrderedDict(
-                (arg, f"this.{arg}") for arg in cls.args_name
-            )
+            command_args = OrderedDict((arg, f"this.{arg}") for arg in cls.args_name)
             try:
                 return argval(cls, command_args)
             except KeyError:
@@ -913,9 +909,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
             if self._last_event is None:
                 self._last_event = OrderedDict()
             key = event.args[self.key_name]
-            if not event_list_flags or event_list_flags == [
-                list_flags.Last
-            ]:
+            if not event_list_flags or event_list_flags == [list_flags.Last]:
                 self._state[key] = event.args
             if list_flags.First in event_list_flags:
                 self._state = OrderedDict()
@@ -929,9 +923,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
             else:
                 self._last_event[key] = event
         elif self.callback_type == ArsdkMessageCallbackType.LIST:
-            if not event_list_flags or event.args["list_flags"] == [
-                list_flags.Last
-            ]:
+            if not event_list_flags or event.args["list_flags"] == [list_flags.Last]:
                 # append to the current list
                 insert_pos = next(reversed(self._state), -1) + 1
                 self._state[insert_pos] = event.args
@@ -1030,7 +1022,9 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         )
         for arg_name in args:
             if arg_name not in cls.args_name:
-                raise ValueError(f"'{cls.fullName}' message has no such '{arg_name}' parameter")
+                raise ValueError(
+                    f"'{cls.fullName}' message has no such '{arg_name}' parameter"
+                )
         if policy != ExpectPolicy.check:
             if not send_command and cls.message_type == ArsdkMessageType.CMD:
                 expectations = ArsdkWhenAllExpectations(
@@ -1116,7 +1110,10 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
                     args[name] = type_()
                 else:
                     args[name] = None
-        if cls.callback_type in (ArsdkMessageCallbackType.MAP, ArsdkMessageCallbackType.LIST):
+        if cls.callback_type in (
+            ArsdkMessageCallbackType.MAP,
+            ArsdkMessageCallbackType.LIST,
+        ):
             if "list_flags" not in args:
                 args[name] = list_flags._bitfield_type_()
         return args
@@ -1173,7 +1170,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         # python -> ctypes -> struct_arsdk_value argv conversion
         encode_args_len = len(cls.arsdk_type_args)
         argv = (od.struct_arsdk_value * encode_args_len)()
-        for (i, arg, sdktype, value_attr, ctype) in zip(
+        for i, arg, sdktype, value_attr, ctype in zip(
             range(encode_args_len),
             encoded_args,
             cls.arsdk_type_args,
@@ -1190,7 +1187,9 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
         Decode a ctypes message buffer into a list of python typed arguments. This also perform the
         necessary enum, bitfield and unicode conversions.
         """
-        od.arsdk_cmd_dec.argtypes = od.arsdk_cmd_dec.argtypes[:2] + cls.decoded_args_type
+        od.arsdk_cmd_dec.argtypes = (
+            od.arsdk_cmd_dec.argtypes[:2] + cls.decoded_args_type
+        )
 
         res = od.arsdk_cmd_dec(message_buffer, cls.arsdk_desc, *cls.decoded_args)
 
@@ -1201,7 +1200,8 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
                 decoded_args[i] = arg = arg.contents.value
             else:
                 decoded_args[i] = arg = (ctypes.c_char * arg.contents.len).from_address(
-                    arg.contents.cdata)
+                    arg.contents.cdata
+                )
             # bytes utf-8 -> str conversion
             if isinstance(arg, bytes):
                 decoded_args[i] = arg = str(arg, "utf-8")
@@ -1331,7 +1331,6 @@ class ArsdkMessages:
                 self._add_arsdk_proto_message(feature, message)
 
     def _add_arsdk_message(self, msgObj, name_path, id_path):
-
         message = ArsdkMessageMeta.__new__(
             ArsdkMessageMeta, msgObj, name_path, id_path, self.enums
         )
@@ -1397,7 +1396,7 @@ class ArsdkMessages:
                                 path,
                                 service,
                                 svc_message_desc,
-                                message_desc.doc,
+                                message_desc,
                             )
                             self._do_add_arsdk_proto_message(
                                 target_name_path, message, message_desc
@@ -1414,7 +1413,7 @@ class ArsdkMessages:
                             name_path,
                             service,
                             svc_message_desc,
-                            message_desc.doc,
+                            message_desc,
                         )
                         self._do_add_arsdk_proto_message(
                             name_path, message, message_desc
@@ -1430,8 +1429,8 @@ class ArsdkMessages:
                 self._root,
                 path,
                 None,
+                None,
                 message_desc,
-                message_desc.doc,
             )
             self._do_add_arsdk_proto_message(path, message, message_desc)
 
@@ -1556,7 +1555,6 @@ class ProtoNestedMixin:
 
 
 class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
-
     _base = None
 
     def __new__(mcls, *args, **kwds):
@@ -1573,7 +1571,7 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
             mcls._base = cls
             return cls
 
-        root, name_path, service, message_desc, doc_desc = args
+        root, name_path, service, svc_message_desc, message_desc = args
         olympe_proto = ArsdkProto.get("olympe")
         olympe_messages = ArsdkMessages.get("olympe")
         olympe_enums = ArsdkEnums.get("olympe")
@@ -1593,21 +1591,32 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         cls.args_map = OrderedDict()
         cls.dict_type = dict_type
         cls.service = service
+        cls.svc_message_desc = svc_message_desc
         cls.message_desc = message_desc
         cls.feature_name = name_path[0]
         cls.name = name_path[-1]
-        cls.doc = doc_desc
-        cls.field_name = getattr(message_desc, "field_name", None)
-        cls.service_proto = getattr(message_desc, "service", None)
-        cls.message_proto = message_desc.message
+        cls.doc = message_desc.doc
+        if svc_message_desc is not None:
+            cls.field_name = svc_message_desc.field_name
+            cls.service_proto = svc_message_desc.service
+            cls.message_proto = svc_message_desc.message
+            cls.number = svc_message_desc.number
+            cls.fields = svc_message_desc.fields
+            service_type = svc_message_desc.service_type
+        else:
+            cls.field_name = None
+            cls.service_proto = None
+            cls.message_proto = message_desc.message
+            cls.number = None
+            cls.fields = message_desc.fields
+            service_type = None
         cls.fullName = fullName
         cls.prefix = name_path[:-1]
-        cls.number = getattr(message_desc, "number", None)
         cls._recipient_id = None
         cls.loglevel = logging.INFO
         cls.buffer_type = ArsdkMessageBufferType.ACK
         cls.callback_type = ArsdkMessageCallbackType.STANDARD
-        if not cls.number or cls.number < 16:
+        if cls.number is None or cls.number < 16:
             cls.loglevel = logging.DEBUG
             cls.buffer_type = ArsdkMessageBufferType.NON_ACK
 
@@ -1623,7 +1632,6 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         cls.args_name = list(
             name for name in cls.real_args_name if name != "selected_fields"
         )
-        service_type = getattr(message_desc, "service_type", None)
         if service_type is None:
             cls.message_type = None
             cls._expectation = None
@@ -1719,8 +1727,10 @@ class ArsdkProtoMessageMeta(type, ProtoNestedMixin):
         cls._recipient_id = id_
 
     def _resolve_expectations(cls, messages, module):
+        if cls.svc_message_desc is None:
+            return
         expectation = cls._parse_expectation(
-            getattr(cls.message_desc, "on_success", None) or "None", module
+            cls.svc_message_desc.on_success or "None", module
         )
         if cls.message_type == ArsdkMessageType.CMD:
             cls._expectation = ArsdkProtoCommandExpectation(
@@ -1823,6 +1833,7 @@ class ArsdkProtoMessage(
     def _validate_args(self, args):
         assert isinstance(args, Mapping)
         args = self._map_enum_to_int(args)
+        args = self._map_float_specials(args)
         args = remove_from_collection(args, callable)
         for name, field in self.message_proto.DESCRIPTOR.fields_by_name.items():
             if name not in args:
@@ -1832,7 +1843,9 @@ class ArsdkProtoMessage(
                     args[name] = self.args_message[name]._validate_args(args[name])
                 elif field.label == ProtoFieldLabel.Repeated._value_:
                     assert isinstance(args[name], Iterable)
-                    args[name] = list(map(self.args_message[name]._validate_args, args[name]))
+                    args[name] = list(
+                        map(self.args_message[name]._validate_args, args[name])
+                    )
             elif field.message_type is not None and (
                     isinstance(args[name], Mapping) and
                     field.message_type.file.package == "google.protobuf"
@@ -1854,10 +1867,14 @@ class ArsdkProtoMessage(
                     )
                 elif field.label == ProtoFieldLabel.Repeated._value_:
                     assert isinstance(args[name], Iterable)
-                    args[name] = list(map(
-                        lambda a: self.args_message[name]._map_google_protobuf(
-                            a, unwrap=unwrap), args[name]
-                    ))
+                    args[name] = list(
+                        map(
+                            lambda a: self.args_message[name]._map_google_protobuf(
+                                a, unwrap=unwrap
+                            ),
+                            args[name],
+                        )
+                    )
             elif field.message_type is not None and (
                     field.message_type.file.package == "google.protobuf"
                     and field.message_type.fields
@@ -1894,7 +1911,8 @@ class ArsdkProtoMessage(
         unknown_args = tuple(filter(lambda a: a not in self.args_name, args.keys()))
         if unknown_args:
             raise ValueError(
-                f"Unknown {unknown_args} parameter(s) passed to {self.fullName}")
+                f"Unknown {unknown_args} parameter(s) passed to {self.fullName}"
+            )
         # filter out None value
         args = remove_from_collection(args, lambda a: a is None)
         self._validate_args(args)
@@ -1928,9 +1946,10 @@ class ArsdkProtoMessage(
             args_to_validate = []
             if self.message_type == ArsdkMessageType.CMD:
                 for expectation in expectations:
-                    if hasattr(expectation, "expected_args") and (
-                        hasattr(expectation, "expected_message")) and (
-                        not no_expect
+                    if (
+                        hasattr(expectation, "expected_args")
+                        and (hasattr(expectation, "expected_message"))
+                        and (not no_expect)
                     ):
                         args_to_validate.append(
                             (
@@ -1939,17 +1958,20 @@ class ArsdkProtoMessage(
                             )
                         )
             else:
-                unknown_args = tuple(filter(lambda a: a not in self.args_name, args.keys()))
+                unknown_args = tuple(
+                    filter(lambda a: a not in self.args_name, args.keys())
+                )
                 if unknown_args:
                     raise ValueError(
-                        f"Unknown {unknown_args} parameter(s) passed to {self.fullName}")
+                        f"Unknown {unknown_args} parameter(s) passed to {self.fullName}"
+                    )
                 args = expectations.expected_args
                 args_to_validate.append((args, self))
 
             # Use protobuf_json_format to validate protobuf message format
             # filter out lambda ArdkProtoThis lambdas before validation
             for expected_args, message in args_to_validate:
-                expected_args = self._validate_args(expected_args)
+                expected_args = message._validate_args(expected_args)
 
             if (
                 policy == ExpectPolicy.check_wait
@@ -1969,9 +1991,7 @@ class ArsdkProtoMessage(
             return expectations
 
     def _reverse_expect(self, *args, **kwds):
-        args, policy, float_tol, no_expect, timeout = self._expect_args(
-            *args, **kwds
-        )
+        args, policy, float_tol, no_expect, timeout = self._expect_args(*args, **kwds)
 
         if self.service is None:
             # Non-service messages are just equivalent to mapping object
@@ -1987,15 +2007,13 @@ class ArsdkProtoMessage(
             args_to_validate = []
             if self.message_type == ArsdkMessageType.EVT:
                 for expectation in expectations:
-                    if hasattr(expectation, "expected_args") and (
-                        hasattr(expectation, "expected_message")) and (
-                        not no_expect
+                    if (
+                        hasattr(expectation, "expected_args")
+                        and (hasattr(expectation, "expected_message"))
+                        and (not no_expect)
                     ):
                         args_to_validate.append(
-                            (
-                                expectation.expected_args,
-                                expectation.expected_message
-                            )
+                            (expectation.expected_args, expectation.expected_message)
                         )
             else:
                 args = expectations.expected_args
@@ -2055,8 +2073,11 @@ class ArsdkProtoMessage(
         args = self._map_set_selected_fields(self.message_proto, args)
         args = self._map_enum_to_str(args)
         args = self._map_google_protobuf(args)
-        if self.service_proto.DESCRIPTOR.fields_by_name[self.field_name].message_type is None:
-            proto = self.service_proto(**{self.field_name: args['value']})
+        if (
+            self.service_proto.DESCRIPTOR.fields_by_name[self.field_name].message_type
+            is None
+        ):
+            proto = self.service_proto(**{self.field_name: args["value"]})
         else:
             proto = self.service_proto(**{self.field_name: args})
         return bytearray(proto.SerializeToString(deterministic=True))
@@ -2080,6 +2101,55 @@ class ArsdkProtoMessage(
             args = self._map_google_protobuf(args, unwrap=True)
         else:
             args = OrderedDict(value=args)
+        return args
+
+    def _map_float_specials(self, args):
+        if args is None or callable(args):
+            return args
+        args = args.copy()
+
+        def _conv(value):
+            if math.isnan(value):
+                return "NaN"
+            elif math.isinf(value):
+                if value > 0.:
+                    return "Infinity"
+                else:
+                    return "-Infinity"
+            else:
+                return value
+
+        for argname, argvalue in args.copy().items():
+            if isinstance(argvalue, ArsdkProtoEnum):
+                args[argname] = int(argvalue._value_)
+            elif isinstance(argvalue, MutableMapping):
+                if argname == "selected_fields":
+                    continue
+                if argname in self.args_message:
+                    args[argname] = self.args_message[argname]._map_float_specials(
+                        argvalue
+                    )
+                elif argname in self.args_map:
+                    args[argname] = self.args_map[argname]._map_float_specials(argvalue)
+        for arg in args.keys():
+            if isinstance(args[arg], float):
+                args[arg] = _conv(args[arg])
+            elif isinstance(args[arg], Iterable) and (
+                all(map(lambda a: isinstance(a, float), args[arg]))
+            ):
+                args[arg] = tuple(_conv(a) for a in args[arg])
+        for nested_message_name, nested_message in self.args_message.items():
+            if nested_message_name not in args:
+                continue
+            if isinstance(args[nested_message_name], (tuple, list)):
+                args[nested_message_name] = type(args[nested_message_name])(
+                    nested_message._map_float_specials(a)
+                    for a in args[nested_message_name]
+                )
+            else:
+                args[nested_message_name] = nested_message._map_float_specials(
+                    args[nested_message_name]
+                )
         return args
 
     def _map_enum_type(self, args):
@@ -2137,7 +2207,9 @@ class ArsdkProtoMessage(
                 if argname == "selected_fields":
                     continue
                 if argname in self.args_message:
-                    args[argname] = self.args_message[argname]._map_enum_to_int(argvalue)
+                    args[argname] = self.args_message[argname]._map_enum_to_int(
+                        argvalue
+                    )
                 elif argname in self.args_map:
                     args[argname] = self.args_map[argname]._map_enum_to_int(argvalue)
         for arg, enum in self.args_enum.items():
@@ -2157,7 +2229,8 @@ class ArsdkProtoMessage(
                     if isinstance(v, int):
                         continue
                     args[nested_map_name][k] = int(
-                        nested_map.args_enum["value"][v]._value_)
+                        nested_map.args_enum["value"][v]._value_
+                    )
         for nested_message_name, nested_message in self.args_message.items():
             if nested_message_name not in args:
                 continue
@@ -2183,7 +2256,9 @@ class ArsdkProtoMessage(
                 if argname == "selected_fields":
                     continue
                 if argname in self.args_message:
-                    args[argname] = self.args_message[argname]._map_enum_to_str(argvalue)
+                    args[argname] = self.args_message[argname]._map_enum_to_str(
+                        argvalue
+                    )
                 elif argname in self.args_map:
                     args[argname] = self.args_map[argname]._map_enum_to_str(argvalue)
         for arg, enum in self.args_enum.items():
@@ -2332,6 +2407,30 @@ class ArsdkProtoMessage(
             if self._last_event[key] is not None:
                 yield self._last_event[key]
 
+    def _update_oneofs_state(self, state, args):
+        for field in self.fields:
+            if field.name not in args:
+                continue
+            # If a oneof field is present in the received event:
+            # drop its associated oneofs fields state
+            for exclusive_with in field.exclusive_with:
+                state.pop(exclusive_with, None)
+        # Recursively update oneofs
+        for nested_message_name, nested_message in self.args_message.items():
+            if nested_message_name not in args:
+                continue
+            if nested_message_name not in state:
+                continue
+            if isinstance(state[nested_message_name], (tuple, list)):
+                for s, a in zip(
+                    state[nested_message_name], args[nested_message_name]
+                ):
+                    nested_message._update_oneofs_state(s, a)
+            else:
+                nested_message._update_oneofs_state(
+                    state[nested_message_name], args[nested_message_name]
+                )
+
     def _set_last_event(self, event):
         if event.id != self.id:
             raise RuntimeError(
@@ -2340,6 +2439,9 @@ class ArsdkProtoMessage(
                 )
             )
         self._last_event = event
+        # Honor oneofs fields when before updating our cached states
+        self._update_oneofs_state(self._state, event.args)
+        # Recursively update our cached state
         update_mapping(self._state, event.args)
 
     @classmethod
@@ -2372,13 +2474,17 @@ class ArsdkProtoMessage(
                 continue
             if isinstance(args[nested_message_name], ArsdkProtoThis):
                 continue
-            elif isinstance(args[nested_message_name] , (tuple, list)):
+            elif isinstance(args[nested_message_name], (tuple, list)):
                 args[nested_message_name] = type(args[nested_message_name])(
-                    map(lambda a: nested_message._argsmap_from_args(a), args[nested_message_name])
+                    map(
+                        lambda a: nested_message._argsmap_from_args(a),
+                        args[nested_message_name],
+                    )
                 )
             else:
                 args[nested_message_name] = nested_message._argsmap_from_args(
-                    **args[nested_message_name])
+                    **args[nested_message_name]
+                )
 
         return args
 
@@ -2438,9 +2544,7 @@ class ArsdkProtoMessage(
                         )
                     )
                 else:
-                    ret.append(
-                        f"    :{device_str}: with an up to date firmware"
-                    )
+                    ret.append(f"    :{device_str}: with an up to date firmware")
         if not ret:
             return "\n**Unsupported message**\n"
         docstring = "\nSupported by:\n"
@@ -2452,20 +2556,20 @@ class ArsdkProtoMessage(
     def _resolve_doc(cls, messages, module):
         if cls.doc is not None:
             cls.docstring = cls.doc.doc + "\n"
-            for field_doc in cls.doc.fields_doc:
-                if field_doc.name == "selected_fields":
+            for field in cls.message_desc.fields:
+                if field.name == "selected_fields":
                     continue
                 exclusive_with = ""
-                if field_doc.exclusive_with:
-                    exclusive_with = ', '.join(field_doc.exclusive_with)
+                if field.exclusive_with:
+                    exclusive_with = ", ".join(field.exclusive_with)
                     exclusive_with = f" (mutually exclusive with: {exclusive_with})"
-                cls.docstring += f"\n:param {field_doc.name}: {field_doc.doc} {exclusive_with}\n"
-                if field_doc.label is ProtoFieldLabel.Repeated:
-                    cls.docstring += (
-                        f"\n:type {field_doc.name}: list({field_doc.type})\n"
-                    )
+                cls.docstring += (
+                    f"\n:param {field.name}: {field.doc} {exclusive_with}\n"
+                )
+                if field.label is ProtoFieldLabel.Repeated:
+                    cls.docstring += f"\n:type {field.name}: list({field.type})\n"
                 else:
-                    cls.docstring += f"\n:type {field_doc.name}: {field_doc.type}\n"
+                    cls.docstring += f"\n:type {field.name}: {field.type}\n"
             cls.docstring += "\n"
             cls.docstring += cls._supported_doc()
 

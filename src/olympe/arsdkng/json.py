@@ -47,7 +47,7 @@ class JSONEncoder(json.JSONEncoder):
                 f"{o.__class__.__name__}.{o.to_upper_str()}"
             )
         elif issubclass(o.__class__, ArsdkMessageBase):
-            return f"olympe.messages.{o.feature_name}.{o.name}"
+            return f"olympe.messages.{o.fullName}"
         return super().default(o)
 
 

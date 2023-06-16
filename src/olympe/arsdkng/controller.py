@@ -55,7 +55,6 @@ from olympe.messages import network
 from olympe.messages import pointnfly
 from olympe.messages import privacy
 from olympe.messages import skyctrl
-from olympe.messages import sleepmode
 from olympe.video.pdraw import (PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT)
 from tzlocal import get_localzone
 from warnings import warn
@@ -601,23 +600,22 @@ class ControllerBase(CommandInterfaceBase):
                 not self._ip_addr_str.startswith("127.0")):
             self._synchronize_clock()
         # We're connected to the device, get all device states and settings if necessary
+        get_state_commands = []
         if not self._is_skyctrl:
             all_states_settings_commands = [
                 common.Common.AllStates(), common.Settings.AllSettings()
             ]
             if self._device_type != od.ARSDK_DEVICE_TYPE_ANAFI4K:
-                all_states_settings_commands.extend(
-                    [
-                        antiflicker.Command.GetState(),
-                        camera2.Command.GetState(),
-                        connectivity.Command.GetState(),
-                        developer.Command.GetState(),
-                        network.Command.GetState(),
-                        pointnfly.Command.GetState(),
-                        privacy.Command.GetState(),
-                        sleepmode.Command.GetState(),
-                        mission.custom_msg_enable()]
-                )
+                get_state_commands = [
+                    antiflicker.Command.GetState(include_default_capabilities=True),
+                    camera2.Command.GetState(include_default_capabilities=True),
+                    connectivity.Command.GetState(include_default_capabilities=True),
+                    developer.Command.GetState(),
+                    network.Command.GetState(include_default_capabilities=True),
+                    pointnfly.Command.GetState(include_default_capabilities=True),
+                    privacy.Command.GetState(include_default_capabilities=True),
+                    mission.custom_msg_enable()
+                ]
         else:
             all_states_settings_commands = [
                 skyctrl.Common.AllStates(),
@@ -631,7 +629,7 @@ class ControllerBase(CommandInterfaceBase):
                 od.ARSDK_DEVICE_TYPE_SKYCTRL_3,
                 od.ARSDK_DEVICE_TYPE_SKYCTRL_UA,
             ]:
-                all_states_settings_commands.append(controllerNetwork.Command.GetState())
+                get_state_commands = [controllerNetwork.Command.GetState()]
         # Get device specific states and settings
         for states_settings_command in all_states_settings_commands:
             timeout = self._connection_deadline - time.time()
@@ -642,6 +640,20 @@ class ControllerBase(CommandInterfaceBase):
                 )
             except FutureTimeoutError:
                 return False
+            if not res:
+                return False
+
+        # Get specific optional states
+        for state_command in get_state_commands:
+            timeout = self._connection_deadline - time.time()
+            try:
+                res = await self._thread_loop.await_for(
+                    timeout,
+                    self._send_states_settings_cmd, state_command
+                )
+            except FutureTimeoutError:
+                # Protobuf Command.GetState are optional
+                return True
             if not res:
                 return False
 

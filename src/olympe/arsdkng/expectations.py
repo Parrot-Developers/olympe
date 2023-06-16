@@ -504,8 +504,10 @@ class ArsdkCommandExpectation(ArsdkMultipleExpectation):
             self._command_future = controller._send_command_raw(
                 self.command_message, self.command_args
             )
+            super()._schedule(scheduler)
             self._command_future.add_done_callback(lambda _: self.check(None))
-        super()._schedule(scheduler)
+        else:
+            super()._schedule(scheduler)
 
     def no_expect(self, value):
         self._no_expect = value
@@ -615,10 +617,12 @@ class ArsdkProtoCommandExpectation(ArsdkExpectationBase):
             self._command_future = controller._send_protobuf_command(
                 self.command_message, self.command_args
             )
+            super()._schedule(scheduler)
             self._command_future.add_done_callback(lambda _: self.check(None))
             if self.expectation is not None:
                 self.expectation._schedule(scheduler)
-        super()._schedule(scheduler)
+        else:
+            super()._schedule(scheduler)
 
     def no_expect(self, value):
         self._no_expect = value
