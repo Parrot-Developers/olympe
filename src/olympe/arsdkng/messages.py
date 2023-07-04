@@ -2426,7 +2426,7 @@ class ArsdkProtoMessage(
                     state[nested_message_name], args[nested_message_name]
                 ):
                     nested_message._update_oneofs_state(s, a)
-            else:
+            elif args[nested_message_name] is not None:
                 nested_message._update_oneofs_state(
                     state[nested_message_name], args[nested_message_name]
                 )
