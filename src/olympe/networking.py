@@ -30,6 +30,7 @@
 from abc import ABC, abstractmethod
 from array import array
 from aenum import IntEnum, IntFlag
+from olympe.types import PointerType
 from olympe.utils import callback_decorator
 from .concurrent import Condition, Semaphore, Future, Loop, TimeoutError
 
@@ -98,7 +99,7 @@ class SocketBase:
     def __init__(
         self,
         ctx: "SocketContext",
-        conn: "od.POINTER_T[od.struct_pomp_conn]",
+        conn: PointerType[od.struct_pomp_conn],
         read_buffer_size=DEFAULT_READ_BUFFER_SIZE,
     ):
         self._ctx = ctx
@@ -118,6 +119,12 @@ class SocketBase:
     @property
     def fileno(self):
         return self._fd
+
+    @property
+    def closed(self):
+        if not self._conn:
+            return True
+        return od.pomp_conn_get_fd(self._conn) < 0
 
     def _set_conn(self, conn):
         assert conn
@@ -214,7 +221,7 @@ class SocketBase:
     @callback_decorator()
     def _get_local_addr(self):
         addrlen = ctypes.c_uint32()
-        sockaddr: "od.POINTER_T[od.struct_sockaddr]" = od.pomp_conn_get_local_addr(
+        sockaddr: PointerType[od.struct_sockaddr] = od.pomp_conn_get_local_addr(
             self._conn, ctypes.byref(addrlen)
         )
         if not sockaddr:
@@ -231,7 +238,7 @@ class SocketBase:
     @callback_decorator()
     def _get_peer_addr(self):
         addrlen = ctypes.c_uint32()
-        sockaddr: "od.POINTER_T[od.struct_sockaddr]" = od.pomp_conn_get_peer_addr(
+        sockaddr: PointerType[od.struct_sockaddr] = od.pomp_conn_get_peer_addr(
             self._conn, ctypes.byref(addrlen)
         )
         if not sockaddr:
@@ -417,12 +424,12 @@ _WritableBuffer = typing.Union[bytearray, memoryview, array]
 
 class Buffer:
     def __init__(self, capacity: int):
-        self._buf: "od.POINTER_T[od.struct_pomp_buffer]" = od.pomp_buffer_new(capacity)
+        self._buf: PointerType[od.struct_pomp_buffer] = od.pomp_buffer_new(capacity)
         if not self._buf:
             raise RuntimeError("Failed to allocate a pomp buffer")
 
     @classmethod
-    def _from_pomp(cls, buf: "od.POINTER_T[od.struct_pomp_buffer]") -> "Buffer":
+    def _from_pomp(cls, buf: PointerType[od.struct_pomp_buffer]) -> "Buffer":
         obj = cls.__new__(cls)
         obj._buf = buf
         return obj
@@ -509,10 +516,11 @@ class SocketContext(ABC):
         self._loop: Loop = loop
         self._buffers: typing.List[Buffer] = []
         self.logger = self._loop.logger
+        self._stopped = False
         self._callbacks = []
         event_cb = od.pomp_event_cb_t(self._event_cb)
         self._callbacks.append(event_cb)
-        self._ctx: "od.POINTER_T[od.pomp_ctx]" = od.pomp_ctx_new_with_loop(
+        self._ctx: PointerType[od.pomp_ctx] = od.pomp_ctx_new_with_loop(
             event_cb, None, self._loop.pomp_loop
         )
         if not self._ctx:
@@ -538,6 +546,18 @@ class SocketContext(ABC):
         self._socket_creation_listeners: typing.List[SocketCreationListener] = []
         self._data_listeners: typing.List[DataListener] = []
 
+    @abstractmethod
+    async def astop(self) -> bool:
+        if self._stopped:
+            self.logger.error(f"{self} is already stopped")
+            raise RuntimeError(f"{self} is already stopped")
+        self._stopped = True
+        return True
+
+    @property
+    def stopped(self):
+        return self._stopped
+
     def add_socket_creation_listener(
         self, socket_creation_listener: SocketCreationListener
     ):
@@ -557,7 +577,8 @@ class SocketContext(ABC):
     async def _acleanup(self):
         if self._ctx is None:
             return True
-        await self.astop()
+        if not self.stopped:
+            await self.astop()
         if self._ctx is None:
             return True
         res = od.pomp_ctx_destroy(self._ctx)
@@ -573,7 +594,7 @@ class SocketContext(ABC):
             return True
 
     async def adestroy(self):
-        self._loop.unregister_cleanup(self._acleanup)
+        self._loop.unregister_cleanup(self._acleanup, ignore_error=True)
         if not await self._acleanup():
             self._loop.register_cleanup(self._acleanup)
 
@@ -601,11 +622,11 @@ class SocketContext(ABC):
     @callback_decorator()
     def _event_cb(
         self,
-        ctx: "od.POINTER_T[od.pomp_ctx]",
+        ctx: PointerType[od.struct_pomp_ctx],
         event: od.pomp_event,
-        conn: "od.POINTER_T[od.pomp_conn]",
-        pomp_msg: "od.POINTER_T[od.pomp_msg]",
-        userdata: "od.POINTER_T[None]",
+        conn: PointerType[od.struct_pomp_conn],
+        pomp_msg: PointerType[od.struct_pomp_msg],
+        userdata
     ):
         if event == od.POMP_EVENT_CONNECTED:
             self._on_connected_cb(conn)
@@ -617,19 +638,19 @@ class SocketContext(ABC):
         else:
             self.logger.error(f"Unknown pomp event {event}")
 
-    def _on_connected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_connected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         raise NotImplementedError(f"Not implemented for {self.__class__.__name__}")
 
-    def _on_disconnected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_disconnected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         raise NotImplementedError(f"Not implemented for {self.__class__.__name__}")
 
     @callback_decorator()
     def _raw_cb(
         self,
-        ctx: "od.POINTER_T[od.pomp_ctx]",
-        conn: "od.POINTER_T[od.pomp_conn]",
-        pomp_buf: "od.POINTER_T[od.pomp_buf]",
-        userdata: "od.POINTER_T[None]",
+        ctx: PointerType[od.struct_pomp_ctx],
+        conn: PointerType[od.struct_pomp_conn],
+        pomp_buf: PointerType[od.struct_pomp_buffer],
+        userdata
     ):
         connection = self._get_connection(conn)
         buffer = Buffer._from_pomp(pomp_buf)
@@ -643,21 +664,21 @@ class SocketContext(ABC):
     @callback_decorator()
     def _socket_cb(
         self,
-        ctx: "od.POINTER_T[od.pomp_ctx]",
+        ctx: PointerType[od.struct_pomp_ctx],
         fd: int,
-        kind: "od.pomp_socket_kind",
-        userdata: "od.POINTER_T[None]",
+        kind: od.pomp_socket_kind,
+        userdata
     ):
-        kind = SocketKind(kind)
+        kind_ = SocketKind(kind)
         for socket_creation_listener in self._socket_creation_listeners:
-            socket_creation_listener.socket_created(self, fd, kind)
+            socket_creation_listener.socket_created(self, fd, kind_)
 
     @callback_decorator()
     def _send_cb(
         self,
-        ctx: "od.POINTER_T[od.pomp_ctx]",
-        conn: "od.POINTER_T[od.pomp_conn]",
-        buf: "od.POINTER_T[od.pomp_buf]",
+        ctx: PointerType[od.struct_pomp_ctx],
+        conn: PointerType[od.struct_pomp_conn],
+        buf: PointerType[od.struct_pomp_buffer],
         status: ctypes.c_uint32,
         cookie: ctypes.c_void_p,
         userdata: ctypes.c_void_p,
@@ -670,7 +691,7 @@ class SocketContext(ABC):
             data_listener.data_sent(self, connection, buffer, status)
 
     @abstractmethod
-    def _get_connection(self, conn: "od.POINTER_T[od.struct_pomp_conn]"):
+    def _get_connection(self, conn: PointerType[od.struct_pomp_conn]):
         pass
 
     def _get_sockaddr(self, addr, port):
@@ -765,7 +786,8 @@ class UdpContext(SocketContext):
     def stop(self):
         return self._loop.run_async(self.astop)
 
-    async def astop(self):
+    async def astop(self) -> bool:
+        await super().astop()
         if self._bound:
             res = od.pomp_ctx_stop(self._ctx)
             if res < 0:
@@ -775,7 +797,7 @@ class UdpContext(SocketContext):
         self._dgram_socket = None
         return True
 
-    def _get_connection(self, conn: "od.POINTER_T[od.struct_pomp_conn]"):
+    def _get_connection(self, conn: PointerType[od.struct_pomp_conn]):
         self._dgram_socket._set_conn(conn)
         return self._dgram_socket
 
@@ -813,23 +835,23 @@ class TcpClient(SocketContext):
         return self._loop.run_async(self.aconnect, addr, port, timeout=timeout)
 
     async def aconnect(self, addr, port, timeout=None):
-        if self._client_connection:
-            self.logger.debug("Client already connected")
-            return True
-        if not self._connecting:
-            sockaddr, addrlen, _ = self._get_sockaddr(addr, port)
-            res = od.pomp_ctx_connect(self._ctx, sockaddr, addrlen)
-            if res < 0:
-                self.logger.error(f"Failed to connect to {addr.decode()}:{port}: {res}")
-                return False
-            self._connecting = True
-
-            if timeout is None:
-                timeout = DEFAULT_CONNECTION_TIMEOUT
-            self._loop.run_delayed(timeout, self._connection_waiter)
         async with self._connection_condition:
+            if self._client_connection is not None:
+                # This may happen in case a previous async connection eventualy succeeded after
+                # this method returned in timeout. We MUST ensure self._connected is set to True
+                # in this case.
+                self._connected = True
+                self.logger.debug("Client already connected")
+                return True
+            if not self._connecting:
+                sockaddr, addrlen, _ = self._get_sockaddr(addr, port)
+                res = od.pomp_ctx_connect(self._ctx, sockaddr, addrlen)
+                if res < 0:
+                    self.logger.error(f"Failed to connect to {addr.decode()}:{port}: {res}")
+                    return False
+                self._connecting = True
+
             await self._connection_condition.wait()
-        self._connected = self._client_connection is not None
         return self._connected
 
     async def _connection_waiter(self):
@@ -841,6 +863,15 @@ class TcpClient(SocketContext):
         return self._loop.run_async(self.adisconnect)
 
     async def adisconnect(self):
+        return await self.astop()
+
+    async def _disconnection_waiter(self):
+        async with self._disconnection_condition:
+            self._disconnecting = False
+            self._disconnection_condition.notify_all()
+
+    async def astop(self) -> bool:
+        await super().astop()
         if self._ctx is None:
             return True
         if not self._disconnecting:
@@ -857,15 +888,7 @@ class TcpClient(SocketContext):
         self._connected = False
         return True
 
-    async def _disconnection_waiter(self):
-        async with self._disconnection_condition:
-            self._disconnecting = False
-            self._disconnection_condition.notify_all()
-
-    async def astop(self):
-        return await self.adisconnect()
-
-    def _get_connection(self, conn: "od.POINTER_T[od.struct_pomp_conn]"):
+    def _get_connection(self, conn: PointerType[od.struct_pomp_conn]):
         return self._client_connection
 
     def _data_received(self, buffer):
@@ -876,23 +899,29 @@ class TcpClient(SocketContext):
         assert self._client_connection is not None
         self._client_connection._ack_data(buffer, send_status)
 
-    def _on_connected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_connected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         self._loop.run_later(self._aon_connected, conn)
 
-    async def _aon_connected(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    async def _aon_connected(self, conn: PointerType[od.struct_pomp_conn]):
         async with self._connection_condition:
             self._client_connection = Connection(self, conn)
+            # The connection might already have been closed asynchronously
+            # e.g. by the remote, so we have to check if the connection
+            # is not already closed
+            self._connected = not self._client_connection.closed
+            if not self._connected:
+                self._loop.logger.error("Connection early disconnection")
             self._connecting = False
             self._connection_condition.notify_all()
             for connection_listener in self._connection_listeners:
                 connection_listener.connected(self._client_connection)
 
-    def _on_disconnected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_disconnected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         assert self._client_connection is not None
         assert od.pomp_conn_get_fd(conn) == self._client_connection.fileno
         self._loop.run_later(self._aon_disconnected, conn)
 
-    async def _aon_disconnected(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    async def _aon_disconnected(self, conn: PointerType[od.struct_pomp_conn]):
         async with self._disconnection_condition:
             if self._client_connection is not None:
                 self._client_connection._feed_eof()
@@ -902,6 +931,7 @@ class TcpClient(SocketContext):
             if self._client_connection is not None:
                 for connection_listener in self._connection_listeners:
                     connection_listener.disconnected(self._client_connection)
+            self._client_connection = None
 
     def read(self, n=-1):
         if not self.connected:
@@ -925,7 +955,11 @@ class TcpClient(SocketContext):
 
     @property
     def connected(self):
-        return self._connected and self._client_connection is not None
+        return (
+            self._connected and
+            self._client_connection is not None and
+            not self._client_connection.closed
+        )
 
     @property
     def fd(self):
@@ -1127,7 +1161,7 @@ class TcpServer(SocketContext):
     def remove_connection_listener(self, connection_listener: ConnectionListener):
         self._connection_listeners.remove(connection_listener)
 
-    def _on_connected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_connected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         connection = Connection(self, conn)
         self._connections.append(connection)
         for connection_listener in self._connection_listeners:
@@ -1137,7 +1171,7 @@ class TcpServer(SocketContext):
             self._last_accepted += 1
             awaiter.set_result(connection)
 
-    def _on_disconnected_cb(self, conn: "od.POINTER_T[od.pomp_conn]"):
+    def _on_disconnected_cb(self, conn: PointerType[od.struct_pomp_conn]):
         for connection in self._connections[:]:
             if connection.fileno == od.pomp_conn_get_fd(conn):
                 self._loop.run_later(connection._feed_eof)
@@ -1151,7 +1185,8 @@ class TcpServer(SocketContext):
     def stop(self):
         return self._loop.run_async(self.astop)
 
-    async def astop(self):
+    async def astop(self) -> bool:
+        await super().astop()
         if self._listening:
             res = od.pomp_ctx_stop(self._ctx)
             if res < 0:
@@ -1160,7 +1195,7 @@ class TcpServer(SocketContext):
                 self._listening = False
         return True
 
-    def _get_connection(self, conn: "od.POINTER_T[od.struct_pomp_conn]"):
+    def _get_connection(self, conn: PointerType[od.struct_pomp_conn]):
         fd = od.pomp_conn_get_fd(conn)
         for connection in self._connections:
             if connection.fileno == fd:

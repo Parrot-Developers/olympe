@@ -948,7 +948,7 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
 
     def state(self):
         if self._last_event is None:
-            raise RuntimeError(f"{self.fullName} state is uninitialized")
+            raise ValueError(f"{self.fullName} state is uninitialized")
         return self._state
 
     def _reset_state(self):
@@ -1820,7 +1820,7 @@ class ArsdkProtoMessage(
 
     def state(self):
         if self._last_event is None:
-            raise RuntimeError(f"{self.fullName} state is uninitialized")
+            raise ValueError(f"{self.fullName} state is uninitialized")
         return self._state
 
     def _reset_state(self):
@@ -1881,7 +1881,8 @@ class ArsdkProtoMessage(
                     and list(field.message_type.fields)[0].full_name.endswith("Value.value")
             ):
                 if not unwrap:
-                    args[name] = dict(value=args[name])
+                    if not isinstance(args[name], Mapping):
+                        args[name] = dict(value=args[name])
                 elif isinstance(args[name], Mapping):
                     args[name] = args[name].get("value")
         return args
@@ -2057,16 +2058,23 @@ class ArsdkProtoMessage(
     def default_args(cls):
         args = {}
         for name, field in cls.message_proto.DESCRIPTOR.fields_by_name.items():
-            if name == "selected_fields":
-                continue
-            elif field.label == ProtoFieldLabel.Repeated._value_:
-                args[name] = []
-            elif name in cls.args_message:
-                args[name] = cls.args_message[name].default_args()
-            elif name in cls.args_enum:
-                args[name] = next(iter(cls.args_enum[name]))
+            field_desc = next(f for f in cls.fields if f.name == name)
+            for exclusive_with in field_desc.exclusive_with:
+                # If a oneof exclusive field is already present in args drop
+                # the current field
+                if exclusive_with in args:
+                    break
             else:
-                args[name] = proto_type_to_python(field.type, field.message_type)()
+                if name == "selected_fields":
+                    continue
+                elif field.label == ProtoFieldLabel.Repeated._value_:
+                    args[name] = []
+                elif name in cls.args_message:
+                    args[name] = cls.args_message[name].default_args()
+                elif name in cls.args_enum:
+                    args[name] = next(iter(cls.args_enum[name]))
+                else:
+                    args[name] = proto_type_to_python(field.type, field.message_type)()
         return args
 
     def _encode_args(self, args):
@@ -2134,7 +2142,7 @@ class ArsdkProtoMessage(
         for arg in args.keys():
             if isinstance(args[arg], float):
                 args[arg] = _conv(args[arg])
-            elif isinstance(args[arg], Iterable) and (
+            elif isinstance(args[arg], (list, tuple)) and (
                 all(map(lambda a: isinstance(a, float), args[arg]))
             ):
                 args[arg] = tuple(_conv(a) for a in args[arg])

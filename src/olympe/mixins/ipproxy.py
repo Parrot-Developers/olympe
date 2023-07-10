@@ -31,8 +31,10 @@ import ctypes
 import olympe_deps as od
 from olympe.utils import callback_decorator
 from olympe.concurrent import Condition, Future
+from olympe.arsdkng import SKYCTRL_DEVICE_TYPE_LIST
 from olympe.arsdkng.controller import ControllerBase
 from olympe.messages.drone_manager import connection_state
+from olympe.messages import devicemanager
 from olympe.controller import Connected
 from typing import Optional
 
@@ -117,7 +119,7 @@ class IpProxy:
         Cleans the proxy
         """
         if self._proxy is not None:
-           await self._aclose()
+            await self._aclose()
 
     async def _aclose(self):
         """Closes the proxy"""
@@ -169,7 +171,9 @@ class IpProxyMixin:
     def __init__(self, *args, **kwds):
         super().__init__(*args, **kwds)
 
-    def open_tcp_proxy(self, port: int, timeout: Optional[float] = None) -> IpProxy:
+    def open_drone_tcp_proxy(
+        self, port: int, timeout: Optional[float] = None
+    ) -> IpProxy:
         """Opens a new drone tcp proxy
 
         :param port: port to access
@@ -179,31 +183,49 @@ class IpProxyMixin:
         :return: an :py:class:`IpProxy` object open to the drone
         """
 
-        return self.fopen_tcp_proxy(port).result_or_cancel(timeout=timeout)
+        return self.fopen_drone_tcp_proxy(port).result_or_cancel(timeout=timeout)
 
-    def fopen_tcp_proxy(self, port: int) -> Future:
+    def fopen_drone_tcp_proxy(self, port: int) -> Future:
         """
         Retrives a future of :py:func:`open_tcp_proxy`
 
         :param port: port to access
         """
 
-        return self._thread_loop.run_async(self.aopen_tcp_proxy, port)
+        return self._thread_loop.run_async(self.aopen_drone_tcp_proxy, port)
 
-    async def aopen_tcp_proxy(self, port: int) -> IpProxy:
+    async def aopen_drone_tcp_proxy(self, port: int) -> IpProxy:
         """Opens a new drone tcp proxy
 
         :param port: port to access
 
         :return: an :py:class:`IpProxy` object open to the drone
 
-        Should run in the :py:class:`~olympe.arsdkng.controller.ControllerBase` backend loop
+        Should run in the :py:class:`~olympe.arsdkng.controller.ControllerBase` backend
+        loop
         """
 
         # Wait to be connected to a drone to get it model Id
         if self._is_skyctrl:
-            await self(connection_state(state="connected"))
-            drone_model = self.get_state(connection_state)["model"]
+            drone_model: int
+            while True:
+                await self(
+                    connection_state(state="connected")
+                    | devicemanager.Event.State(
+                        connected=devicemanager.ConnectionState()
+                    )
+                )
+                try:
+                    drone_model = self.get_state(connection_state)["model"]
+                    break
+                except (ValueError, KeyError):
+                    try:
+                        drone_model = self.get_state(devicemanager.Event.State)[
+                            "connected"
+                        ]["device"]["model"]
+                        break
+                    except (ValueError, KeyError):
+                        continue
         else:
             if not self.connected:
                 # The connected event is also triggered from the backend loop
@@ -211,5 +233,51 @@ class IpProxyMixin:
             drone_model = self._device_type
 
         proxy = IpProxy(self, drone_model, port)
+        await proxy._open()
+        return proxy
+
+    def open_skycontroller_tcp_proxy(
+        self, port: int, timeout: Optional[float] = None
+    ) -> IpProxy:
+        """Opens a new controller tcp proxy
+
+        :param port: port to access
+        :param timeout: the timeout in seconds or None for infinite timeout (the
+             default)
+
+        :return: an :py:class:`IpProxy` object open to the drone
+        """
+
+        return self.fopen_skycontroller_tcp_proxy(port).result_or_cancel(
+            timeout=timeout
+        )
+
+    def fopen_skycontroller_tcp_proxy(self, port: int) -> Future:
+        """
+        Retrives a future of :py:func:`open_controller_tcp_proxy`
+
+        :param port: port to access
+        """
+
+        return self._thread_loop.run_async(self.aopen_skycontroller_tcp_proxy, port)
+
+    async def aopen_skycontroller_tcp_proxy(self, port: int) -> IpProxy:
+        """Opens a new controller tcp proxy
+
+        :param port: port to access
+
+        :return: an :py:class:`IpProxy` object open to the drone
+
+        Should run in the :py:class:`~olympe.arsdkng.controller.ControllerBase` backend
+        loop
+        """
+        if self._device_type not in SKYCTRL_DEVICE_TYPE_LIST:
+            raise ValueError(f"{self._device_name} is not a SkyController device")
+
+        # Wait to be connected to a drone to get it model Id
+        if not self.connected:
+            # The connected event is also triggered from the backend loop
+            await self(Connected())
+        proxy = IpProxy(self, self._device_type, port)
         await proxy._open()
         return proxy

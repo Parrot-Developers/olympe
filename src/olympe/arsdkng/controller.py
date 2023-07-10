@@ -55,8 +55,13 @@ from olympe.messages import network
 from olympe.messages import pointnfly
 from olympe.messages import privacy
 from olympe.messages import skyctrl
+from olympe.networking import (
+    Connection,
+    ConnectionListener
+)
 from olympe.video.pdraw import (PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT)
 from tzlocal import get_localzone
+from typing import List, Optional
 from warnings import warn
 
 
@@ -85,7 +90,18 @@ class PilotingCommand:
         self.initial_time = 0
 
 
+class ControllerBackendConnectionListener(ConnectionListener):
+    def __init__(self, controller: "ControllerBase"):
+        self._controller = controller
+
+    def disconnected(self, _: Connection):
+        self._controller._thread_loop.run_later(self._controller._on_device_removed)
+
+
 class ControllerBase(CommandInterfaceBase):
+
+    DEVICE_TYPES: Optional[List[int]] = None
+
     def __init__(self,
                  ip_addr,
                  *,
@@ -122,7 +138,9 @@ class ControllerBase(CommandInterfaceBase):
             drone_type=drone_type,
             proto_v_min=1,
             proto_v_max=3,
-            device_addr=self._ip_addr)
+            device_addr=self._ip_addr,
+            connection_listener=ControllerBackendConnectionListener(self)
+        )
 
         if self._time_function is not None:
             self._scheduler.set_time_function(self._time_function)
@@ -133,12 +151,30 @@ class ControllerBase(CommandInterfaceBase):
         self._piloting_timer = self._thread_loop.create_timer(
             self._piloting_timer_cb)
 
+    def is_skyctrl(self):
+        if self._is_skyctrl is None:
+            return self._device_type in SKYCTRL_DEVICE_TYPE_LIST
+        else:
+            return self._is_skyctrl
+
     def _recv_message_type(self):
         return messages.ArsdkMessageType.CMD
 
-    def _create_backend(self, name, proto_v_min, proto_v_max, *, device_addr=None):
+    def _create_backend(
+            self,
+            name,
+            proto_v_min,
+            proto_v_max,
+            *,
+            device_addr=None,
+            connection_listener=None
+    ):
         self._backend = self._backend_class(
-            name=name, proto_v_min=proto_v_min, proto_v_max=proto_v_max, device_addr=device_addr
+            name=name,
+            proto_v_min=proto_v_min,
+            proto_v_max=proto_v_max,
+            device_addr=device_addr,
+            connection_listener=connection_listener
         )
 
     def _declare_callbacks(self):
@@ -187,7 +223,7 @@ class ControllerBase(CommandInterfaceBase):
     def _connected_cb(self, _arsdk_device, arsdk_device_info, _user_data):
         if not self.connecting:
             self.logger.warning("This connection attempt has already timedout, disconnecting...")
-            self._fdisconnect()
+            self._thread_loop.run_later(self._on_device_removed)
             return
         self._thread_loop.run_async(self._aconnected_cb, arsdk_device_info)
 
@@ -221,7 +257,6 @@ class ControllerBase(CommandInterfaceBase):
             if self._connect_future is not None and not self._connect_future.done():
                 self._connect_future.set_result(False)
             return
-        self.connecting = False
 
         if self._connect_future is not None and not self._connect_future.done():
             self._connect_future.set_result(True)
@@ -279,6 +314,9 @@ class ControllerBase(CommandInterfaceBase):
         if self._disconnect_future is not None and not self._disconnect_future.done():
             self._disconnect_future.cancel()
         self._disconnect_future = f
+        if self._device is None:
+            self._disconnect_future.set_result(False)
+            return self._disconnect_future
         res = od.arsdk_device_disconnect(self._device.arsdk_device)
         if res != 0:
             self.logger.error(
@@ -462,14 +500,19 @@ class ControllerBase(CommandInterfaceBase):
         # Try to identify the device type we are attempting to connect to...
         await self._backend.ready()
         timeout = (deadline - time.time()) / 2
-        discovery = self._discovery_class(self._backend, ip_addr=self._ip_addr, timeout=timeout)
+        discovery = self._discovery_class(
+            self._backend,
+            ip_addr=self._ip_addr,
+            devices_types=self.DEVICE_TYPES,
+            timeout=timeout
+        )
         device = await discovery.async_get_device()
         if device is not None:
             return device, discovery
         await discovery.async_stop()
         if self._backend_type is BackendType.Net:
-            self.logger.info(f"Net discovery failed for {self._ip_addr}")
-            self.logger.info(f"Trying 'NetRaw' discovery for {self._ip_addr} ...")
+            self.logger.warning(f"Net discovery failed for {self._ip_addr}")
+            self.logger.warning(f"Trying 'NetRaw' discovery for {self._ip_addr} ...")
             assert await discovery.async_stop()
             timeout = (deadline - time.time()) / 4
             discovery = DiscoveryNetRaw(self._backend, ip_addr=self._ip_addr, timeout=timeout)
@@ -540,28 +583,39 @@ class ControllerBase(CommandInterfaceBase):
                 if last_disconnection < grace_period:
                     await self._thread_loop.asleep(grace_period - last_disconnection)
             # the deadline does not include the grace period
-            deadline = time.time() + timeout
             backoff = 2.
 
             for i in range(retry):
+                deadline = time.time() + timeout
+                self.connecting = True
                 if self.connected:
                     # previous connection attempt timedout but we're connected..
                     break
                 if deadline < time.time():
-                    self.logger.error(f"'{self._ip_addr_str} connection timed out")
-                    return False
-                self.logger.debug(f"Discovering device {self._ip_addr_str} ...")
-                if not await self._async_get_device(deadline):
-                    self.logger.debug(f"Discovering device {self._ip_addr_str} failed")
-                    if deadline < (time.time() + backoff):
-                        self.logger.error(f"'{self._ip_addr_str} connection (would) have timed out")
-                        return False
+                    self.logger.error(f"'{self._ip_addr_str}' connection timed out {i + 1}/{retry}")
                     await self._thread_loop.asleep(backoff)
                     backoff *= 2.
                     continue
+                try:
+                    self.logger.debug(f"Discovering device {self._ip_addr_str} ...")
+                    if not await self._async_get_device(deadline):
+                        self.logger.debug(f"Discovering device {self._ip_addr_str} failed")
+                        if deadline < (time.time() + backoff):
+                            self.logger.error(
+                                f"'{self._ip_addr_str} connection (would) have timed out"
+                            )
+                            return False
+                        await self._thread_loop.asleep(backoff)
+                        backoff *= 2.
+                        continue
 
-                self.logger.debug(f"Connecting device {self._ip_addr_str} ...")
-                connected = await self._connect_impl(deadline)
+                    self.logger.debug(f"Connecting device {self._ip_addr_str} ...")
+                    self.connecting = True
+                    connected = await self._connect_impl(deadline)
+                except (FutureTimeoutError, CancelledError):
+                    await self._thread_loop.asleep(backoff)
+                    backoff *= 2.
+                    continue
                 if not connected:
                     self.logger.debug(f"Connecting device {self._ip_addr_str} failed")
                     await self._thread_loop.asleep(backoff)
@@ -674,7 +728,7 @@ class ControllerBase(CommandInterfaceBase):
 
     def async_connect(self, *, timeout=None, later=False, retry=1):
         if timeout is None:
-            timeout = 6 * retry
+            timeout = 6.0
 
         # If not already connected to a device
         if self.connected:
@@ -708,12 +762,12 @@ class ControllerBase(CommandInterfaceBase):
         """
 
         if timeout is None:
-            timeout = 6 * retry
+            timeout = 6.0
         connected_future = self.async_connect(timeout=timeout, retry=retry)
         try:
-            connected_future.result_or_cancel(timeout=timeout)
+            connected_future.result_or_cancel(timeout=(timeout * retry))
         except (FutureTimeoutError, CancelledError):
-            self.logger.error(f"'{self._ip_addr_str} connection timed out")
+            self.logger.error(f"'{self._ip_addr_str}' connection timed out")
             # If the connection timedout we must disconnect
             self.disconnect()
 

@@ -19,7 +19,7 @@ DRONE_SERIAL = os.environ.get("DRONE_SERIAL", "000000")
 
 class SkyControllerExample:
     def __init__(self):
-        self.skyctrl = olympe.SkyController(SKYCTRL_IP)
+        self.skyctrl = olympe.SkyController4(SKYCTRL_IP)
 
     def skyctrl_connect(self):
         self.skyctrl.connect()
@@ -50,12 +50,12 @@ class SkyControllerExample:
     def pair_drone(self, drone_serial, drone_security_key=""):
         self.update_drones()
         if drone_serial is None:
-            print(f"No drone serial provided.")
+            print("No drone serial provided.")
             return False
         if self.active_drone == drone_serial:
-            print(f"SkyController is already connected to {drone_serial}")
+            print(f"SkyController4 is already connected to {drone_serial}")
             return True
-        print(f"SkyController is not currently connected to {drone_serial}")
+        print(f"SkyController4 is not currently connected to {drone_serial}")
         if drone_serial in self.visible_drones:
             print(f"Connecting to {drone_serial}...")
             connection = self.skyctrl(
@@ -99,15 +99,15 @@ class SkyControllerExample:
 def main():
     example = SkyControllerExample()
     print("@ Connection to SkyController")
-        example.skyctrl_connect()
-        example.update_drones()
-        if DRONE_SERIAL not in example.known_drones:
-            print("@ Connection to a drone")
-            if example.pair_drone(DRONE_SERIAL, DRONE_SECURITY_KEY):
-                example.update_drones()
-            print("@ Forgetting a drone")
-            example.forget_drone(DRONE_SERIAL)
+    example.skyctrl_connect()
+    example.update_drones()
+    if DRONE_SERIAL not in example.known_drones:
+        print("@ Connection to a drone")
+        if example.pair_drone(DRONE_SERIAL, DRONE_SECURITY_KEY):
             example.update_drones()
+        print("@ Forgetting a drone")
+        example.forget_drone(DRONE_SERIAL)
+        example.update_drones()
     print("@ Disconnection from SkyController")
     example.disconnect_skyctrl()
 

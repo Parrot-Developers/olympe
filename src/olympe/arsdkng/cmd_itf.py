@@ -234,9 +234,24 @@ class Connect(Expectation):
 
 
 class CommandInterfaceBase(LogMixin, AbstractScheduler):
-    def __init__(self, *, name=None, drone_type=0, proto_v_min=1, proto_v_max=3, **kwds):
+    def __init__(
+            self,
+            *,
+            name=None,
+            drone_type=0,
+            proto_v_min=1,
+            proto_v_max=3,
+            connection_listener=None,
+            **kwds
+    ):
         super().__init__(name, None, "drone")
-        self._create_backend(name, proto_v_min, proto_v_max, **kwds)
+        self._create_backend(
+            name,
+            proto_v_min,
+            proto_v_max,
+            connection_listener=connection_listener,
+            **kwds
+        )
         self._thread_loop = self._backend._thread_loop
         self._scheduler = Scheduler(self._thread_loop, name=self._name)
         self._scheduler.add_context("olympe.controller", self)
@@ -270,7 +285,10 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         self._declare_callbacks()
         self._thread_loop.register_cleanup(self._cleanup)
         self._drone_manager_subscriber = self.subscribe(
-            self._on_connection_state_changed, drone_manager.connection_state()
+            self._on_drone_manager_connection_state_changed, drone_manager.connection_state()
+        )
+        self._drone_manager_subscriber = self.subscribe(
+            self._on_device_manager_connection_state_changed, devicemanager.Event.State()
         )
 
     @abstractmethod
@@ -278,7 +296,7 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         pass
 
     @abstractmethod
-    def _create_backend(self, name, proto_v_min, proto_v_max):
+    def _create_backend(self, name, proto_v_min, proto_v_max, connection_listener):
         pass
 
     @property
@@ -448,43 +466,60 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         # Update the currently monitored expectations
         self._scheduler.process_event(message_event)
 
+    def _on_skyctrl_connection_changed(self, connected: bool):
+        if not connected:
+            self.logger.info("Skycontroller disconnected from the drone")
+            return
+        self.logger.info("Skycontroller connected to drone")
+        # The SkyCtrl is connected to a drone: retrieve the drone states
+        # and settings
+        all_states_settings_commands = [
+            common.Common.AllStates,
+            common.Settings.AllSettings,
+        ]
+        for all_states_settings_command in all_states_settings_commands:
+            self._send_command_raw(all_states_settings_command, dict())
+
+        # Enable airsdk mission support from the drone
+        self._send_command_raw(mission.custom_msg_enable, dict())
+        self._send_command_raw(developer.Command.GetState, dict())
+
+        get_state_commands = [
+            antiflicker.Command.GetState,
+            camera2.Command.GetState,
+            connectivity.Command.GetState,
+            devicemanager.Command.GetState,
+            microhard.Command.GetState,
+            network.Command.GetState,
+            pointnfly.Command.GetState,
+            privacy.Command.GetState,
+        ]
+
+        for get_state_command in get_state_commands:
+            self._send_command_raw(
+                get_state_command, dict(include_default_capabilities=True)
+            )
+
     @callback_decorator()
-    def _on_connection_state_changed(self, message_event, _):
+    def _on_drone_manager_connection_state_changed(self, message_event, _):
         # Handle drone connection_state events
-        if self._is_skyctrl:
-            if (
-                message_event._args["state"]
-                == drone_manager_enums.connection_state.connected
-            ):
-                self.logger.info("Skycontroller connected to drone")
-                # The SkyCtrl is connected to a drone: retrieve the drone states
-                # and settings
-                all_states_settings_commands = [
-                    common.Common.AllStates,
-                    common.Settings.AllSettings,
-                ]
-                for all_states_settings_command in all_states_settings_commands:
-                    self._send_command_raw(all_states_settings_command, dict())
+        if not self._is_skyctrl:
+            return
+        if (
+            message_event._args["state"]
+            == drone_manager_enums.connection_state.connected
+        ):
+            self._on_skyctrl_connection_changed(True)
 
-                # Enable airsdk mission support from the drone
-                self._send_command_raw(mission.custom_msg_enable, dict())
-                self._send_command_raw(developer.Command.GetState, dict())
-
-                get_state_commands = [
-                    antiflicker.Command.GetState,
-                    camera2.Command.GetState,
-                    connectivity.Command.GetState,
-                    devicemanager.Command.GetState,
-                    microhard.Command.GetState,
-                    network.Command.GetState,
-                    pointnfly.Command.GetState,
-                    privacy.Command.GetState,
-                ]
-
-                for get_state_command in get_state_commands:
-                    self._send_command_raw(
-                        get_state_command, dict(include_default_capabilities=True)
-                    )
+    @callback_decorator()
+    def _on_device_manager_connection_state_changed(self, message_event, _):
+        # Handle drone connection_state events
+        if not self._is_skyctrl:
+            return
+        if ("connected" in message_event._args):
+            self._on_skyctrl_connection_changed(True)
+        elif ("disconnecting" in message_event._args):
+            self._on_skyctrl_connection_changed(False)
 
     @callback_decorator()
     def _dispose_cmd_cb(self, _interface, _user_data):
@@ -818,14 +853,16 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
             self.logger.debug("connected to the drone")
             return True
         else:
-            try:
-                if self.check_state(drone_manager.connection_state, state="connected"):
-                    self.logger.debug("The SkyController is connected to the drone")
-                    return True
-                else:
-                    self.logger.debug("The SkyController is not connected to the drone")
-                    return False
-            except KeyError:
+            if self.check_state(drone_manager.connection_state, state="connected"):
+                self.logger.debug("The SkyController is connected to the drone")
+                return True
+            elif self.check_state(
+                devicemanager.Event.State,
+                connected=devicemanager.ConnectionState.Connected()
+            ):
+                self.logger.debug("The SkyController is connected to the drone")
+                return True
+            else:
                 self.logger.debug("The SkyController is not connected to the drone")
                 return False
 

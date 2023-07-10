@@ -20,7 +20,31 @@ Olympe API Reference Documentation
     .. autoproperty:: mission
     .. autoproperty:: streaming
 
+.. autoclass:: olympe.Anafi()
+   :show-inheritance:
+
+.. autoclass:: olympe.AnafiAi()
+   :show-inheritance:
+
+.. autoclass:: olympe.AnafiUSA()
+   :show-inheritance:
+
+.. autoclass:: olympe.SkyController3()
+   :show-inheritance:
+
+.. autoclass:: olympe.SkyController4()
+   :show-inheritance:
+
+    .. autoproperty:: cellular
+
+.. autoclass:: olympe.SkyController4Black()
+   :show-inheritance:
+
+.. autoclass:: olympe.SkyControllerUSA()
+   :show-inheritance:
+
 .. autoclass:: olympe.SkyController()
+   :show-inheritance:
 
     .. automethod:: __init__
     .. automethod:: connect
@@ -59,6 +83,11 @@ Olympe API Reference Documentation
     .. autoproperty:: state
     .. automethod:: wait
     .. automethod:: close
+
+.. autoclass:: olympe.PdrawRenderer()
+
+    .. automethod:: init
+    .. automethod:: stop
 
 .. autoclass:: olympe.Cellular()
 

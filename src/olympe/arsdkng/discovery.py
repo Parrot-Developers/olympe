@@ -42,6 +42,7 @@ from olympe.concurrent import Future, Loop, TimeoutError, CancelledError
 from olympe.networking import TcpClient
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from olympe.types import PointerType
 from olympe.utils import callback_decorator
 
 
@@ -178,8 +179,8 @@ class Discovery(ABC, DeviceHandler):
     @callback_decorator()
     def _device_added_cb(
         self,
-        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
-        _user_data: "od.POINTER_T[None]",
+        arsdk_device: PointerType[od.struct_arsdk_device],
+        _user_data: ctypes.c_void_p
     ) -> None:
         """
         Called when a new device is detected.
@@ -195,8 +196,8 @@ class Discovery(ABC, DeviceHandler):
     @callback_decorator()
     def _device_removed_cb(
         self,
-        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
-        _user_data: "od.POINTER_T[None]",
+        arsdk_device: PointerType[od.struct_arsdk_device],
+        _user_data: ctypes.c_void_p
     ) -> None:
         """
         Called when a device disappear from the discovery search
@@ -281,7 +282,7 @@ class DiscoveryNet(Discovery):
         ip_addr: str,
         device_types: typing.Optional[typing.List[int]] = None,
         timeout: typing.Optional[float] = None,
-        **kwds,
+        **_,
     ):
         self._backend: CtrlBackendNet = backend
         self._thread_loop = self._backend._thread_loop
@@ -298,7 +299,7 @@ class DiscoveryNet(Discovery):
         )
         self.ip_addr = ip_addr
 
-    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery_net]":
+    def _create_discovery(self) -> PointerType[od.struct_arsdk_discovery_net]:
         """
         Start net discovery in order to detect devices
         """
@@ -385,7 +386,7 @@ class DiscoveryNetRaw(Discovery):
             await self._add_device(device)
         return True
 
-    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery]":
+    def _create_discovery(self) -> PointerType[od.struct_arsdk_discovery]:
         discovery = od.POINTER_T(od.struct_arsdk_discovery)()
 
         backendparent = od.arsdkctrl_backend_net_get_parent(self._backend._info.backend)
@@ -461,7 +462,7 @@ class DiscoveryMux(Discovery):
             len(ctypes_device_type_list),
         )
 
-    def _create_discovery(self) -> "od.POINTER_T[od.struct_arsdk_discovery_mux]":
+    def _create_discovery(self) -> PointerType[od.struct_arsdk_discovery_mux]:
         """
         Start mux discovery in order to detect devices
         """

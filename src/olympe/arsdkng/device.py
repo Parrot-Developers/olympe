@@ -34,7 +34,16 @@ import olympe_deps as od
 from . import messages, PeerInfo
 from .backend import BackendType, DeviceBackendNet, DeviceBackendMuxIp
 from .cmd_itf import CommandInterfaceBase, DisconnectedEvent
+from olympe.networking import Connection, ConnectionListener
 from olympe.utils import callback_decorator
+
+
+class DeviceBackendConnectionListener(ConnectionListener):
+    def __init__(self, device: "DeviceBase"):
+        self._device = device
+
+    def disconnected(self, _: Connection):
+        self._device._thread_loop.run_later(self._device._on_device_removed)
 
 
 class DeviceBase(CommandInterfaceBase):
@@ -58,14 +67,23 @@ class DeviceBase(CommandInterfaceBase):
         elif backend is BackendType.MuxIp:
             self._publisher = od.POINTER_T(od.struct_arsdk_publisher_mux)()
             self._backend_class = DeviceBackendMuxIp
-        super().__init__(name=name, drone_type=drone_type, proto_v_min=1, proto_v_max=3)
+        super().__init__(
+            name=name,
+            drone_type=drone_type,
+            proto_v_min=1,
+            proto_v_max=3,
+            connection_listener=DeviceBackendConnectionListener(self)
+        )
 
     def _recv_message_type(self):
         return messages.ArsdkMessageType.EVT
 
-    def _create_backend(self, name, proto_v_min, proto_v_max):
+    def _create_backend(self, name, proto_v_min, proto_v_max, connection_listener):
         self._backend = self._backend_class(
-            name=name, proto_v_min=proto_v_min, proto_v_max=proto_v_max
+            name=name,
+            proto_v_min=proto_v_min,
+            proto_v_max=proto_v_max,
+            connection_listener=connection_listener
         )
 
     def _declare_callbacks(self):

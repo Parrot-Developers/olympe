@@ -180,7 +180,10 @@ class ArsdkEventExpectation(ArsdkFillDefaultArgsExpectationMixin, ArsdkExpectati
         if not _match_mapping(received_event.args, self.expected_args, self._float_tol):
             # If the event does not match try matching the new controller state
             controller = self._scheduler.context("olympe.controller")
-            state_args = controller.get_state(self.expected_message)
+            try:
+                state_args = controller.get_state(self.expected_message)
+            except ValueError:
+                return self
             if not _match_mapping(state_args, self.expected_args, self._float_tol):
                 return self
         if not self._success:

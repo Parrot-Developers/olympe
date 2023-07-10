@@ -28,43 +28,56 @@
 #  SUCH DAMAGE.
 
 
-from aenum import IntFlag
-from olympe.utils import callback_decorator
-from olympe.utils.path import TemporaryFile
-from .sync import (
-    Lock,
-    Event,
-    Condition,
-    Semaphore,
-    BoundedSemaphore,
-)
-from ._loop import (
-    _set_running_loop,
-    get_running_loop,
-)
-from .future import Future
-from ._task import _Task, _TaskQueueItem, _WaitReschedule, _Reschedule, current_tasks
-
-# expose concurrent.futures.TimeoutError
-from concurrent.futures import TimeoutError, CancelledError  # noqa
-from queue import PriorityQueue
-
-
 import concurrent.futures
 import ctypes
 import faulthandler
 import inspect
 import logging
-import olympe_deps as od
 import os
 import threading
 import time
 import types
 
+from concurrent.futures import CancelledError, TimeoutError
+from queue import PriorityQueue
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+    cast,
+)
+
+import olympe_deps as od
+from aenum import IntFlag
+
+from olympe.types import PointerType
+from olympe.utils import callback_decorator
+from olympe.utils.path import TemporaryFile
+
+from ._loop import _set_running_loop, get_running_loop
+from ._task import _Reschedule, _Task, _TaskQueueItem, _WaitReschedule, current_tasks
+from .future import Future
+from .sync import BoundedSemaphore, Condition, Event, Lock, Semaphore
 
 logger = logging.getLogger("concurrent.futures")
 logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.DEBUG)
+
+
+T = TypeVar("T")
+
+CoroutineFunction = Callable[..., Coroutine[Any, Any, T]]
+Runnable = Union[CoroutineFunction, Callable[..., T]]
+
+# expose concurrent.futures.TimeoutError
+TimeoutError = TimeoutError
 
 
 class PompEvent(IntFlag):
@@ -76,11 +89,11 @@ class PompEvent(IntFlag):
 
 
 @types.coroutine
-def async_yield(obj):
+def async_yield(obj: T) -> Generator[T, None, None]:
     return (yield obj)
 
 
-async def reschedule(deadline=None):
+async def reschedule(deadline: Optional[float] = None):
     return await async_yield(_Reschedule(deadline))
 
 
@@ -94,7 +107,13 @@ class Loop(threading.Thread):
     It performs all calls to pomp and arsdk-ng within the loop (except init and destruction)
     """
 
-    def __init__(self, logger, name=None, parent=None, max_workers=None):
+    def __init__(
+        self,
+        logger,
+        name: Optional[str] = None,
+        parent: Optional[threading.Thread] = None,
+        max_workers: Optional[int] = None,
+    ):
         self.logger = logger
 
         if parent is None:
@@ -122,6 +141,8 @@ class Loop(threading.Thread):
         self.async_cleanup_running = False
         self._watchdog_cb_imp = od.pomp_watchdog_cb_t(lambda *_: self._watchdog_cb())
         self._watchdog_user_cb = None
+
+        self._executing_thread = self
 
         self._executor = concurrent.futures.ThreadPoolExecutor(
             thread_name_prefix=f"{name}_executor", max_workers=max_workers
@@ -164,7 +185,7 @@ class Loop(threading.Thread):
         if not self.running:
             return False
         self.running = False
-        if self.is_alive() and threading.current_thread().ident != self.ident:
+        if self.is_alive() and threading.current_thread().ident != self._executing_thread:
             self._wake_up()
             self.join()
         return True
@@ -195,7 +216,7 @@ class Loop(threading.Thread):
             return
         self.set_timer(self._task_timer, delay, 0)
 
-    def _reschedule(self, task, deadline=None):
+    def _reschedule(self, task: _Task, deadline: Optional[float] = None):
         now = int(time.time() * 1000)
         if deadline is not None:
             deadline = int(deadline * 1000)
@@ -215,10 +236,10 @@ class Loop(threading.Thread):
             else:
                 self._scheduled_tasks.put_nowait(_TaskQueueItem(deadline, task))
 
-    def _ensure_from_sync_future(self, func, *args, **kwds):
-        if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(
-            func
-        ):
+    def _ensure_from_sync_future(
+        self, func: Runnable[T], *args, **kwds
+    ) -> Tuple[Future[T], Callable[..., Any], Tuple[Any], Dict[str, Any]]:
+        if not inspect.iscoroutinefunction(func):
             assert callable(func), (
                 "_ensure_from_sync_future first parameter must be callable or a coroutine, got"
                 f" {type(func)}"
@@ -228,10 +249,10 @@ class Loop(threading.Thread):
             task = _Task(self, True, func, *args, **kwds)
             return task, task.step, tuple(), dict()
 
-    def _ensure_future(self, func, *args, **kwds):
-        if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(
-            func
-        ):
+    def _ensure_future(
+        self, func: Runnable[T], *args, **kwds
+    ) -> Tuple[Future[T], Callable[..., Any], Tuple[Any], Dict[str, Any]]:
+        if not inspect.iscoroutinefunction(func):
             assert callable(func), (
                 "_ensure_future first parameter must be callable or a coroutine, got"
                 f" {type(func)}"
@@ -241,19 +262,21 @@ class Loop(threading.Thread):
             task = _Task(self, False, func, *args, **kwds)
             return task, task.step, tuple(), dict()
 
-    def run_in_executor(self, func, *args, **kwds):
-        fut = Future(self)
-        self._executor.submit(func, *args, **kwds).add_done_callback(fut.set_from)
+    def run_in_executor(self, func: Runnable[T], *args, **kwds) -> Future[T]:
+        fut: Future[T] = Future(self)
+        self._executor.submit(func, *args, **kwds).add_done_callback(
+            lambda f: fut.set_from(cast(Future[T], f))
+        )
         return fut
 
-    def run_async(self, func, *args, **kwds):
+    def run_async(self, func: Runnable[T], *args, **kwds) -> Future[T]:
         """
         Fills in a list with the function to be executed in the pomp thread
         and wakes up the pomp thread.
         """
         future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
 
-        if threading.current_thread() is not self:
+        if not self.self_executed():
             self.async_pomp_task.append((future, func, args, kwds))
             self._wake_up()
         else:
@@ -279,31 +302,50 @@ class Loop(threading.Thread):
                     ret.chain(future)
         return future
 
-    def run_later(self, func, *args, **kwds):
+    def run_later(self, func: Runnable[T], *args, **kwds) -> Future[T]:
         """
-        Fills in a list with the function to be executed later in the pomp thread
+        Submit a function to be executed later in the pomp thread
         """
         future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
-        if threading.current_thread() is self:
+        if self.self_executed():
             future.set_running_or_notify_cancel()
         self.deferred_pomp_task.append((future, func, args, kwds))
         return future
 
-    def _run_delayed_wrapper(self, delay, func):
+    def run_soon(self, func, *args, **kwds):
+        """
+        Submit a function to be executed in the pomp thread
+        and wakes up the pomp thread.
+        """
+        future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
+
+        self.async_pomp_task.append((future, func, args, kwds))
+
+        if not self.self_executed():
+            self._wake_up()
+
+    def _run_delayed_wrapper(
+        self, delay: float, func: Runnable[T]
+    ) -> CoroutineFunction[None]:
         async def wrapper(*args, **kwds):
             await self.asleep(delay)
-            if not inspect.iscoroutinefunction(func) and not inspect.isasyncgenfunction(func):
+            if not inspect.iscoroutinefunction(func):
                 func(*args, **kwds)
             else:
                 await func(*args, **kwds)
+
         wrapper.__qualname__ = f"<delayed_wapper>{func}"
         return wrapper
 
-    def run_delayed(self, delay, func, *args, **kwds):
+    def run_delayed(
+        self, delay: float, func: Runnable[T], *args, **kwds
+    ) -> Future[None]:
         func = self._run_delayed_wrapper(delay, func)
         return self.run_async(func, *args, **kwds)
 
-    def complete_futures(self, *fs, timeout=None):
+    def complete_futures(
+        self, *fs: Future, timeout: Optional[float] = None
+    ) -> Future[bool]:
         ret = Future(self)
         done_count = 0
         exception = None
@@ -338,11 +380,11 @@ class Loop(threading.Thread):
 
         return ret
 
-    async def asleep(self, delay):
+    async def asleep(self, delay: float):
         deadline = time.time() + delay
         await reschedule(deadline)
 
-    async def _cancel_and_wait(self, fut):
+    async def _cancel_and_wait(self, fut: Future[T]) -> T:
         waiter = Future(self)
         fut.chain(waiter)
         fut.cancel()
@@ -352,15 +394,16 @@ class Loop(threading.Thread):
         except concurrent.futures.CancelledError as exc:
             raise concurrent.futures.TimeoutError() from exc
 
-    def _release_waiter(self, waiter, fut):
+    def _release_waiter(self, waiter: Future, fut: Future):
         if not waiter.done():
             fut.set_exception(concurrent.futures.TimeoutError())
 
-    async def await_for(self, timeout, fut, *args, **kwds):
+    async def await_for(self, timeout: float, func: Runnable[T], *args, **kwds) -> T:
+        fut, func, args, kwds = self._ensure_future(func, *args, **kwds)
+
         if timeout is None:
             return await fut
 
-        fut, func, args, kwds = self._ensure_future(fut, *args, **kwds)
         if timeout <= 0:
             if fut.done():
                 return fut.result()
@@ -388,13 +431,15 @@ class Loop(threading.Thread):
             except concurrent.futures.CancelledError as exc:
                 raise concurrent.futures.TimeoutError() from exc
 
-    def _wake_up_event_cb(self, pomp_evt, _userdata):
+    def _wake_up_event_cb(self, _: PointerType[od.struct_pomp_evt], __: "ctypes.c_void_p"):
         """
         Called when a wakeup pomp_evt is triggered.
         """
         # the pomp_evt is acknowledged by libpomp
 
-    def _run_task_list(self, task_list):
+    def _run_task_list(
+        self, task_list: List[Tuple[Future, Runnable, Tuple[Any], Dict[str, Any]]]
+    ):
         """
         Execute all pending functions located in the task list
         this is done in the order the list has been filled in
@@ -427,17 +472,22 @@ class Loop(threading.Thread):
             else:
                 ret.chain(future)
 
+    def self_executed(self) -> bool:
+        return self._executing_thread is threading.current_thread()
+
     def run(self):
         """
         Thread's main loop
         """
-        self._add_event_to_loop(
-            self.wakeup_evt, lambda *args: self._wake_up_event_cb(*args)
-        )
+        if not self.has_event(self.wakeup_evt):
+            self._add_event_to_loop(
+                self.wakeup_evt, lambda *args: self._wake_up_event_cb(*args)
+            )
 
         if not self.is_alive():
             # self.run() is called directly
             self.running = True
+            self._executing_thread = threading.current_thread()
         else:
             # self.run() is called in a dedicated thread
             # Before running our event loop we must ensure that our parent thread has already
@@ -482,21 +532,33 @@ class Loop(threading.Thread):
         if self.wakeup_evt:
             od.pomp_evt_signal(self.wakeup_evt)
 
-    def add_fd_to_loop(self, fd, cb, fd_events, userdata=None):
+    def add_fd_to_loop(
+        self,
+        fd: int,
+        cb: Callable[[int, ctypes.c_uint32, ctypes.c_void_p], None],
+        fd_events: int,
+        userdata=None,
+    ) -> Future[None]:
         return self.run_async(
             self._add_fd_to_loop, fd, cb, fd_events, userdata=userdata
         )
 
-    def has_fd(self, fd):
+    def has_fd(self, fd: int) -> bool:
         try:
             return self.run_async(self._has_fd, fd).result_or_cancel(timeout=5)
         except concurrent.futures.TimeoutError:
             return False
 
-    def _has_fd(self, fd):
+    def _has_fd(self, fd: int):
         return bool(od.pomp_loop_has_fd(self.pomp_loop, fd) == 1)
 
-    def _add_fd_to_loop(self, fd, cb, fd_events, userdata=None):
+    def _add_fd_to_loop(
+        self,
+        fd: int,
+        cb: Callable[[int, ctypes.c_uint32, ctypes.c_void_p], None],
+        fd_events: int,
+        userdata=None,
+    ):
         if cb is None:
             self.logger.info(
                 f"Cannot add fd '{fd}' to pomp loop without a valid callback function"
@@ -520,10 +582,10 @@ class Loop(threading.Thread):
                 f"Cannot add fd '{fd}' to pomp loop: {os.strerror(-res)} ({res})"
             )
 
-    def remove_fd_from_loop(self, fd):
+    def remove_fd_from_loop(self, fd: int) -> Future[bool]:
         return self.run_async(self._remove_fd_from_loop, fd)
 
-    def _remove_fd_from_loop(self, fd):
+    def _remove_fd_from_loop(self, fd: int):
         self.fd_userdata.pop(fd, None)
         self.c_fd_userdata.pop(fd, None)
         if self.pomp_fd_callbacks.pop(fd, None) is not None:
@@ -538,7 +600,16 @@ class Loop(threading.Thread):
         """
         return self.run_async(self._add_event_to_loop, *args, **kwds)
 
-    def _add_event_to_loop(self, pomp_evt, cb, userdata=None):
+    def has_event(self, pomp_evt):
+        evt_id = id(pomp_evt)
+        return evt_id in self.pomp_events
+
+    def _add_event_to_loop(
+        self,
+        pomp_evt: PointerType[od.struct_pomp_evt],
+        cb: Callable[[int, ctypes.c_uint32, ctypes.c_void_p], None],
+        userdata=None,
+    ):
         evt_id = id(pomp_evt)
         self.pomp_events[evt_id] = pomp_evt
         self.pomp_event_callbacks[evt_id] = od.pomp_evt_cb_t(cb)
@@ -560,7 +631,7 @@ class Loop(threading.Thread):
         """
         return self.run_async(self._remove_event_from_loop, *args, **kwds)
 
-    def _remove_event_from_loop(self, pomp_evt):
+    def _remove_event_from_loop(self, pomp_evt: PointerType[od.struct_pomp_evt]):
         evt_id = id(pomp_evt)
         self.evt_userdata.pop(evt_id, None)
         self.c_evt_userdata.pop(evt_id, None)
@@ -592,7 +663,11 @@ class Loop(threading.Thread):
             trace = f.read()
             self.logger.warning(trace)
 
-    def enable_watchdog(self, delay_ms, callback=None):
+    def enable_watchdog(
+        self,
+        delay_ms: int,
+        callback: Optional[Callable[[], None]] = None,
+    ):
         if self._watchdog_user_cb is not None:
             self.logger.warning("Event loop watchdog already enabled")
             return
@@ -632,7 +707,7 @@ class Loop(threading.Thread):
         self.pomp_loop = None
         return True
 
-    def create_timer(self, callback):
+    def create_timer(self, callback: Callable):
         self.logger.debug("Creating pomp timer")
         pomp_callback = od.pomp_timer_cb_t(lambda *args: callback(*args))
         pomp_timer = od.pomp_timer_new(self.pomp_loop, pomp_callback, None)
@@ -643,17 +718,17 @@ class Loop(threading.Thread):
         self.pomp_timer_callbacks[id(pomp_timer)] = pomp_callback
         return pomp_timer
 
-    def set_timer(self, pomp_timer, delay, period):
+    def set_timer(self, pomp_timer: PointerType[od.struct_pomp_timer], delay: int, period: int):
         res = od.pomp_timer_set_periodic(pomp_timer, delay, period)
 
         return res == 0
 
-    def clear_timer(self, pomp_timer):
+    def clear_timer(self, pomp_timer: PointerType[od.struct_pomp_timer]):
         res = od.pomp_timer_clear(pomp_timer)
 
         return res == 0
 
-    def destroy_timer(self, pomp_timer):
+    def destroy_timer(self, pomp_timer: PointerType[od.struct_pomp_timer]):
         if id(pomp_timer) not in self.pomp_timers:
             return False
 
@@ -679,7 +754,7 @@ class Loop(threading.Thread):
         for pomp_timer in pomp_timers:
             self.destroy_timer(pomp_timer)
 
-    def register_cleanup(self, fn):
+    def register_cleanup(self, fn: Callable[[], Any]):
         if fn in self.cleanup_functions:
             # Do not register the same cleanup functions twice
             self.unregister_cleanup(fn)
@@ -689,7 +764,7 @@ class Loop(threading.Thread):
         else:
             self.cleanup_functions[fn] = fn
 
-    def unregister_cleanup(self, fn, ignore_error=False):
+    def unregister_cleanup(self, fn: Callable[[], Any], ignore_error: bool = False):
         try:
             func = self.cleanup_functions.pop(fn)
             # async cleanup functions need to be properly cancelled if they've not been run
@@ -746,10 +821,10 @@ class Loop(threading.Thread):
         self.futures = set()
         self.async_cleanup_running = False
 
-    def _register_future(self, f):
+    def _register_future(self, f: Future):
         self.futures.add(f)
 
-    def _unregister_future(self, f, ignore_error=False):
+    def _unregister_future(self, f: Future, ignore_error: bool = False):
         try:
             self.futures.remove(f)
         except KeyError:
@@ -757,7 +832,7 @@ class Loop(threading.Thread):
                 self.logger.error(f"Failed to unregister future '{f}'")
 
 
-async def asleep(delay):
+async def asleep(delay: float):
     await get_running_loop().asleep(delay)
 
 

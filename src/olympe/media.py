@@ -1276,6 +1276,10 @@ class MultipleDownloadMixin(MultipleExpectation):
             self.set_success()
         return self
 
+    def _schedule(self, scheduler):
+        super()._schedule(scheduler)
+        self._last_resource_ts = scheduler.time()
+
     def on_subexpectation_done(self, expectation):
         if not expectation.success():
             return
@@ -1327,6 +1331,7 @@ class download_media(MultipleDownloadMixin):
         )
 
     def _schedule(self, scheduler):
+        super()._schedule(scheduler)
         media_context = scheduler.context("olympe.media")
         media_context.subscribe(
             lambda event, scheduler: scheduler.run(
@@ -1334,7 +1339,6 @@ class download_media(MultipleDownloadMixin):
             ),
             resource_created(media_id=self._media_id),
         )
-        super()._schedule(scheduler)
         media_context._loop.run_async(
             self._adownload_and_schedule,
             scheduler
@@ -1343,7 +1347,6 @@ class download_media(MultipleDownloadMixin):
     async def _adownload_and_schedule(self, scheduler):
         media_context = scheduler.context("olympe.media")
         self._media = await media_context._get_media(self._media_id)
-        self._last_resource_ts = scheduler.time()
         self._media_event.set()
         for resource_id in list(self._media.resources.keys()):
             self.expectations.append(
@@ -1399,6 +1402,7 @@ class download_media_thumbnail(MultipleDownloadMixin):
         return super().base_copy(self._download_dir, self._media_id, self._timeout)
 
     def _schedule(self, scheduler):
+        super()._schedule(scheduler)
         media_context = scheduler.context("olympe.media")
         media_context.subscribe(
             lambda event, scheduler: scheduler.run(
@@ -1406,7 +1410,6 @@ class download_media_thumbnail(MultipleDownloadMixin):
             ),
             resource_created(media_id=self._media_id),
         )
-        super()._schedule(scheduler)
         media_context._loop.run_async(
             self._adownload_and_schedule, scheduler
         )
@@ -1414,7 +1417,6 @@ class download_media_thumbnail(MultipleDownloadMixin):
     async def _adownload_and_schedule(self, scheduler):
         media_context = scheduler.context("olympe.media")
         self._media = await media_context._get_media(self._media_id)
-        self._last_resource_ts = scheduler.time()
         self._media_event.set()
         for resource_id in self._media.resources.keys():
             self.expectations.append(

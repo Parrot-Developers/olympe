@@ -114,7 +114,7 @@ class Event(_LoopBoundMixin):
         if not self._value:
             self._value = True
 
-            for fut in list(self._waiters):
+            for fut in self._waiters:
                 if not fut.done():
                     fut.set_result(True)
 
@@ -202,7 +202,7 @@ class Condition(_LoopBoundMixin):
             raise RuntimeError("cannot notify on un-acquired lock")
 
         idx = 0
-        for fut in list(self._waiters):
+        for fut in self._waiters:
             if idx >= n:
                 break
 

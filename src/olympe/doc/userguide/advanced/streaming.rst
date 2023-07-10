@@ -19,6 +19,8 @@ Before you start the video streaming, you can specify some output files that wil
 to record the video stream and its metadata.
 :py:func:`~olympe.Drone.set_streaming_output_files`.
 
+.. _video_streaming_example:
+
 Video streaming example
 """""""""""""""""""""""
 

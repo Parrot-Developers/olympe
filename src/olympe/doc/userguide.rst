@@ -11,7 +11,7 @@ Before continuing you should first read the Olympe :ref:`installation procedure<
 For your own safety and the safety of others, the following examples will use a simulated ANAFI
 drone but remember that Olympe is also capable of communicating with a physical drone. As far as
 Olympe is concerned, the main difference between a physical and a simulated drone is the drone IP
-address (``192.168.42.1`` for a physical drone and ``10.202.0.1`` for a simulated one).
+address network.
 
 
 The full code of each example can be found in the

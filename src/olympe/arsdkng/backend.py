@@ -34,14 +34,10 @@ import ipaddress
 import olympe_deps as od
 import os
 import socket
+import time
 import typing
 
-try:
-    # Python 3.8+
-    from typing import Protocol
-except ImportError:
-    # Python 3.7
-    from typing_extension import Protocol  # type: ignore
+from typing import Protocol
 
 from aenum import Enum
 from dataclasses import dataclass
@@ -60,6 +56,7 @@ from olympe.networking import (
     TcpClient,
     TcpServer,
 )
+from olympe.types import PointerType
 from olympe.utils import callback_decorator
 
 
@@ -71,48 +68,48 @@ class BackendType(Enum):
 class DeviceHandler(Protocol):
     def _device_added_cb(
         self,
-        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
-        userdata: "od.POINTER_T[None]",
+        arsdk_device: PointerType[od.struct_arsdk_device],
+        userdata: ctypes.c_void_p,
     ) -> None:
         pass
 
     def _device_removed_cb(
         self,
-        arsdk_device: "od.POINTER_T[od.struct_arsdk_device]",
-        userdata: "od.POINTER_T[None]",
+        arsdk_device: PointerType[od.struct_arsdk_device],
+        userdata: ctypes.c_void_p,
     ) -> None:
         pass
 
 
 @dataclass
 class CtrlBackendInfoBase:
-    arsdk_ctrl: "od.POINTER_T[od.struct_arsdk_ctrl]"
+    arsdk_ctrl: PointerType[od.struct_arsdk_ctrl]
     arsdk_ctrl_device_cbs: od.struct_arsdk_ctrl_device_cbs
 
 
 @dataclass
 class CtrlBackendNetInfo(CtrlBackendInfoBase):
-    backend: "od.POINTER_T[od.struct_arsdkctrl_backend_net]"
+    backend: PointerType[od.struct_arsdkctrl_backend_net]
     socket_cb: od.arsdkctrl_backend_net_socket_cb_t
 
 
 @dataclass
 class CtrlBackendMuxIpInfo(CtrlBackendInfoBase):
     tcp_client: typing.Optional[TcpClient]
-    backend: "typing.Optional[od.POINTER_T[od.struct_arsdkctrl_backend_mux]]"
+    backend: typing.Optional[PointerType[od.struct_arsdkctrl_backend_mux]]
     mux_ctx: typing.Optional[od.struct_mux_ctx]
     mux_ops: od.struct_mux_ops
 
 
 @dataclass
 class DeviceBackendInfoBase:
-    arsdk_mngr: "od.POINTER_T[od.struct_arsdk_mngr]"
+    arsdk_mngr: PointerType[od.struct_arsdk_mngr]
     arsdk_mngr_peer_cbs: od.struct_arsdk_mngr_peer_cbs
 
 
 @dataclass
 class DeviceBackendNetInfo(DeviceBackendInfoBase):
-    backend: "od.POINTER_T[od.struct_arsdkctrl_backend_net]"
+    backend: PointerType[od.struct_arsdkctrl_backend_net]
     socket_cb: od.arsdkctrl_backend_net_socket_cb_t
 
 
@@ -120,7 +117,7 @@ class DeviceBackendNetInfo(DeviceBackendInfoBase):
 class DeviceBackendMuxIpInfo(DeviceBackendInfoBase):
     tcp_server: TcpServer
     connection: typing.Optional[Connection]
-    backend: "od.POINTER_T[od.struct_arsdkctrl_backend_mux]"
+    backend: PointerType[od.struct_arsdkctrl_backend_mux]
     mux_ctx: od.struct_mux_ctx
     mux_ops: od.struct_mux_ops
 
@@ -132,6 +129,7 @@ DeviceBackendInfo = typing.Union[DeviceBackendNetInfo, DeviceBackendMuxIpInfo]
 class CtrlBackendBase(LogMixin):
     def __init__(
         self,
+        /,
         name: typing.Optional[str] = None,
         proto_v_min: int = 1,
         proto_v_max: int = 3,
@@ -163,7 +161,7 @@ class CtrlBackendBase(LogMixin):
     async def _do_create(
         self,
     ) -> typing.Tuple[
-        "od.POINTER_T[od.struct_arsdk_ctrl]", od.struct_arsdk_ctrl_device_cbs
+        PointerType[od.struct_arsdk_ctrl], od.struct_arsdk_ctrl_device_cbs
     ]:
         # default userdata callback argument
         self.userdata = ctypes.c_void_p()
@@ -194,14 +192,14 @@ class CtrlBackendBase(LogMixin):
 
     @callback_decorator()
     def _device_added_cb(
-        self, arsdk_device: DeviceHandler, _user_data: "od.POINTER_T[None]"
+        self, arsdk_device: DeviceHandler, _user_data: ctypes.c_void_p
     ) -> None:
         for device_handler in self._device_handler:
             device_handler._device_added_cb(arsdk_device, _user_data)
 
     @callback_decorator()
     def _device_removed_cb(
-        self, arsdk_device: DeviceHandler, _user_data: "od.POINTER_T[None]"
+        self, arsdk_device: DeviceHandler, _user_data: ctypes.c_void_p
     ) -> None:
         for device_handler in self._device_handler:
             device_handler._device_removed_cb(arsdk_device, _user_data)
@@ -272,10 +270,10 @@ class CtrlBackendNet(CtrlBackendBase):
     @callback_decorator()
     def _socket_cb(
         self,
-        backend_net: "od.POINTER_T[od.struct_arsdkctrl_backend_net]",
+        backend_net: PointerType[od.struct_arsdkctrl_backend_net],
         socket_fd: ctypes.c_int32,
         socket_kind: ctypes.c_uint32,
-        userdata: "od.POINTER_T[None]",
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug(
             "backend_pointer {} socket_fd {} socket_kind {} userdate_pointer {}".format(
@@ -284,26 +282,36 @@ class CtrlBackendNet(CtrlBackendBase):
         )
 
 
-class CtrlBackendMuxIpListener(ConnectionListener, DataListener):
+class CtrlBackendMuxIpListener(DataListener):
 
     def __init__(self, backend: "CtrlBackendMuxIp"):
         self._backend = backend
 
     def data_received(
         self,
-        ctx: "SocketContext",
-        connection: "SocketBase",
-        buffer: "Buffer",
+        ctx: SocketContext,
+        connection: SocketBase,
+        buffer: Buffer,
     ):
         od.mux_decode(self._backend._info.mux_ctx, buffer._buf)
         return True
 
 
 class CtrlBackendMuxIp(CtrlBackendBase):
-    def __init__(self, *args, device_addr, **kwds):
+    def __init__(
+            self,
+            *args,
+            device_addr: bytes,
+            connection_listener: typing.Optional[ConnectionListener] = None,
+            **kwds
+    ):
         self._device_addr = device_addr
         super().__init__(*args, **kwds)
+        self._info: CtrlBackendMuxIpInfo
+        assert self._info.tcp_client is not None
         self._info.tcp_client.add_data_listener(CtrlBackendMuxIpListener(self))
+        if connection_listener is not None:
+            self._info.tcp_client.add_connection_listener(connection_listener)
         self._thread_loop.run_later(self._retry_connect)
         self._ready_fut = Future(self._thread_loop)
         self._resolver = DNSResolver()
@@ -340,13 +348,15 @@ class CtrlBackendMuxIp(CtrlBackendBase):
 
     async def _retry_connect(self):
         while True:
-            if not self._info.tcp_client:
+            if self._info.tcp_client is None:
                 self.logger.warning("Connection attempt aborted")
                 return
-            if not await self._info.tcp_client.aconnect(self._device_addr, 4321):
+            timeout = 3.0
+            start = time.time()
+            if not await self._info.tcp_client.aconnect(self._device_addr, 4321, timeout=timeout):
                 self.logger.info(
                     f"CtrlBackendMuxIp failed to connect to {self._device_addr.decode()}")
-                await self._thread_loop.asleep(3)
+                await self._thread_loop.asleep(timeout - (time.time() - start))
                 continue
 
             # create the mux context
@@ -391,9 +401,9 @@ class CtrlBackendMuxIp(CtrlBackendBase):
     @callback_decorator()
     def _tx_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        buf: "od.POINTER_T[od.struct_pomp_buffer]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        buf: PointerType[od.struct_pomp_buffer],
+        userdata: ctypes.c_void_p,
     ) -> int:
         if not self._info.tcp_client.connected:
             return -errno.EPIPE
@@ -403,36 +413,36 @@ class CtrlBackendMuxIp(CtrlBackendBase):
     @callback_decorator()
     def _chan_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
         chanid: ctypes.c_uint32,
-        buf: "od.POINTER_T[od.struct_pomp_buffer]",
-        userdata: "od.POINTER_T[None]",
+        buf: PointerType[od.struct_pomp_buffer],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("chan_cb called")
 
     @callback_decorator()
     def _fdeof_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("fdeof_cb called")
 
     @callback_decorator()
     def _release_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("release_cb called")
 
     @callback_decorator()
     def _resolve_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        hostname: "od.POINTER_T[ctypes.c_char]",
-        addr: "od.POINTER_T[ctypes.c_uint32]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        hostname: PointerType[ctypes.c_char],
+        addr: PointerType[ctypes.c_uint32],
+        userdata: ctypes.c_void_p,
     ) -> int:
         self.logger.debug("resolve_cb called")
         self._thread_loop.run_later(self._aresolve, od.string_cast(hostname))
@@ -491,7 +501,7 @@ class DeviceBackendBase(LogMixin):
         name: typing.Optional[str] = None,
         proto_v_min: int = 1,
         proto_v_max: int = 3,
-        **kwds,
+        **_,
     ):
         super().__init__(name, None, "backend")
         self._proto_v_min: int = proto_v_min
@@ -519,7 +529,7 @@ class DeviceBackendBase(LogMixin):
     async def _do_create(
         self,
     ) -> typing.Tuple[
-        "od.POINTER_T[od.struct_arsdk_mngr]", od.struct_arsdk_mngr_peer_cbs
+        PointerType[od.struct_arsdk_mngr], od.struct_arsdk_mngr_peer_cbs
     ]:
         # default userdata callback argument
         self.userdata = ctypes.c_void_p()
@@ -550,14 +560,14 @@ class DeviceBackendBase(LogMixin):
 
     @callback_decorator()
     def _peer_added_cb(
-        self, arsdk_device: DeviceHandler, _user_data: "od.POINTER_T[None]"
+        self, arsdk_device: DeviceHandler, _user_data: ctypes.c_void_p
     ) -> None:
         for device_handler in self._device_handler:
             device_handler._device_added_cb(arsdk_device, _user_data)
 
     @callback_decorator()
     def _peer_removed_cb(
-        self, arsdk_device: DeviceHandler, _user_data: "od.POINTER_T[None]"
+        self, arsdk_device: DeviceHandler, _user_data: ctypes.c_void_p
     ) -> None:
         for device_handler in self._device_handler:
             device_handler._device_removed_cb(arsdk_device, _user_data)
@@ -609,10 +619,10 @@ class DeviceBackendNet(DeviceBackendBase):
     @callback_decorator()
     def _socket_cb(
         self,
-        backend_net: "od.POINTER_T[od.struct_arsdk_backend_net]",
+        backend_net: PointerType[od.struct_arsdk_backend_net],
         socket_fd: ctypes.c_int32,
         socket_kind: ctypes.c_uint32,
-        userdata: "od.POINTER_T[None]",
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug(
             "backend_pointer {} socket_fd {} socket_kind {} userdate_pointer {}".format(
@@ -693,9 +703,9 @@ class DeviceBackendMuxIpListener(ConnectionListener, DataListener):
 
     def data_received(
         self,
-        ctx: "SocketContext",
-        connection: "SocketBase",
-        buffer: "Buffer",
+        ctx: SocketContext,
+        connection: SocketBase,
+        buffer: Buffer,
     ):
         if not self._backend._info.connection:
             return False
@@ -704,7 +714,13 @@ class DeviceBackendMuxIpListener(ConnectionListener, DataListener):
 
 
 class DeviceBackendMuxIp(DeviceBackendBase):
-    def __init__(self, *args, **kwds):
+    def __init__(
+            self,
+            *args,
+            connection_listener: typing.Optional[ConnectionListener] = None,
+            **kwds
+    ):
+        self._connection_listener = connection_listener
         super().__init__(*args, **kwds)
         self._ready_fut = Future(self._thread_loop)
 
@@ -716,6 +732,8 @@ class DeviceBackendMuxIp(DeviceBackendBase):
         listener = DeviceBackendMuxIpListener(self)
         tcp_server.add_data_listener(listener)
         tcp_server.add_connection_listener(listener)
+        if self._connection_listener is not None:
+            tcp_server.add_connection_listener(self._connection_listener)
 
         self.logger.debug("New mux backend has been created")
 
@@ -738,9 +756,9 @@ class DeviceBackendMuxIp(DeviceBackendBase):
     @callback_decorator()
     def _tx_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        buf: "od.POINTER_T[od.struct_pomp_buffer]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        buf: PointerType[od.struct_pomp_buffer],
+        userdata: ctypes.c_void_p,
     ) -> int:
         if not self._info.connection:
             return -errno.EPIPE
@@ -750,36 +768,36 @@ class DeviceBackendMuxIp(DeviceBackendBase):
     @callback_decorator()
     def _chan_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
         chanid: ctypes.c_uint32,
-        buf: "od.POINTER_T[od.struct_pomp_buffer]",
-        userdata: "od.POINTER_T[None]",
+        buf: PointerType[od.struct_pomp_buffer],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("chan_cb called")
 
     @callback_decorator()
     def _fdeof_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("fdeof_cb called")
 
     @callback_decorator()
     def _release_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        userdata: ctypes.c_void_p,
     ) -> None:
         self.logger.debug("release_cb called")
 
     @callback_decorator()
     def _resolve_cb(
         self,
-        mux_ctx: "od.POINTER_T[od.struct_mux_ctx]",
-        hostname: "od.POINTER_T[ctypes.c_char]",
-        addr: "od.POINTER_T[ctypes.c_uint32]",
-        userdata: "od.POINTER_T[None]",
+        mux_ctx: PointerType[od.struct_mux_ctx],
+        hostname: PointerType[ctypes.c_char],
+        addr: PointerType[ctypes.c_uint32],
+        userdata: ctypes.c_void_p,
     ) -> int:
         self.logger.debug("resolve_cb called")
         self._thread_loop.run_later(self._aresolve, od.string_cast(hostname))

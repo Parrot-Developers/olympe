@@ -39,6 +39,14 @@ VMetaFrameType = Enum(
     }
 )
 
+HudType = Enum(
+    'HudType',
+    {
+        re.compile('^PDRAW_GLES2HUD_TYPE_').sub('', v): k
+        for k, v in od.pdraw_gles2hud_type__enumvalues.items()
+    }
+)
+
 PDRAW_LOCAL_STREAM_PORT = 55004
 PDRAW_LOCAL_CONTROL_PORT = 55005
 PDRAW_TIMESCALE = 1000000  # 1µ

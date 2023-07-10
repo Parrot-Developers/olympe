@@ -47,7 +47,7 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE := olympe
 LOCAL_CATEGORY_PATH := libs
-LOCAL_DESCRIPTION := Drone controller python library based on ctypes bindings of libpdraw and arsdk-ng
+LOCAL_DESCRIPTION := Drone controller python library based on ctypes bindings of libpdraw, libpdraw-gles2hud and arsdk-ng
 LOCAL_DEPENDS_MODULES := python arsdkparser olympe-base olympe-deps logness
 
 include $(BUILD_CUSTOM)
@@ -75,14 +75,15 @@ LOCAL_LIBRARIES := libulog-py protobuf-python parrot-protobuf-extensions-py
 LOCAL_EXPAND_CUSTOM_VARIABLES := 1
 
 OLYMPE_DEPS_LIBS_NAME := $\
-	libpomp:libpdraw:libvideo-metadata:libvideo-defs:libarsdk:libarsdkctrl:$\
-	libmedia-buffers:libmedia-buffers-memory:libmedia-buffers-memory-generic:$\
-	libmp4:libmux
+	libpomp:libpdraw:libpdraw-gles2hud:libvideo-metadata:libvideo-defs:$\
+	libarsdk:libarsdkctrl:libmedia-buffers:libmedia-buffers-memory:$\
+	libmedia-buffers-memory-generic:libmp4:libmux
 
 OLYMPE_DEPS_HEADERS := $\
 	/usr/include/stdint.h:$\
 	LIBPOMP_HEADERS:$\
 	LIBPDRAW_HEADERS:$\
+	LIBPDRAW_GLES2HUD_HEADERS:$\
 	LIBVIDEOMETADATA_HEADERS:$\
 	LIBVIDEODEFS_HEADERS:$\
 	LIBARSDK_HEADERS:$\
@@ -101,6 +102,7 @@ OLYMPE_DEPS_BIN_DIR := \
 OLYMPE_DEPS_LIBS_PATH := $\
 	$(OLYMPE_DEPS_LIBS_DIR)libpomp$(TARGET_SHARED_LIB_SUFFIX):$\
 	$(OLYMPE_DEPS_LIBS_DIR)libpdraw$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libpdraw-gles2hud$(TARGET_SHARED_LIB_SUFFIX):$\
 	$(OLYMPE_DEPS_LIBS_DIR)libvideo-metadata$(TARGET_SHARED_LIB_SUFFIX):$\
 	$(OLYMPE_DEPS_LIBS_DIR)libvideo-defs$(TARGET_SHARED_LIB_SUFFIX):$\
 	$(OLYMPE_DEPS_LIBS_DIR)libarsdk$(TARGET_SHARED_LIB_SUFFIX):$\
@@ -125,9 +127,10 @@ LOCAL_CUSTOM_MACROS := $\
 	$(OLYMPE_DEPS_LIBS_PATH)
 
 LOCAL_DESTDIR := usr/lib/python/site-packages
-LOCAL_LIBRARIES += libpomp libpdraw libvideo-metadata libvideo-defs libarsdk \
-	libarsdkctrl libmedia-buffers libmedia-buffers-memory \
-	libmedia-buffers-memory-generic libmp4 protobuf libmux
+LOCAL_LIBRARIES += libpomp libpdraw libpdraw-gles2hud libvideo-metadata \
+	libvideo-defs libarsdk libarsdkctrl libmedia-buffers \
+	libmedia-buffers-memory libmedia-buffers-memory-generic libmp4 protobuf \
+	libmux
 
 LOCAL_PREREQUISITES := protobuf
 

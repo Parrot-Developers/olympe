@@ -18,17 +18,22 @@
 
 import os
 import threading
+import typing
+from typing import Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from . import Loop
 
 
 # A TLS for the running event loop, used by _get_running_loop.
 class _RunningLoop(threading.local):
-    loop_pid = (None, None)
+    loop_pid: Tuple[Optional["Loop"], Optional[int]] = (None, None)
 
 
 _running_loop = _RunningLoop()
 
 
-def get_running_loop():
+def get_running_loop() -> "Loop":
     """Return the running event loop.  Raise a RuntimeError if there is none.
 
     This function is thread-specific.
@@ -39,7 +44,7 @@ def get_running_loop():
     return loop
 
 
-def _get_running_loop():
+def _get_running_loop() -> typing.Optional["Loop"]:
     """Return the running event loop or None.
 
     This is a low-level function intended to be used by event loops.
@@ -50,7 +55,7 @@ def _get_running_loop():
         return running_loop
 
 
-def _set_running_loop(loop):
+def _set_running_loop(loop: "Loop"):
     """Set the running event loop.
 
     This is a low-level function intended to be used by event loops.
@@ -61,7 +66,7 @@ def _set_running_loop(loop):
 
 class _LoopBoundMixin:
     def _get_loop(self):
-        loop = _get_running_loop()
+        loop: typing.Optional["Loop"] = _get_running_loop()
         if self._loop is None:
             self._loop = loop
         elif loop is not None:

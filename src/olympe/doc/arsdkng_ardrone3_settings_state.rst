@@ -1,4 +1,4 @@
-Ardrone3.SettingsState and Ardrone3.PROState
-""""""""""""""""""""""""""""""""""""""""""""
+Ardrone3.SettingsState
+""""""""""""""""""""""
 
 .. auto_arsdkfeature:: ardrone3.SettingsState

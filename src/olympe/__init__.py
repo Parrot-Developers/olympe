@@ -29,7 +29,17 @@
 
 import olympe.module_loader
 from .arsdkng.events import ArsdkMessageEvent
-from .controller import Drone, SkyController
+from .controller import (
+    Drone,
+    Anafi,
+    AnafiUSA,
+    AnafiAi,
+    SkyController,
+    SkyController3,
+    SkyController4,
+    SkyController4Black,
+    SkyControllerUSA
+)
 from .mixins.cellular import Cellular
 from .event import Event
 from .expectations import Expectation
@@ -39,6 +49,10 @@ from .mission import Mission, MissionController
 from .video import VMetaFrameType
 from .video.frame import VideoFrame
 from .video.pdraw import PdrawState, Pdraw
+try:
+    from .video.renderer import PdrawRenderer
+except ImportError:
+    PdrawRenderer = None
 import olympe.messages  # noqa
 import olympe.enums  # noqa
 import olympe.log  # noqa
@@ -55,6 +69,9 @@ VDEF_NV12 = hashabledict(od.struct_vdef_raw_format.as_dict(vdef_nv12))
 __version__ = __version__
 
 __all__ = [
+    "Anafi",
+    "AnafiUSA",
+    "AnafiAi",
     "ArsdkMessageEvent",
     "Cellular",
     "Drone",
@@ -67,9 +84,14 @@ __all__ = [
     "Mission",
     "MissionController",
     "Pdraw",
+    "PdrawRenderer",
     "PdrawState",
     "ResourceInfo",
     "SkyController",
+    "SkyController3",
+    "SkyController4",
+    "SkyController4Black",
+    "SkyControllerUSA",
     "VDEF_I420",
     "VDEF_NV12",
     "VMetaFrameType",

@@ -73,8 +73,11 @@ def proto_type_to_python(proto_type, message_type):
             FieldDescriptor.TYPE_SINT64: int,
         }[proto_type]
     else:
-        field = list(message_type.fields)[0]
-        return lambda: {field.name: proto_type_to_python(field.type, None)()}
+        if message_type.name == "Empty":
+            return lambda: {}
+        else:
+            field = list(message_type.fields)[0]
+            return lambda: {field.name: proto_type_to_python(field.type, None)()}
 
 
 class ProtoFieldLabel(aenum.Enum):
@@ -562,6 +565,10 @@ class ArsdkProto:
                 self.support_ext = getattr(self.extensions, "support", None)
                 for pb_path in Path(tmp_dir).glob("**/*_pb2.py"):
                     if pb_path.name == "extensions_pb2.py":
+                        continue
+                    if pb_path.parent.name == "internal":
+                        # Internal protobuf files should not be processed/exposed
+                        # by Olympe
                         continue
                     try:
                         _, feature = self.parse_proto(

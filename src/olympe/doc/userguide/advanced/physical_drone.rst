@@ -32,7 +32,7 @@ Direct connection to a physical drone over Wi-Fi
     `here <https://developer.parrot.com/docs/airsdk/general/developer_settings.html#developer-settings>`_.
 
 To connect olympe to a physical drone, you first need to connect your Linux computer to a
-drone Wi-Fi  access point. Once you are connected to your drone over Wi-Fi, you just
+drone Wi-Fi access point. Once you are connected to your drone over Wi-Fi, you just
 need to specify the drone IP address on its Wi-Fi interface ("192.168.42.1").
 
 .. literalinclude:: ../../examples/physical_drone.py
@@ -92,7 +92,7 @@ In the following example, provided a SkyController and at least one (Wi-Fi) visi
 drone, we demonstrate how to make the SkyController return its known and visible
 drones list and how to add one drone to its known drones list (i.e. pairing it).
 
-First we must connect to the SkyController using its IP address (192.168.53.1).
+First we must connect to the SkyController 4 using its IP address (192.168.53.1).
 
 .. literalinclude:: ../../examples/skyctrl_drone_pairing.py
     :language: python
@@ -114,11 +114,11 @@ Then, the `update_drone` method below updates the known and visible drones list.
     :end-at: print("Visible drones: ", ", ".join(self.visible_drones))
     :emphasize-lines: 20-22
 
-It then prints those two lists and possibly one "Active drone" if the SkyController is
+It then prints those two lists and possibly one "Active drone" if the SkyController 4 is
 currently connected to a drone.
 
 The `pair_drone` method below takes a drone serial PI number and a Wi-Fi security key
-and if the requested drone is currently visible will try to pair the SkyController to
+and if the requested drone is currently visible will try to pair the SkyController 4 to
 it if necessary.
 
 .. literalinclude:: ../../examples/skyctrl_drone_pairing.py
@@ -144,9 +144,9 @@ Finally the `forget_drone` method below is here to demonstrate how to unpair a d
 
 The main function of this example:
 
-    1. Connects to the SkyController
+    1. Connects to the SkyController 4
     2. Lists the visible and known drones
-    3. If the requested drone is not already paired, pairs it with the SkyController
+    3. If the requested drone is not already paired, pairs it with the SkyController 4
     4. If the drone was not previously paired, forgets it (this example shouldn't have
        any persistent side effect).
     5. Disconnects from the SkyController (the SkyController itself may still be
@@ -168,9 +168,9 @@ Cellular (4G) pairing of a SkyController and a drone
    Cellular pairing is only available for 4G capable drones. This currently includes
    ANAFI Ai.
 
-Like for Wi-Fi pairing, cellular pairing a SkyController and a drone means giving the
+Like for Wi-Fi pairing, cellular pairing a SkyController 4 and a drone means giving the
 SkyController access to the drone cellular modem interface. From the point of view of the
-controller (here Olympe), a SkyController paired with a drone cellular interface acts
+controller (here Olympe), a SkyController 4 paired with a drone cellular interface acts
 as a multi-path passthrough proxy to the drone (Wi-Fi + cellular).
 
 .. note::
@@ -181,7 +181,7 @@ as a multi-path passthrough proxy to the drone (Wi-Fi + cellular).
 
 
 Cellular pairing is only possible once the :ref:`Wi-Fi pairing <skyctrl-wifi-pairing>`
-has previously been performed and when the SkyController is connected to the drone
+has previously been performed and when the SkyController 4 is connected to the ANAFI Ai
 over Wi-Fi.
 
 .. literalinclude:: ../../examples/cellular.py
@@ -193,8 +193,8 @@ over Wi-Fi.
     :end-at: skyctrl(connection_state(state="connected"))
     :emphasize-lines: 6
 
-In the above example, at line 33 we check that the SkyController is currently connected
-to a drone over Wi-Fi. We can then print the current status of the SkyController
+In the above example, at line 33 we check that the SkyController 4 is currently connected
+to a drone over Wi-Fi. We can then print the current status of the SkyController 4
 cellular link to the drone (the cellular link status should not be 'RUNNING' at this point).
 
 .. literalinclude:: ../../examples/cellular.py
@@ -225,7 +225,7 @@ drone is associated with this token.
     should be kept secret.
 
 
-With your APC pairing token in your possession, you can now configure your SkyController to use it:
+With your APC pairing token in your possession, you can now configure your SkyController 4 to use it:
 `skyctrl.cellular.configure(token)`.
 
 .. literalinclude:: ../../examples/cellular.py
@@ -242,7 +242,7 @@ With your APC pairing token in your possession, you can now configure your SkyCo
    your SkyController.
 
 
-Once the SkyController has been configured with a token it will automatically try to connect to your drone using
+Once the SkyController has been configured with a token it will automatically try to connect to your ANAFI Ai using
 the cellular link. We can now wait for the 'RUNNING' cellular link status.
 
 .. literalinclude:: ../../examples/cellular.py

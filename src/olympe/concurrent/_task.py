@@ -16,13 +16,17 @@
 # limitations under the License.
 
 
-import concurrent
+import concurrent.futures
 import inspect
-import threading
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
+from typing import List, Optional, TYPE_CHECKING
 from .future import Future
 from ._loop import get_running_loop, _get_running_loop
+
+
+if TYPE_CHECKING:
+    from . import CoroutineFunction, Loop
 
 
 class _WaitReschedule:
@@ -30,7 +34,7 @@ class _WaitReschedule:
 
 
 class _Reschedule:
-    def __init__(self, deadline=None):
+    def __init__(self, deadline: Optional[float] = None):
         self.deadline = deadline
 
 
@@ -39,8 +43,11 @@ class _Task(Future):
     Adapted from asyncio.Task class under Python License
     """
 
-    def __init__(self, loop, from_sync, corofunc, /, *args, **kwds):
+    def __init__(
+        self, loop: "Loop", from_sync: bool, corofunc: "CoroutineFunction", /, *args, **kwds
+    ):
         super().__init__(loop)
+        self._loop: "Loop"
         self._from_sync = from_sync
         self._coro = corofunc(*args, **kwds)
         self._step_count = 0
@@ -51,11 +58,11 @@ class _Task(Future):
     def __repr__(self):
         return super().__repr__() + f" <{self._coro}>"
 
-    def cancel(self):
+    def cancel(self) -> bool:
         if self.done():
             return False
         if self._fut_waiter is not None:
-            if threading.current_thread() is self._loop:
+            if self._loop.self_executed():
                 if self._fut_waiter.cancel():
                     # Leave self._fut_waiter; it may be a Task that
                     # catches and ignores the cancellation so we may have
@@ -72,9 +79,9 @@ class _Task(Future):
             self._closed = True
         return True
 
-    def _step_blocking_impl(self, blocking, result):
+    def _step_blocking_impl(self, blocking: bool, result: Future):
         assert self._loop is not None
-        assert threading.current_thread() is self._loop
+        assert self._loop.self_executed()
         # Yielded Future must come from Future.__iter__().
         if isinstance(result, Future) and result._loop is not self._loop:
             if result._loop is None:
@@ -88,13 +95,6 @@ class _Task(Future):
             if result is self:
                 new_exc = RuntimeError(f"Task cannot await on itself: {self!r}")
                 self._loop.run_later(self.step, new_exc)
-            elif result is None:
-                # Bare yield relinquishes control for one event loop iteration.
-                self._loop.run_later(self.step)
-            elif type(result) is _Reschedule:
-                self._loop._reschedule(self, result.deadline)
-            elif type(result) is _WaitReschedule:
-                pass
             else:
                 result._eventloop_future_blocking = False
                 result.add_done_callback(self._wakeup)
@@ -110,7 +110,7 @@ class _Task(Future):
             )
             self._loop.run_later(self.step, new_exc)
 
-    def step(self, exc=None):
+    def step(self, exc: Optional[BaseException] = None):
         if self.done():
             raise RuntimeError("Task already done")
 
@@ -181,7 +181,7 @@ class _Task(Future):
             _leave_task(self._loop, self)
             self = None  # Needed to break cycles when an exception occurs.
 
-    def _wakeup(self, future):
+    def _wakeup(self, future: Future):
         loop = _get_running_loop()
         if loop is not None and self._loop is not loop:
             self._loop.run_async(self._wakeup, future)
@@ -203,11 +203,11 @@ class _Task(Future):
 _current_tasks = defaultdict(list)
 
 
-def _enter_task(loop, task):
+def _enter_task(loop: "Loop", task: _Task):
     _current_tasks[loop].append(task)
 
 
-def _leave_task(loop, task):
+def _leave_task(loop: "Loop", task: _Task):
     current_tasks_ = _current_tasks.get(loop)
     if current_tasks_ is None:
         raise RuntimeError(f"Leaving task {task!r} while no task has been entered")
@@ -217,7 +217,7 @@ def _leave_task(loop, task):
         raise RuntimeError(f"Leaving task {task!r} that has not been entered")
 
 
-def current_tasks(loop=None):
+def current_tasks(loop: Optional["Loop"] = None) -> List[_Task]:
     """Return a currently executed task."""
     if loop is None:
         loop = get_running_loop()

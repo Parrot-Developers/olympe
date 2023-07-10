@@ -12,4 +12,5 @@ In the following section, we will more advanced Olympe usage examples.
    advanced/takeoff_if_necessary
    advanced/streaming
    advanced/pdraw
+   advanced/pdraw_hud
    advanced/physical_drone

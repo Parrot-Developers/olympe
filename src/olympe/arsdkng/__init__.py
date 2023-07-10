@@ -45,6 +45,8 @@ DeviceState = Enum(
 DRONE_DEVICE_TYPE_LIST = []
 SKYCTRL_DEVICE_TYPE_LIST = []
 for name, value in od.__dict__.items():
+    if name == "ARSDK_DEVICE_TYPE_UNKNOWN":
+        continue
     if name.startswith("ARSDK_DEVICE_TYPE_"):
         if name.startswith("ARSDK_DEVICE_TYPE_SKYCTRL"):
             SKYCTRL_DEVICE_TYPE_LIST.append(value)

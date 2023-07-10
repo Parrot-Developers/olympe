@@ -38,10 +38,10 @@ import time
 from aenum import Enum, auto
 from collections import defaultdict, namedtuple
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from olympe.utils import py_object_cast, callback_decorator
+from olympe.arsdkng.backend import CtrlBackendMuxIp
 from olympe.concurrent import Condition, Loop
 from olympe.log import LogMixin
-from olympe.arsdkng.backend import CtrlBackendMuxIp
+from olympe.utils import py_object_cast, callback_decorator
 from . import VMetaFrameType, PDRAW_LOCAL_STREAM_PORT, PDRAW_LOCAL_CONTROL_PORT  # noqa
 from . import PDRAW_TIMESCALE
 from .mp4 import Mp4Mux
@@ -52,6 +52,7 @@ from warnings import warn
 
 if TYPE_CHECKING:
     from olympe.arsdkng.controller import ControllerBase
+    from olympe.mixins.ipproxy import IpProxy
 
 
 class PdrawState(Enum):
@@ -133,7 +134,6 @@ class Pdraw(LogMixin):
         self,
         name: Optional[str] = None,
         device_name: Optional[str] = None,
-        server_addr: Optional[str] = None,
         buffer_queue_size: int = 8,
         pdraw_thread_loop: Optional[Loop] = None,
         controller: Optional["ControllerBase"] = None,
@@ -206,9 +206,12 @@ class Pdraw(LogMixin):
             od.VDEF_FRAME_TYPE_RAW: None,
         }
 
-        self.url = None
-        self.resource_name = None
-        self.media_name = None
+        self.url: Optional[bytes] = None
+        self.remote_address: Optional[str] = None
+        self.remote_port: Optional[int] = None
+        self.resource_name: Optional[str] = None
+        self.media_name: Optional[str] = None
+        self._proxy: Optional[IpProxy] = None
 
         self.demuxer_cbs = od.struct_pdraw_demuxer_cbs.bind(
             {
@@ -1192,7 +1195,10 @@ class Pdraw(LogMixin):
     def play(
         self,
         url: Optional[str] = None,
-        media_name: str = "DefaultVideo",
+        *,
+        address: Optional[str] = None,
+        port: Optional[int] = None,
+        media_name: str = "Front camera",
         resource_name: str = "live",
         timeout: Optional[float] = 5,
     ):
@@ -1220,6 +1226,8 @@ class Pdraw(LogMixin):
         return self.pdraw_thread_loop.run_async(
             self.aplay,
             url=url,
+            address=address,
+            port=port,
             media_name=media_name,
             resource_name=resource_name,
             timeout=timeout,
@@ -1227,12 +1235,24 @@ class Pdraw(LogMixin):
 
     async def _format_url(self, url):
         if url is None:
-            self._proxy = await self._controller.fopen_tcp_proxy(554)
-            self.url = b"rtsp://%s:%d/%s" % (
-                self._proxy.address.encode(),
-                self._proxy.port,
-                self.resource_name.encode(),
-            )
+            assert self.resource_name is not None
+            if self._controller is None or not self._controller.is_skyctrl():
+                remote_address = self.remote_address or self._controller._ip_addr_str
+                remote_port = self.remote_port or 554
+                self.url = b"rtsp://%s:%d/%s" % (
+                    remote_address.encode(),
+                    remote_port,
+                    self.resource_name.encode()
+                )
+            else:
+                self._proxy = await self._controller.fopen_skycontroller_tcp_proxy(554)
+                assert self.remote_address is None
+                assert self.remote_port is None
+                self.url = b"rtsp://%s:%d/%s" % (
+                    self._proxy.address.encode(),
+                    self._proxy.port,
+                    self.resource_name.encode(),
+                )
         else:
             if isinstance(url, bytes):
                 url = url.decode("utf-8")
@@ -1245,7 +1265,14 @@ class Pdraw(LogMixin):
             self.url = url
 
     async def aplay(
-        self, url=None, media_name="DefaultVideo", resource_name="live", timeout=5
+        self,
+        url: Optional[str] = None,
+        *,
+        address: Optional[str] = None,
+        port: Optional[int] = None,
+        media_name: str = "Front camera",
+        resource_name: str = "live",
+        timeout: float = 5.
     ):
 
         if self.pdraw is None:
@@ -1257,6 +1284,8 @@ class Pdraw(LogMixin):
             return False
 
         self.state = PdrawState.Opening
+        self.remote_address = address
+        self.remote_port = port
         self.resource_name = resource_name
         self.media_name = media_name
         # format url

@@ -20,9 +20,7 @@ of related command and event messages that the drone exchanges its controller (`
 Next, this script creates the ``drone`` object of the :py:class:`olympe.Drone` class.
 This class constructor requires only one argument: the IP address of the drone. For a simulated
 drone, we can use ``10.202.0.1`` which is the default drone IP address over the virtual Ethernet
-interface. For a physical drone, it would be ``192.168.42.1`` which is the de default drone IP
-address over Wi-Fi. Finally, when connected to a SkyController over USB, the SkyController is
-reachable at ``192.168.43.1``.
+interface.
 
 :py:meth:`olympe.Drone.connect` actually performs the connection to the drone. This would fail and
 return `False` if the drone is unreachable (or non-existent) for some reason.

@@ -815,7 +815,7 @@ def _ConvertScalarFieldValue(value, field, require_str=False):
         else:
             # Checking for unpaired surrogates appears to be unreliable,
             # depending on the specific Python version, so we check manually.
-            if _UNPAIRED_SURROGATE_PATTERN.search(value):
+            if isinstance(value, str) and _UNPAIRED_SURROGATE_PATTERN.search(value):
                 raise ParseError("Unpaired surrogate")
             return value
     elif field.cpp_type == descriptor.FieldDescriptor.CPPTYPE_ENUM:

@@ -30,8 +30,6 @@
 from olympe.concurrent import Loop, Future, TimeoutError
 from olympe.log import LogMixin
 from olympe.arsdkng.controller import ControllerBase
-from olympe.utils import callback_decorator
-from olympe.enums import drone_manager as drone_manager_enums
 from olympe.http import Session, HTTPError
 from olympe.messages.security import Command
 from olympe.controller import Disconnected, Connected
@@ -482,7 +480,7 @@ class Cellular(LogMixin):
         """
         Creates the proxy to access to the drone.
         """
-        self._proxy = await self._controller.fopen_tcp_proxy(
+        self._proxy = await self._controller.fopen_drone_tcp_proxy(
             Cellular._DRONE_WEB_API_PORT
         )
 
@@ -524,14 +522,11 @@ class Cellular(LogMixin):
         self._user_apc_token = new_user_apc_token
         self._fconfigure()
 
-    @callback_decorator()
-    def _on_drone_connection_state_change(
-        self, state: drone_manager_enums.connection_state
-    ):
+    def _on_skyctrl_connection_changed(self, connected: bool):
         """
         Called at the change of the drone connection state.
         """
-        if state == drone_manager_enums.connection_state.connected:
+        if connected:
             if self._proxy is not None:
                 self._proxy.close()
                 self._proxy = None
@@ -588,12 +583,9 @@ class CellularPairerMixin:
         """Cellular API."""
         return self._cellular
 
-    @callback_decorator()
-    def _on_connection_state_changed(self, message_event, _):
-        super()._on_connection_state_changed(message_event, _)
-
-        # Handle drone connection_state events
-        self._cellular._on_drone_connection_state_change(message_event._args["state"])
+    def _on_skyctrl_connection_changed(self, connected: bool):
+        super()._on_skyctrl_connection_changed(connected)
+        self._cellular._on_skyctrl_connection_changed(connected)
 
     def set_device_name(self, device_name):
         super().set_device_name(device_name)

@@ -52,8 +52,17 @@ class Mp4Mux(LogMixin):
     def _open(self, filepath):
         mux = od.POINTER_T(od.struct_mp4_mux)()
         now = ctypes.c_uint64(int(time.time()))
+        mux_config = od.struct_mp4_mux_config.bind(
+            dict(
+                filename=od.char_pointer_cast(filepath),
+                timescale=PDRAW_TIMESCALE,
+                creation_time=now,
+                modification_time=now,
+                tables_size_mbytes=od.MP4_MUX_DEFAULT_TABLE_SIZE_MB
+            )
+        )
         res = od.mp4_mux_open(
-            od.char_pointer_cast(filepath), PDRAW_TIMESCALE, now, now, ctypes.byref(mux)
+            ctypes.pointer(mux_config), ctypes.byref(mux)
         )
         if res != 0:
             raise RuntimeError(f"mp4_mux_open returned {res}")

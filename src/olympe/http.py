@@ -405,14 +405,22 @@ class Connection:
         return ws
 
     async def awrite(self, data: bytes):
+        assert self._client is not None
         return await self._client.awrite(data)
 
     async def _get_next_event(self):
         await self._event_sem.acquire()
         return self._events.get_nowait()
 
+    def _disconnect_and_destroy_client(self):
+        if not self._client.stopped:
+            self._client.disconnect()
+        self._client.destroy()
+        self._client = None
+
     def _feed_data(self, data: bytes):
         self._conn.receive_data(data)
+        assert self._client is not None
         if self._scheme in ("http", "https"):
             while True:
                 event = self._conn_http.next_event()
@@ -423,9 +431,7 @@ class Connection:
                     self._loop.logger.error(
                         f"unexpected end of request for {self._request.url}"
                     )
-                    self._client.disconnect()
-                    self._client.destroy()
-                    self._client = None
+                    self._disconnect_and_destroy_client()
                     return
                 self._events.put_nowait(event)
                 self._event_sem.release()
@@ -435,6 +441,7 @@ class Connection:
                         return
         else:
             for event in self._conn_ws.events():
+                assert self._client is not None
                 if isinstance(event, wsproto.events.Ping):
                     pong = self._conn_ws.send(event.response())
                     self._client.write(pong)
@@ -447,15 +454,15 @@ class Connection:
                         wsproto.connection.ConnectionState.LOCAL_CLOSING,
                     ):
                         close = self._conn_ws.send(event.response())
-                        self._client.write(close)
-                        self._client.disconnect()
-                        self._client.destroy()
-                        self._client = None
+                        if not self._client.stopped:
+                            self._client.write(close)
+                        self._disconnect_and_destroy_client()
                     continue
                 self._events.put_nowait(event)
                 self._event_sem.release()
 
     def _feed_eof(self):
+        assert self._client is not None
         if self._scheme in ("http", "https"):
             close_event = h11.ConnectionClosed()
             self._conn_http.send(close_event)
@@ -475,9 +482,12 @@ class Connection:
                     pass
             self._events.put_nowait(close_event)
             self._event_sem.release()
-        self._client.disconnect()
-        self._client.destroy()
-        self._client = None
+            self._disconnect_and_destroy_client()
+
+    async def adestroy(self):
+        if self._client is not None:
+            await self._client.adestroy()
+            self._client = None
 
     def reuse(self):
         if self._reusing or self._sending or self._reading:
@@ -521,28 +531,42 @@ class Connection:
     async def _aclosed_http(self):
         if self._conn_http.their_state is h11.CLOSED:
             self._feed_eof()
-            await self._client.adisconnect()
             return True
-        return self._conn_http.our_state is h11.CLOSED
+        elif self._conn_http.our_state is h11.CLOSED:
+            if self._client is not None:
+                await self._client.adestroy()
+                self._client = None
+            return True
+        elif self._conn_http.our_state is h11.MUST_CLOSE:
+            # Cannot shutdown our send stream without closing the socket (both-ways)
+            pass
+        return False
 
     def _closed_websocket(self):
         return self._conn_ws.state is wsproto.connection.ConnectionState.CLOSED
 
     def disconnect(self):
+        if self._client is None:
+            return
+        if self._client.stopped:
+            return True
         return self._client.disconnect()
 
     async def adisconnect(self):
         if self._client is None:
             return
-
+        if self._client.stopped:
+            return
         return await self._client.adisconnect()
 
     @property
     def connected(self):
-        return self._client.connected
+        return self._client is not None and self._client.connected
 
     @property
     def fd(self):
+        if self._client is None:
+            return -1
         return self._client.fd
 
 
@@ -568,7 +592,11 @@ class Session:
             if await connection.aclosed():
                 garbage_collected.append(connection)
         for connection in garbage_collected:
-            pool.remove(connection)
+            try:
+                pool.remove(connection)
+                await connection.adestroy()
+            except ValueError:
+                pass
 
         connection = Connection(self._loop, self, scheme)
         pool.append(connection)

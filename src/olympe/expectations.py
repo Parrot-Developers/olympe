@@ -28,6 +28,7 @@
 #  SUCH DAMAGE.
 
 
+import asyncio
 import concurrent.futures
 import threading
 import time
@@ -38,6 +39,7 @@ from boltons.setutils import IndexedSet
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from logging import getLogger
+from typing import Optional
 from .concurrent import Future
 from .event_marker import EventMarker
 from .event import EventContext, MultipleEventContext
@@ -45,6 +47,13 @@ from .event import EventContext, MultipleEventContext
 
 class ExpectPolicy(Enum):
     wait, check, check_wait = range(3)
+
+
+def _asyncio_loop() -> Optional[asyncio.AbstractEventLoop]:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 class ExpectationBase(ABC):
@@ -63,6 +72,7 @@ class ExpectationBase(ABC):
         self._deadline = None
         self._timedout = False
         self._scheduled_condition = threading.Condition()
+        self._asyncio_future = None
 
     def _schedule(self, scheduler):
         # This expectation is scheduled on the `scheduler`, subclasses of ExpectationBase can
@@ -120,12 +130,22 @@ class ExpectationBase(ABC):
         if not self._future.done():
             self._success = True
             self._future.set_result(self.received_events())
+            if self._asyncio_future is not None:
+                self._asyncio_future.get_loop().call_soon_threadsafe(
+                    (lambda fut: lambda: fut.set_result(self))(self._asyncio_future)
+                )
             return True
         return False
 
     def set_exception(self, exception):
         if not self._future.done():
             self._future.set_exception(exception)
+            if self._asyncio_future is not None:
+                self._asyncio_future.get_loop().call_soon_threadsafe(
+                    (lambda fut, exc: lambda: fut.set_exception(exc))(
+                        self._asyncio_future, exception
+                    )
+                )
 
     def set_timeout(self, _timeout):
         self._timeout = _timeout
@@ -142,6 +162,10 @@ class ExpectationBase(ABC):
     def cancel(self):
         if self._future.done():
             return False
+        if self._asyncio_future is not None:
+            self._asyncio_future.get_loop().call_soon_threadsafe(
+                (lambda fut: lambda: fut.cancel())(self._asyncio_future)
+            )
         return self._future.cancel()
 
     def cancelled(self):
@@ -182,12 +206,21 @@ class ExpectationBase(ABC):
             self._future.done() and self.exception() is not None)
 
     def __await__(self):
-        if not self.done():
-            self._eventloop_future_blocking = True
-            yield self
-        if not self.done():
-            raise RuntimeError("await wasn't used with future")
-        return self
+        asyncio_loop = _asyncio_loop()
+        if asyncio_loop is None:
+            if not self.done():
+                self._eventloop_future_blocking = True
+                yield self
+            if not self.done():
+                raise RuntimeError("await wasn't used with future")
+            return self
+        else:
+            self._asyncio_future = asyncio.Future(loop=asyncio_loop)
+            if not self.done():
+                yield from self._asyncio_future
+            if not self.done():
+                raise RuntimeError("await wasn't used with future")
+            return self
 
     def result(self, timeout=None):
         return self._future.result(timeout=timeout)

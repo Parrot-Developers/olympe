@@ -10,6 +10,7 @@ from OpenGL import GLX
 from olympe.log import LogMixin
 from olympe.utils import callback_decorator
 from olympe.concurrent import Loop
+from . import HudType
 
 
 class Renderer(ABC, LogMixin):
@@ -77,7 +78,7 @@ class Renderer(ABC, LogMixin):
         )
         sdl2.video.SDL_GL_SetAttribute(
             sdl2.video.SDL_GL_CONTEXT_PROFILE_MASK,
-            sdl2.video.SDL_GL_CONTEXT_PROFILE_CORE,
+            sdl2.video.SDL_GL_CONTEXT_PROFILE_ES,
         )
         self._glcontext = sdl2.SDL_GL_CreateContext(self._window)
         sdl2.SDL_GL_MakeCurrent(self._window, self._glcontext)
@@ -205,12 +206,51 @@ class PdrawRenderer(Renderer):
         # before the actual rendering.
         self._media_infos = dict()
         self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
+        self._pdraw_gles2hud = od.POINTER_T(od.struct_pdraw_gles2hud)()
         super().__init__(*args, **kwds)
 
-    def init(self, *, pdraw, media_id=0):
+    def init(self, *, pdraw, media_id=0, hud_type=None):
         self._pdraw = pdraw
         self._media_id = media_id
+        self._hud_type = hud_type
         self._render_zone = od.struct_pdraw_rect(0, 0, self.width, self.height)
+        enable_histograms = 0
+
+        renderer_cbs = {
+            "media_added": self._media_added_cb,
+            "media_removed": self._media_removed_cb,
+            "render_ready": self._render_ready_cb,
+            # explicitly set to NULL is important here
+            # to disable external texture loading
+            "load_texture": None,
+        }
+
+        if self._hud_type is not None:
+            self._pdraw_gles2hud_config = od.struct_pdraw_gles2hud_config()
+
+            od.pdraw_gles2hud_new(
+                self._pdraw_gles2hud_config,
+                ctypes.byref(self._pdraw_gles2hud),
+            )
+
+            renderer_cbs.update(
+                {
+                    "render_overlay": self._render_overlay_cb,
+                }
+            )
+
+            # enable histograms when HUD imaging is selected
+            if self._hud_type == HudType.IMAGING:
+                enable_histograms = 1
+
+        else:
+            self._pdraw_gles2hud_config = None
+            renderer_cbs.update(
+                {
+                    "render_overlay": None,
+                }
+            )
+
         self._renderer_params = od.struct_pdraw_video_renderer_params.bind(
             {
                 "scheduling_mode": od.PDRAW_VIDEO_RENDERER_SCHEDULING_MODE_ADAPTIVE,
@@ -220,24 +260,15 @@ class PdrawRenderer(Renderer):
                 "video_scale_factor": 1.0,
                 "enable_overexposure_zebras": 0,
                 "overexposure_zebras_threshold": 1.0,
-                "enable_histograms": 0,
+                "enable_histograms": enable_histograms,
                 "video_texture_width": self.width,
                 "video_texture_dar_width": self.width,
                 "video_texture_dar_height": self.height,
             }
         )
 
-        self._renderer_cbs = od.struct_pdraw_video_renderer_cbs.bind(
-            {
-                "media_added": self._media_added_cb,
-                "media_removed": self._media_removed_cb,
-                "render_ready": self._render_ready_cb,
-                # explicitly set to NULL is important here
-                # to disable external texture loading
-                "load_texture": None,
-                "render_overlay": None,
-            }
-        )
+        self._renderer_cbs = od.struct_pdraw_video_renderer_cbs.bind(renderer_cbs)
+
         od.pdraw_video_renderer_new(
             self._pdraw.pdraw,
             self._media_id,
@@ -301,9 +332,43 @@ class PdrawRenderer(Renderer):
         frame_extra,
         userdata,
     ):
-        return
+        view_proj_mat = (ctypes.c_float * 16)(
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        )
+        # controller_meta is depreciated.
+        controller_meta = od.struct_pdraw_gles2hud_controller_meta()
+
+        res = od.pdraw_gles2hud_render(
+            self._pdraw_gles2hud,
+            self._hud_type.value,
+            render_pos,
+            content_pos,
+            view_proj_mat,
+            media_info,
+            frame_meta,
+            frame_extra,
+            controller_meta,
+        )
 
     def _cleanup(self):
+        if self._pdraw_gles2hud:
+            od.pdraw_gles2hud_destroy(self._pdraw_gles2hud)
+        self._pdraw_gles2hud = od.POINTER_T(od.struct_pdraw_gles2hud)()
         if self._pdraw_renderer:
             od.pdraw_video_renderer_destroy(self._pdraw.pdraw, self._pdraw_renderer)
         self._pdraw_renderer = od.POINTER_T(od.struct_pdraw_video_renderer)()
