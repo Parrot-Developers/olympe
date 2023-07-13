@@ -645,7 +645,11 @@ class ControllerBase(CommandInterfaceBase):
 
         # Get specific optional states
         for state_command in get_state_commands:
-            timeout = self._connection_deadline - time.time()
+            timeout = self._connection_deadline - time.time() - 0.1
+            if timeout < 0.0:
+                # There is no time wait for optional states
+                self._thread_loop.run_async(self._send_states_settings_cmd, state_command)
+                continue
             try:
                 res = await self._thread_loop.await_for(
                     timeout,
@@ -653,7 +657,7 @@ class ControllerBase(CommandInterfaceBase):
                 )
             except FutureTimeoutError:
                 # Protobuf Command.GetState are optional
-                return True
+                continue
             if not res:
                 return False
 
