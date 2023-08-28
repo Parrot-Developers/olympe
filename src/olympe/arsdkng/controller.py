@@ -605,7 +605,12 @@ class ControllerBase(CommandInterfaceBase):
             all_states_settings_commands = [
                 common.Common.AllStates(), common.Settings.AllSettings()
             ]
-            if self._device_type != od.ARSDK_DEVICE_TYPE_ANAFI4K:
+            if self._device_type not in (
+                    od.ARSDK_DEVICE_TYPE_ANAFI4K,
+                    od.ARSDK_DEVICE_TYPE_ANAFI_THERMAL,
+                    od.ARSDK_DEVICE_TYPE_ANAFI_UA,
+                    od.ARSDK_DEVICE_TYPE_ANAFI_USA
+            ):
                 get_state_commands = [
                     antiflicker.Command.GetState(include_default_capabilities=True),
                     camera2.Command.GetState(include_default_capabilities=True),
