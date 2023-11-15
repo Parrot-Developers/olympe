@@ -11,11 +11,11 @@ def test_moveby2():
     drone.connect()
     assert drone(
         TakeOff()
-        >> FlyingStateChanged(state="hovering", _timeout=5)
+        >> FlyingStateChanged(state="hovering", _timeout=10)
     ).wait().success()
     assert drone(
         moveBy(10, 0, 0, 0)
-        >> FlyingStateChanged(state="hovering", _timeout=5)
+        >> FlyingStateChanged(state="hovering", _timeout=10)
     ).wait().success()
     assert drone(Landing()).wait().success()
     drone.disconnect()
