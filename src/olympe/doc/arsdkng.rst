@@ -81,6 +81,13 @@ Messages Reference Documentation
     arsdkng_common
 
 .. toctree::
+    :caption: Connectivity feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_connectivity
+
+.. toctree::
     :caption: Controller Info feature
     :maxdepth: 1
     :titlesonly:
@@ -93,6 +100,13 @@ Messages Reference Documentation
     :titlesonly:
 
     arsdkng_controller_network
+
+.. toctree::
+    :caption: Controller Privacy feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_controller_privacy
 
 .. toctree::
     :caption: Debug feature
@@ -275,6 +289,13 @@ Messages Reference Documentation
     :titlesonly:
 
     arsdkng_precise_home
+
+.. toctree::
+    :caption: Privacy feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_privacy
 
 .. toctree::
     :caption: RTH feature
