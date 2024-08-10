@@ -258,7 +258,29 @@ class MissionController(LogMixin):
         verify = verify or bool(ca_pub_key_der)
         with tempfile.TemporaryDirectory() as root_tmp_dir:
             with tarfile.open(mission.filepath) as f:
-                f.extractall(root_tmp_dir)
+                
+                import os
+                
+                def is_within_directory(directory, target):
+                    
+                    abs_directory = os.path.abspath(directory)
+                    abs_target = os.path.abspath(target)
+                
+                    prefix = os.path.commonprefix([abs_directory, abs_target])
+                    
+                    return prefix == abs_directory
+                
+                def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+                
+                    for member in tar.getmembers():
+                        member_path = os.path.join(path, member.name)
+                        if not is_within_directory(path, member_path):
+                            raise Exception("Attempted Path Traversal in Tar File")
+                
+                    tar.extractall(path, members, numeric_owner) 
+                    
+                
+                safe_extract(f, root_tmp_dir)
             signature = None
             for signature_path in Path(root_tmp_dir).glob("signature.ecdsa*"):
                 signature = MissionSignature.from_file(signature_path)
@@ -268,7 +290,26 @@ class MissionController(LogMixin):
             with tempfile.TemporaryDirectory() as payload_tmp_dir:
                 payload_proto_path = Path(payload_tmp_dir) / "share" / "protobuf"
                 with tarfile.open(Path(root_tmp_dir) / "payload.tar.gz") as f:
-                    f.extractall(payload_tmp_dir)
+                    def is_within_directory(directory, target):
+                        
+                        abs_directory = os.path.abspath(directory)
+                        abs_target = os.path.abspath(target)
+                    
+                        prefix = os.path.commonprefix([abs_directory, abs_target])
+                        
+                        return prefix == abs_directory
+                    
+                    def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+                    
+                        for member in tar.getmembers():
+                            member_path = os.path.join(path, member.name)
+                            if not is_within_directory(path, member_path):
+                                raise Exception("Attempted Path Traversal in Tar File")
+                    
+                        tar.extractall(path, members, numeric_owner) 
+                        
+                    
+                    safe_extract(f, payload_tmp_dir)
                     features, messages, enums, modules = self._load_protos(
                         mission.filepath,
                         mission_json.uid,
