@@ -46,7 +46,7 @@ dependencies = [
     "importlib_metadata; python_version < '3.8'",
     "numpy",
     "typing-protocol; python_version < '3.8'",
-    "protobuf==3.19.4",
+    "protobuf==4.25.8",
     "pycryptodomex",
     "pytz",
     "PyYAML",
