@@ -27,36 +27,29 @@
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 
-import os
-
-from collections import OrderedDict
 from logging import getLogger
-from typing import Optional
+from typing import BinaryIO, Optional, Union
 
-from olympe.concurrent import (
-    Loop,
-)
+from olympe.concurrent import Loop
 from olympe.connection.http import Session
 
 
 class Update:
-    """
-    Drone Update API class
+    """Drone Update API class
 
-    This class connects to the drone web update interface (REST API) and enable to upload
+    This class connects to the drone web Update interface (REST API) and enable to upload
     a file or request the current device version in a background thread.
 
     See usage example in examples/update.py
     """
 
-    # HTTP connection or data read timeout
     timeout = 300.0
 
     def __init__(
         self,
-        hostname,
-        name=None,
-        version=1,
+        hostname: Optional[str] = None,
+        name: Optional[str] = None,
+        version: int = 1,
         session: Optional[Session] = None,
     ):
         self._name = name
@@ -70,103 +63,135 @@ class Update:
         # The API URLs are defined once the hostname is set
         self._base_url: Optional[str]
         self._api_url: Optional[str]
-        self._update_api_url: Optional[str]
-        self._version_api_url: Optional[str]
+        self._api_update_url: Optional[str]
+        self._api_version_url: Optional[str]
         self.set_hostname(hostname)
 
-        self._flightplans = OrderedDict()
-
-        # max_workers below is set to 1 because the one and only worker is used to
-        # sequentially write downloaded flightplans chunks. If more than one worker is used
-        # chunks may be written to disk out of order.
+        # max_workers is set to 1 because upload and version requests must be serialized
         self._loop = Loop(self.logger, max_workers=1)
 
-        # In case no session is transmitted through the mixins, Update builts its own
-        # with its own loop.
+        # In case no session is transmitted through the mixins, Update builds its own
+        # with its own loop
         if session is None:
             self._session = Session(self._loop)
         else:
             self._session = session
 
+        # Start the loop at the end of the init
         self._loop.start()
 
     def set_hostname(self, hostname: Optional[str]):
+        """Set hostname to access the REST API urls
+
+        :param hostname: hostname of the device to access
+        :type hostname: str, optional
+        """
         self._hostname = hostname
         if self._hostname is not None:
             # REST API endpoints
             self._base_url = f"http://{self._hostname}"
             self._api_url = f"{self._base_url}/api/v{self._version}"
-            self._update_api_url = f"{self._api_url}/update/upload"
-            self._version_api_url = f"{self._api_url}/update/version"
+            self._api_update_url = f"{self._api_url}/update/upload"
+            self._api_version_url = f"{self._api_url}/update/version"
 
         # In case hostname is reset to None, reset the API URLs too
         else:
             self._base_url = None
             self._api_url = None
-            self._update_api_url = None
-            self._version_api_url = None
+            self._api_update_url = None
+            self._api_version_url = None
 
-    def upload(self, to_upload, reboot=True, timeout=None):
-        return self._loop.run_async(
-            self._upload, to_upload, reboot, timeout
-        ).result_or_cancel(timeout)
-
-    def get_current_version(self, timeout=None):
-        return self._loop.run_async(
-            self._get_current_version, timeout
-        ).result_or_cancel(timeout)
-
-    def shutdown(self):
-        self.destroy()
-
-    def destroy(self) -> bool:
-        """
-        Properly close and stop the flightplan API background thread
-        """
-        self._loop.stop()
-        return True
-
-    async def _upload(self, to_upload, reboot=True, timeout=None) -> bool:
-        """
-        Request the upload of an update file through the REST API
+    def upload(
+        self,
+        file_to_upload: Union[str, BinaryIO],
+        reboot: bool = True,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Request to upload an update file through the REST API
         Reboot is a query parameter to enable or disable automatic reboot
         HTTP PUT /api/v<version>/update/upload[?reboot=no]
+
+        :param file_to_upload: update file to upload
+        :type file_to_upload: Union[str, BinaryIO]
+        :param reboot: tag to specify whether a reboot is necessary or not, defaults to True
+        :type reboot: bool, optional
+        :param timeout: timeout let to the PUT request to upload the file, defaults to None
+        :type timeout: float, optional
+        :return: True if the file is successfully uploaded, False otherwise
+        :rtype: bool
         """
+        return self._loop.run_async(
+            self._upload, file_to_upload, reboot, timeout
+        ).result_or_cancel(timeout or self.timeout)
+
+    async def _upload(
+        self,
+        file_to_upload: Union[str, BinaryIO],
+        reboot: bool,
+        timeout: Optional[float],
+    ) -> bool:
+        # *** Sanity Checks ***
         if timeout is None:
             timeout = self.timeout
-        if self._update_api_url is None:
-            self.logger.error("The upload file API url is not set already.")
-            return False
-        if not reboot:
-            response = await self._session.put(
-                os.path.join(self._update_api_url, "?reboot=no"),
-                timeout=timeout,
-                data=to_upload,
-            )
-        else:
-            response = await self._session.put(
-                self._update_api_url, timeout=timeout, data=to_upload
-            )
+        if self._api_update_url is None:
+            raise ValueError("The current API update url is not set already.")
+
+        url = self._api_update_url if reboot else f"{self._api_update_url}?reboot=no"
+        response = await self._session.put(url, timeout=timeout, data=file_to_upload)
+
         try:
             response.raise_for_status()
         except Exception as e:
-            self.logger.error(str(e))
+            self.logger.error(
+                f"Unable to upload file '{getattr(file_to_upload, 'name', repr(file_to_upload))}' ({str(e)})"
+            )
             return False
         return True
 
-    async def _get_current_version(self, timeout=None) -> str:
-        """
-        Returns the current device version from the REST API
+    def get_current_version(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Return the current device version from the REST API
         HTTP GET /api/v<version>/update/version
+
+        :param timeout: timeout let to the GET request to obtain the current API version,
+        defaults to None
+        :type timeout: float, optional
+        :raises ValueError: if the current API version url is not set already
+        :return: current API version
+        :rtype: str, optional
         """
+        return self._loop.run_async(
+            self._get_current_version, timeout
+        ).result_or_cancel(timeout or self.timeout)
+
+    async def _get_current_version(self, timeout: Optional[float]) -> Optional[str]:
+        # *** Sanity Checks ***
         if timeout is None:
             timeout = self.timeout
-        if self._version_api_url is None:
-            raise ValueError("The get current version API url is not set already.")
-        response = await self._session.get(self._version_api_url, timeout=self.timeout)
+        if self._api_version_url is None:
+            raise ValueError("The current API version url is not set already.")
+
+        response = await self._session.get(self._api_version_url, timeout=timeout)
+
         try:
             response.raise_for_status()
+        except Exception as e:
+            self.logger.error(f"Failed to get current API version ({str(e)})")
+            return None
+
+        try:
             version = await response.json()
         except Exception as e:
-            raise ValueError(str(e))
+            self.logger.error(
+                f"JSON Response to get current API version is not parsable ({str(e)})"
+            )
+            return None
+
         return version
+
+    def destroy(self) -> bool:
+        """Properly stop the loop of the Update API background thread
+
+        :return: True if the loop is successfully stopped, False otherwise
+        :rtype: bool
+        """
+        return self._loop.stop()

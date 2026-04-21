@@ -42,6 +42,7 @@ try:
 except ImportError:
     StreamingControllerMixin = None
 from olympe.controllers.mixins.cellular import CellularPairerMixin
+from olympe.controllers.mixins.esim import EsimHandlerMixin
 from olympe.controllers.mixins.flightplan import FlightplanControllerMixin
 from olympe.controllers.mixins.http import HttpControllerMixin
 from olympe.controllers.mixins.ipproxy import IpProxyMixin
@@ -60,6 +61,7 @@ if StreamingControllerMixin is not None:
     class ControllerBase(
         IpProxyMixin,
         StreamingControllerMixin,
+        EsimHandlerMixin,
         MissionControllerMixin,
         MediaControllerMixin,
         FlightplanControllerMixin,
@@ -73,6 +75,7 @@ else:
     # Controller without video streaming support
     class ControllerBase(
         IpProxyMixin,
+        EsimHandlerMixin,
         MissionControllerMixin,
         MediaControllerMixin,
         FlightplanControllerMixin,

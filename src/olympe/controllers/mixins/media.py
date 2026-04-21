@@ -52,10 +52,12 @@ class MediaControllerMixin:
             # share a common TCP connection pool.
             self._media = Media(
                 name=self._name,
-                device_name=self._device_name,
                 scheduler=self._scheduler,
                 session=self.http_session,
             )
+
+        self.register_proxy_created_hook(self._on_media_proxy_created)
+        self.register_proxy_destroyed_hook(self._on_media_proxy_destroyed)
 
     @property
     def media(self: MixinBase) -> Media:
@@ -67,12 +69,12 @@ class MediaControllerMixin:
 
     def destroy(self: MixinBase):
         if self._media is not None:
-            self._media.destroy()
+            self._media._loop.stop()
         super().destroy()
 
     def _reset_instance(self):
         if self._media is not None:
-            self._media._reset_state()
+            self._media.reset_state()
         else:
             # called from __init__ before attribute definition
             pass
@@ -88,9 +90,7 @@ class MediaControllerMixin:
                 self._autoconnect_task.cancel()
                 self._autoconnect_task = None
 
-    def on_http_proxy_created(self: MixinBase, proxy: IpProxy):
-        super().on_http_proxy_created(proxy)
-
+    def _on_media_proxy_created(self: MixinBase, proxy: IpProxy):
         # Once the proxy is created, hostname for media API urls is provided
         media_hostname = f"{proxy.address}:{proxy.port}"
         self._media.set_hostname(media_hostname)
@@ -105,12 +105,9 @@ class MediaControllerMixin:
             # not user-custom
             self._autoconnect_task = self._media._loop.run_async(self._autoconnect)
 
-    def on_http_proxy_destroyed(self: MixinBase):
+    def _on_media_proxy_destroyed(self: MixinBase):
         if not self._is_media_custom and self._autoconnect_task is not None:
             self._autoconnect_task.cancel()
             self._autoconnect_task = None
-        if self._media:
-            self._media.disconnect()
-        super().on_http_proxy_destroyed()
         # Once the proxy is destroyed, all Media API urls are reset
         self._media.set_hostname(None)

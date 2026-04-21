@@ -52,14 +52,17 @@ from olympe.messaging.arsdk_events import (
     ArsdkProtoMessageEvent,
     ArsdkMessageArgs,
 )
-from olympe.messaging.arsdk_expectations import ArsdkEventExpectation
-from olympe.messaging.arsdk_expectations import ArsdkCommandExpectation
-from olympe.messaging.arsdk_expectations import ArsdkProtoCommandExpectation
-from olympe.messaging.arsdk_expectations import ArsdkWhenAnyExpectation
-from olympe.messaging.arsdk_expectations import ArsdkWhenAllExpectations
-from olympe.messaging.arsdk_expectations import ArsdkCheckStateExpectation
-from olympe.messaging.arsdk_expectations import ArsdkCheckWaitStateExpectation
-from olympe.messaging.arsdk_expectations import ExpectPolicy, MatchingMode
+from olympe.messaging.arsdk_expectations import (
+    ArsdkEventExpectation,
+    ArsdkCommandExpectation,
+    ArsdkProtoCommandExpectation,
+    ArsdkWhenAnyExpectation,
+    ArsdkWhenAllExpectations,
+    ArsdkCheckStateExpectation,
+    ArsdkCheckWaitStateExpectation,
+    ExpectPolicy,
+    MatchingMode,
+)
 from olympe.parser import json_format as protobuf_json_format
 from olympe.parser.proto import ArsdkProto, ProtoFieldLabel, proto_type_to_python
 from olympe.parser.proto_this import ArsdkProtoThis
@@ -302,16 +305,31 @@ class ArsdkMessage(ArsdkMessageBase, metaclass=ArsdkMessageMeta):
 
     @classmethod
     def _argsmap_from_args(cls, *args, **kwds):
-        args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
-        args_set = set(args.keys())
-        kwds_set = set(kwds.keys())
-        if not args_set.isdisjoint(kwds_set):
-            raise RuntimeError(
-                "Message `{}` got multiple values for argument(s) {}".format(
-                    cls.fullName, list(args_set & kwds_set)
+        # Message({"a": 1, "b": 2}) is ambiguous: either "a" and "b" are the
+        # names of this message's own arguments (the call means a=1, b=2),
+        # or only one positional value was passed to this call, and that
+        # value happens to be the dict {"a": 1, "b": 2} itself.
+        # We treat it as a=1, b=2 only when "a" and "b" are both argument
+        # names of this message. Otherwise, the whole dict is treated as the
+        # value of that single positional argument.
+        if (
+            not kwds
+            and len(args) == 1
+            and isinstance(args[0], MutableMapping)
+            and all(k in cls.args_name for k in args[0].keys())
+        ):
+            args = args[0]
+        else:
+            args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))
+            args_set = set(args.keys())
+            kwds_set = set(kwds.keys())
+            if not args_set.isdisjoint(kwds_set):
+                raise RuntimeError(
+                    "Message `{}` got multiple values for argument(s) {}".format(
+                        cls.fullName, list(args_set & kwds_set)
+                    )
                 )
-            )
-        args.update(kwds)
+            args.update(kwds)
 
         # filter out None value
         args = OrderedDict([(k, v) for k, v in args.items() if v is not None])
@@ -1955,7 +1973,19 @@ class ArsdkProtoMessage(
 
     @classmethod
     def _argsmap_from_args(cls, *args, **kwds):
-        if not kwds and len(args) == 1 and isinstance(args[0], MutableMapping):
+        # Message({"a": 1, "b": 2}) is ambiguous: either "a" and "b" are the
+        # names of this message's own arguments (the call means a=1, b=2),
+        # or only one positional value was passed to this call, and that
+        # value happens to be the dict {"a": 1, "b": 2} itself.
+        # We treat it as a=1, b=2 only when "a" and "b" are both argument
+        # names of this message. Otherwise, the whole dict is treated as the
+        # value of that single positional argument.
+        if (
+            not kwds
+            and len(args) == 1
+            and isinstance(args[0], MutableMapping)
+            and all(k in cls.args_name for k in args[0].keys())
+        ):
             args = args[0]
         else:
             args = OrderedDict(zip(map(lambda a: a, cls.args_name), args))

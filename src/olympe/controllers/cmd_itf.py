@@ -602,6 +602,9 @@ class CommandInterfaceBase(LogMixin, AbstractScheduler):
         """
         explicit destructor
         """
+        # Properly close TCP connection. It's time that arsdk backend mux is destroyed
+        self._loop.run_async(self._backend._destroy).result_or_cancel(timeout=10.0)
+        # Loop can eventually be stopped, after all C resources have been freed
         self._loop.stop()
 
     def register_message(self, message):

@@ -117,6 +117,12 @@ def _deprecated_module(old_path, real_module):
 
     class _Deprecated(types.ModuleType):
         def __getattr__(self, name):
+            if name == "__path__":
+                # Never advertise a __path__: it would make the import system
+                # treat this wrapper as a real package and re-load submodules
+                # under this deprecated dotted path as brand new, distinct
+                # module/class objects instead of aliasing the real ones.
+                raise AttributeError(name)
             warnings.warn(
                 f"'{old_path}' is deprecated and will be removed in the next major version. "
                 f"Use '{new_path}' instead.",
@@ -125,11 +131,14 @@ def _deprecated_module(old_path, real_module):
             )
             return getattr(real_module, name)
 
+        def __dir__(self):
+            return dir(real_module)
+
     mod = _Deprecated(old_path)
     return mod
 
 
-for _old, _new_path in {
+_deprecated_paths = {
     "olympe.expectations": "olympe.messaging.expectations",
     "olympe.event": "olympe.messaging.events",
     "olympe.listener": "olympe.messaging.listener",
@@ -178,11 +187,26 @@ for _old, _new_path in {
     "olympe.mixins.protocols": "olympe.controllers.mixins.protocols",
     "olympe.mixins.streaming": "olympe.controllers.mixins.streaming",
     "olympe.mixins.update": "olympe.controllers.mixins.update",
-}.items():
+}
+
+# Phase 1: build every deprecated module wrapper first. `_deprecated_module`
+# relies on the real `types` module (via `types.ModuleType`), so none of
+# these wrappers must be wired into the parent packages' namespace yet: one
+# of the aliases below is itself named "olympe.types" and would otherwise
+# shadow the `types` stdlib import used above for later iterations.
+for _old, _new_path in _deprecated_paths.items():
     import importlib
 
     _real = importlib.import_module(_new_path)
     sys.modules.setdefault(_old, _deprecated_module(_old, _real))
+
+# Phase 2: now that every wrapper exists, wire each one onto its parent
+# module/package so that attribute access (e.g. `olympe.media`) works, not
+# just `from olympe.media import ...` / `import olympe.media`.
+for _old in _deprecated_paths:
+    _parent_name, _, _child_name = _old.rpartition(".")
+    if _parent_name in sys.modules:
+        setattr(sys.modules[_parent_name], _child_name, sys.modules[_old])
 
 
 __all__ = [
@@ -201,9 +225,6 @@ __all__ = [
     "FlightplanInfo",
     "LocalController",
     "MatchingMode",
-    "Media",
-    "MediaEvent",
-    "MediaInfo",
     "Mission",
     "MissionController",
     "Pdraw",
@@ -215,7 +236,6 @@ __all__ = [
     "StreamInfo",
     "video_frame_type",
     "h264_coded_data_format",
-    "ResourceInfo",
     "SkyController",
     "SkyController3",
     "SkyController4",

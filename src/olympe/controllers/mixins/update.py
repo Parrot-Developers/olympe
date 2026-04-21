@@ -37,19 +37,27 @@ if TYPE_CHECKING:
 
 
 class UpdateControllerMixin:
-    def __init__(self: MixinBase, ip_addr, *args, name=None, **kwds):
-        super().__init__(*args, ip_addr=ip_addr, name=name, **kwds)
+    def __init__(self: MixinBase, ip_addr, *args, name, **kwds):
+        super().__init__(*args, ip_addr=ip_addr, name=name, **kwds)  # type: ignore[call-arg]
 
         self._update = Update(ip_addr, name=name, session=self.http_session)
+
+        self.register_proxy_created_hook(self._on_update_proxy_created)
+        self.register_proxy_destroyed_hook(self._on_update_proxy_destroyed)
 
     @property
     def update(self) -> Update:
         return self._update
 
-    def on_http_proxy_created(self, proxy: "IpProxy"):
-        super().on_http_proxy_created(proxy)
+    def _on_update_proxy_created(self, proxy: "IpProxy") -> None:
+        # Once the proxy is created, set all Update API urls
         self._update.set_hostname(f"{proxy.address}:{proxy.port}")
 
-    def destroy(self: MixinBase):
+    def _on_update_proxy_destroyed(self) -> None:
+        # Once the proxy is destroyed, all Update API urls are reset
+        self._update.set_hostname(None)
+
+    def destroy(self: MixinBase) -> None:
         self._update.destroy()
-        super().destroy()  # type: ignore [reportGeneralTypeIssues]
+        # Passthrough to let the upper mixins destroy as well
+        super().destroy()

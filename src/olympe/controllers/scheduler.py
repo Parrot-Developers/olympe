@@ -35,6 +35,7 @@ from collections import OrderedDict, defaultdict, deque
 from logging import getLogger
 from types import SimpleNamespace
 
+
 from olympe.concurrent import Loop
 from olympe.messaging.arsdk_expectations import (
     ArsdkCheckWaitStateExpectation,
@@ -188,6 +189,7 @@ class DefaultScheduler(AbstractScheduler):
     def _process_event(self, event):
         # For all current pending expectations
         garbage_collected_expectations = set()
+
         for expectation in self._attr.default.pending_expectations:
             if expectation.cancelled() or expectation.timedout():
                 # Garbage collect canceled/timedout expectations
@@ -286,10 +288,12 @@ class DefaultScheduler(AbstractScheduler):
 
         :rtype: Subscriber
         """
+        import olympe.messaging.arsdk_expectations as arsdk_expectations
+
         # A policy other than 'wait' cannot be expected for an event expectation to subscribe for
         if expectation is not None and (
-            isinstance(expectation, ArsdkCheckWaitStateExpectation)
-            or isinstance(expectation, ArsdkCheckStateExpectation)
+            isinstance(expectation, arsdk_expectations.ArsdkCheckWaitStateExpectation)
+            or isinstance(expectation, arsdk_expectations.ArsdkCheckStateExpectation)
         ):
             raise ValueError(
                 "An event expectation cannot accept a policy other than 'wait'."
@@ -336,7 +340,7 @@ class DefaultScheduler(AbstractScheduler):
         )
 
 
-class StreamSchedulerMixin:
+class StreamScheduler:
     """
     StreamScheduler is scheduler class decorator (decorator pattern not an
     actual python decorator) that acts as a queuing discipline to limit
@@ -414,6 +418,7 @@ class StreamSchedulerMixin:
 
 
 class SchedulerDecoratorContext:
+    # Decorator to apply the dynamic heritage of a mixin over a scheduler of type 'Scheduler'
     def __init__(self, decorated):
         self._decorated = decorated
 

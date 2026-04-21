@@ -41,13 +41,13 @@ class FlightplanControllerMixin:
         super().__init__(*args, ip_addr=ip_addr, name=name, **kwds)
 
         self._flightplan = Flightplan(ip_addr, name=name, session=self.http_session)
+        self.register_proxy_created_hook(self._on_flightplan_proxy_created)
 
     @property
     def flightplan(self) -> Flightplan:
         return self._flightplan
 
-    def on_http_proxy_created(self, proxy: "IpProxy"):
-        super().on_http_proxy_created(proxy)
+    def _on_flightplan_proxy_created(self, proxy: "IpProxy"):
         self._flightplan.set_hostname(f"{proxy.address}:{proxy.port}")
 
     def destroy(self: MixinBase):

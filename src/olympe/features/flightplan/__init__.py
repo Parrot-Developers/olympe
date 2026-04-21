@@ -63,17 +63,10 @@ FlightplanInfo.__doc__ = (
 )
 
 
-def _namedtuple_from_mapping(mapping, namedtuple_type):
-    # Retrieve the the flightplan information 'namedtuple_type' of the flightplan 'mapping'
-    return namedtuple_type(
-        **{k: mapping[k] for k in namedtuple_type._fields if k in mapping}
-    )
-
-
 def _get_flightplan_tuple(flightplan) -> Tuple[Optional[str], FlightplanInfo]:
     # Retrieve the uid and the flightplan
     if isinstance(flightplan, Mapping):
-        flightplan = _namedtuple_from_mapping(flightplan, FlightplanInfo)
+        flightplan = _get_namedtuple_from_mapping(flightplan, FlightplanInfo)
     if not flightplan.uid:
         return None, flightplan
     return flightplan.uid, flightplan

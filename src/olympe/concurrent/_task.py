@@ -145,8 +145,6 @@ class _Task(Future):
                 # Task is cancelled right before coro stops.
                 self._must_cancel = False
                 super().set_exception(concurrent.futures.CancelledError())
-            elif exc is not None:
-                super().set_exception(exc)
             else:
                 super().set_result(stop_exc.value)
         except concurrent.futures.CancelledError as exc:

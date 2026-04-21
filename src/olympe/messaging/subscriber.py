@@ -42,7 +42,7 @@ class Subscriber:
         expectation=None,
         queue_size=default_queue_size,
         default=None,
-        timeout=None
+        timeout=None,
     ):
         self._scheduler = scheduler
         self._callback = callback

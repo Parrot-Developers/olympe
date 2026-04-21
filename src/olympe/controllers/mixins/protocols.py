@@ -1,6 +1,7 @@
 import logging
 
-from typing import Any, Dict, Optional, Protocol, TYPE_CHECKING
+from threading import Event as threading_event
+from typing import Any, Callable, Dict, Optional, Protocol, TYPE_CHECKING
 
 from olympe.concurrent import Future, Loop
 from olympe.connection.http import Session
@@ -10,6 +11,7 @@ from olympe.messaging.expectations import Expectation
 if TYPE_CHECKING:
     from olympe.connection import DeviceInfo
     from olympe.controllers.mixins.ipproxy import IpProxy
+    from olympe.features.esim import EsimHandler
     from olympe.features.flightplan import Flightplan
     from olympe.features.media import Media
     from olympe.features.mission import MissionController
@@ -53,6 +55,9 @@ class HasController(Protocol):
     @property
     def scheduler(self) -> AbstractScheduler: ...
 
+    @property
+    def http_session(self) -> Session: ...
+
     def destroy(self) -> None: ...
 
     def _reset_instance(self) -> None: ...
@@ -84,11 +89,17 @@ class HasFlightplan(Protocol):
     def flightplan(self) -> "Flightplan": ...
 
 
-class HasUpdate(Protocol):
-    _update: "Update"
+class HasEsim(Protocol):
+    _esim: "EsimHandler"
+    _loop: "Loop"
+    _session: "Session"
+    _get_state_subscriber: "AbstractScheduler"
+    _received_esim_event: "threading_event"
 
     @property
-    def update(self) -> "Update": ...
+    def esim(self) -> "EsimHandler": ...
+
+    def _on_first_getstate(self, message_event, _): ...
 
 
 class HasMission(Protocol):
@@ -96,6 +107,17 @@ class HasMission(Protocol):
 
     @property
     def mission(self) -> "MissionController": ...
+
+    def _on_mission_proxy_created(self, proxy: "IpProxy") -> None: ...
+
+    def _on_mission_proxy_destroyed(self) -> None: ...
+
+
+class HasUpdate(Protocol):
+    _update: "Update"
+
+    @property
+    def update(self) -> "Update": ...
 
 
 class HasIpProxy(Protocol):
@@ -112,6 +134,16 @@ class HasIpProxy(Protocol):
     def open_skycontroller_tcp_proxy(self, port: int) -> Future["IpProxy"]: ...
 
 
+class HasHttpProxy(Protocol):
+    # Mixins call these methods in their __init__ (after super().__init__()) to
+    # register a callback that HttpControllerMixin will invoke when the TCP proxy
+    # to the drone is opened or closed.  Using explicit registration ensures that no
+    # callback is silently dropped if a mixin forgets the super() call.
+    def register_proxy_created_hook(self, fn: "Callable[[IpProxy], None]") -> None: ...
+
+    def register_proxy_destroyed_hook(self, fn: "Callable[[], None]") -> None: ...
+
+
 class MixinBase(
     HasLoop,
     HasLog,
@@ -119,9 +151,11 @@ class MixinBase(
     HasStreaming,
     HasMedia,
     HasFlightplan,
+    HasEsim,
     HasUpdate,
     HasMission,
     HasIpProxy,
+    HasHttpProxy,
     Protocol,
 ):
     """

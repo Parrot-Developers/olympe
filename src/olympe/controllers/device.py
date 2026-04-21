@@ -30,8 +30,12 @@
 import ctypes
 import json
 
+from concurrent.futures import CancelledError
+
 import olympe_deps as od
 
+from olympe.concurrent import TimeoutError as FutureTimeoutError
+from olympe.concurrent.sync import Event
 from olympe.connection import PeerInfo
 from olympe.connection.backend import BackendType, DeviceBackendNet, DeviceBackendMuxIp
 from olympe.connection.networking import Connection, ConnectionListener
@@ -39,6 +43,7 @@ from olympe.messaging.arsdk_messages import ArsdkMessageType
 from olympe.utils import callback_decorator
 from .cmd_itf import CommandInterfaceBase, ConnectionState
 
+TIMEOUT_DISCONNECTION = 30.0  # in seconds
 
 class DeviceBackendConnectionListener(ConnectionListener):
     def __init__(self, device: "DeviceBase"):
@@ -63,6 +68,11 @@ class DeviceBase(CommandInterfaceBase):
         self._peer = None
         self._listening = False
         self._drone_type = drone_type or od.ARSDK_DEVICE_TYPE_ANAFI_2
+
+        # As for in controller, this event will be created before arsdk_peer_disconnect,
+        # and released when _disconnected_cb is called (ie when the disconnection is
+        # successful)
+        self._disconnect_sync_event=None
 
         self._backend_type = backend
         if backend is BackendType.Net:
@@ -210,6 +220,9 @@ class DeviceBase(CommandInterfaceBase):
         self.logger.info(f"Disconnected from peer '{peer_name}'")
 
         self.connection_state = ConnectionState.Disconnected
+        # Disconnection is successful, release event to unblock _adisconnect that still
+        # awaits
+        Event.release_event(self._disconnect_sync_event)
 
         self._loop.run_later(self._on_device_removed)
 
@@ -222,8 +235,11 @@ class DeviceBase(CommandInterfaceBase):
             f"for reason '{reason}'"
         )
 
-        self.connection_state = ConnectionState.Error
-        self._disconnect_impl()
+        # If this callback is called but the device is already disconnecting, there
+        # is no need to disconnect once more
+        if self.connection_state is not ConnectionState.Disconnecting:
+            self.connection_state = ConnectionState.Error
+            self._loop.run_later(self._adisconnect)
 
     @callback_decorator()
     def _link_status_cb(self, _arsdk_peer, arsdk_peer_info, status, _user_data):
@@ -237,7 +253,7 @@ class DeviceBase(CommandInterfaceBase):
                 f"Arsdk link with device '{_arsdk_peer}' has status: 'KO'. Disconnecting"
             )
             self.connection_state = ConnectionState.Error
-            self._disconnect_impl()
+            self._loop.run_later(self._adisconnect)
 
     def listen(self) -> bool:
         return self._loop.run_async(self.alisten)
@@ -361,17 +377,57 @@ class DeviceBase(CommandInterfaceBase):
             message._reset_state()
         super()._on_device_removed()
 
+
+    async def _adisconnect(self)->bool:
+        if self.disconnected or self.created:
+            self.logger.info("Already disconnected")
+            return True
+
+        self.connection_state = ConnectionState.Disconnecting
+        # Effective arsdk disconnection
+        self._disconnect_impl()
+
+        assert self._disconnect_sync_event is not None
+        # wait for _disconnected_cb to be called and tag the success of the disconnection
+        await self._disconnect_sync_event.wait()
+
+        return self.disconnected or self.created
+
+    def disconnect(self)->bool:
+        disconnect_future = self._loop.run_async(self._adisconnect)
+        try:
+            _ = disconnect_future.result_or_cancel(timeout=TIMEOUT_DISCONNECTION)
+
+        except (FutureTimeoutError, CancelledError):
+            self.logger.error(f"Disconnection from peer '{self._peer}' has failed")
+            self.connection_state = ConnectionState.Error
+            return False
+
+        return self.disconnected or self.created
+
+
     @callback_decorator()
     def _disconnect_impl(self) -> bool:
+        # Create the disconnection event before the disconnection request, it will be
+        # released in _disconnected_cb
+        self._disconnect_sync_event=Event(self._loop)
+
         if self._peer is None:
             self.logger.warning("There is no device to disconnect from")
+            # Release event asap if there's no peer
+            Event.release_event(self._disconnect_sync_event)
             return False
+
         res = od.arsdk_peer_disconnect(self._peer.arsdk_peer)
         if res < 0:
             self.logger.error(
                 f"Disconnecting from device '{self._peer}' has failed ({res})"
             )
             self.connection_state = ConnectionState.Error
+            # Release event to not block the rest, even if arsdk fails disconnecting ;
+            # because _disconnected_cb will never be called anyway
+            Event.release_event(self._disconnect_sync_event)
+
         self._peer = None
         return True
 
@@ -385,6 +441,15 @@ class DeviceBase(CommandInterfaceBase):
         """
         explicit destructor
         """
+        # If a drone is connected, handles its disconnection properly before freeing
+        # anything, or stop() would destroy C mux while the drone still has access to it
+        # -> segfault
+        if self.connected or self.connecting:
+            self.disconnect()
+
+        # peer is now disconnected, C memory can be freed alongside arsdk publisher
         self.stop()
+
+        self._loop.run_async(self._backend._destroy).result_or_cancel(timeout=5.0)
+
         super().destroy()
-        self._backend._destroy()

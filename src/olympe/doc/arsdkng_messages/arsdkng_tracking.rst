@@ -1,5 +1,5 @@
 Tracking feature
-^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 
 .. auto_arsdkfeature:: tracking.Command
 

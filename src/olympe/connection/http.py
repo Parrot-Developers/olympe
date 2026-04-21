@@ -402,16 +402,23 @@ class WebSocket:
     # Because WebSocket is supposed to run within the process' loop, its methods have to
     # be launched calling the so-called loop
 
-    async def aread(self, timeout=None) -> Union[str, bytes, None]:
-        return await self._connection._loop.await_for(timeout, self._aread)
+    async def aget_media_event(self):
+        return await self._connection._loop.run_async(self._aget_media_event)
 
-    async def _aread(self) -> Union[str, bytes, None]:
+    async def _aget_media_event(self) -> Union[str, bytes, None]:
         if (
             self._connection._conn.state is wsproto.connection.ConnectionState.CLOSED
             and self._connection._events.empty()
         ):
             return None
-        event = await self._connection._get_next_event()
+        try:
+            event = await self._connection._get_next_event()
+        except queue.Empty:
+            try:
+                await self._connection._event_sem.acquire()
+                event = self._connection._events.get(timeout=1.0)
+            except queue.Empty:
+                raise TimeoutError
         if isinstance(event, wsproto.events.CloseConnection):
             return None
         assert isinstance(
@@ -423,6 +430,12 @@ class WebSocket:
             ),
         )
         return event.data
+
+    async def aread(self, timeout=None) -> Union[str, bytes, None]:
+        return await self._connection._loop.await_for(timeout, self._aread)
+
+    async def _aread(self) -> Union[str, bytes, None]:
+        return await self._aget_media_event()
 
     async def awrite(self, data: bytes) -> bool:
         return await self._connection._loop.run_async(self._awrite, data)
@@ -484,7 +497,7 @@ class ConnectionListener(DataListener):
 
 
 class Connection:
-    def __init__(self, loop, session, scheme):
+    def __init__(self, loop, session, scheme, ssl_context=None):
         self._session = session
         self._loop = loop
         self.logger = self._loop.logger
@@ -499,7 +512,7 @@ class Connection:
         if scheme in ("http", "ws"):
             self._client = TcpClient(self._loop)
         else:
-            self._client = TlsClient(self._loop)
+            self._client = TlsClient(self._loop, ssl_context=ssl_context)
         connection_listener = ConnectionListener(self)
         self._client.add_data_listener(connection_listener)
         self._client.add_connection_listener(connection_listener)
@@ -568,17 +581,33 @@ class Connection:
                 return await self._send_http(request, stream)
             else:
                 return await self._send_ws(request)
-        except HTTPError:
-            self.logger.error("Unable to send a request to a closed connection")
+        except (HTTPError, h11.LocalProtocolError):
+            self.logger.warning("Unable to send a request to a closed connection")
 
     async def _send_http(self, request: Request, stream: bool) -> Response:
-        data = bytes()
+        # Send each h11 event as produced: keeps pomp buffers small (≤4 MiB)
+        # and lets the server respond before the full body is sent
         for h11_event in request._h11():
             chunk = self._conn_http.send(h11_event)
-            if chunk is not None:
-                data += chunk
+            # EndOfMessage on bodyless requests serialises to b''; awaiting an
+            # empty write yields the loop a turn during which the connection
+            # may get marked closed. Skip it
+            if chunk:
+                try:
+                    await self.awrite(chunk)
+                except ConnectionError:
+                    # The server closed the TCP connection before we finished
+                    # sending the body.  This is a legal server behaviour: it
+                    # can send an early error response (e.g. 413, 500) and
+                    # close the connection without waiting for the full body.
+                    # _feed_eof already queued ConnectionClosed, so the read
+                    # below unblocks with a proper error
+                    break
+
+        # Must be cleared before reading the response so _aclosed_http
+        # interprets the next Connection header correctly
         self._reusing = False
-        await self.awrite(data)
+
         event = await self._get_next_event()
         # If a closed connection is detected, there is no need to send an HTTP response
         if isinstance(event, h11.ConnectionClosed):
@@ -668,7 +697,17 @@ class Connection:
         assert self._client is not None
         if self._scheme in ("http", "https"):
             close_event = h11.ConnectionClosed()
-            self._conn_http.send(close_event)
+            try:
+                self._conn_http.send(close_event)
+            except h11.LocalProtocolError:
+                # h11 rejects ConnectionClosed in states where we are still
+                # sending (e.g. SEND_BODY).  This happens when the server
+                # closes the TCP connection before the client has finished
+                # sending the request body — a valid server behaviour when it
+                # wants to send an early error response (e.g. 413, 500).
+                # The connection is gone regardless; queue the event so that
+                # any coroutine blocked in _get_next_event() unblocks cleanly.
+                pass
             self._events.put_nowait(close_event)
             self._event_sem.release()
         else:
@@ -764,13 +803,14 @@ class Connection:
 
 
 class Session:
-    def __init__(self, loop=None):
+    def __init__(self, loop=None, ssl_context=None):
         if loop is None:
             loop = get_running_loop()
         self._loop = loop
         self._resolver = DNSResolver()
         self._connection_pools = dict()
         self._loop.register_cleanup(self._acleanup)
+        self._ssl_context = ssl_context
 
     async def _acleanup(self):
         if self._connection_pools:
@@ -784,6 +824,11 @@ class Session:
             for connection in pool:
                 await connection.adisconnect()
         self._connection_pools = dict()
+        self._resolver.close()
+        # recreate new DNS resolver for the next reconnexion ; because the Session object
+        # is related to the Drone instance. There is one per use. Otherwise, that would
+        # lead to crash
+        self._resolver = DNSResolver()
 
     async def get(self, url: str, **kwds) -> Response:
         return cast(Response, await self.request("GET", url, **kwds))
@@ -812,10 +857,13 @@ class Session:
         headers: Optional[
             Union[Mapping[str, bytes], Iterable[Tuple[str, bytes]]]
         ] = None,
-        timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        timeout: Optional[float] = None,
         retry: int = DEFAULT_RECONNECTION_ATTEMPTS,
         stream: bool = False,
     ) -> Optional[Response]:
+        if timeout is None:
+            timeout = DEFAULT_REQUEST_TIMEOUT
+
         req = Request(url, method=method, params=params, data=data, headers=headers)
         assert req.scheme in ("http", "https")
 
@@ -859,7 +907,7 @@ class Session:
 
     async def _get_connection(self, scheme: str, host: str, port: int):
         if (scheme, host, port) not in self._connection_pools:
-            connection = Connection(self._loop, self, scheme)
+            connection = Connection(self._loop, self, scheme, ssl_context=self._ssl_context)
             self._connection_pools[(scheme, host, port)] = [connection]
             return connection
         pool = self._connection_pools[(scheme, host, port)]
@@ -876,7 +924,7 @@ class Session:
             except ValueError:
                 pass
 
-        connection = Connection(self._loop, self, scheme)
+        connection = Connection(self._loop, self, scheme, ssl_context=self._ssl_context)
         pool.append(connection)
         return connection
 

@@ -18,7 +18,7 @@ Piloting HUD
 Displays flight information such as compass, speed, altitude, battery level and
 other useful flight information.
 
-The following example is a lite version of the :ref:`video_streaming_example`.
+The following example is a lite version of the :ref:`_video_streaming_example`.
 Only the :py:func:`start()`, :py:func:`stop()` and :py:func:`fly()` functions
 are kept.
 

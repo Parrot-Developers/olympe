@@ -36,8 +36,6 @@ from concurrent.futures import CancelledError
 from enum import Enum, auto
 from typing import Tuple, Type
 
-import olympe.messaging.arsdk_messages
-
 from olympe.concurrent import Future
 from olympe.parser.proto_this import ArsdkProtoThis
 from olympe.utils import (
@@ -47,11 +45,6 @@ from olympe.utils import (
     DEFAULT_INT_TOL,
 )
 from .arsdk_enums import ArsdkBitfield
-from .arsdk_events import (
-    UnknownArsdkMessageEvent,
-    UnknownGenericMessageEvent,
-    UnknownMissionMessageEvent,
-)
 from .events import Event, EventContext
 from .expectations import (
     ExpectPolicy,
@@ -425,10 +418,9 @@ class ArsdkEventExpectation(ArsdkFillDefaultArgsExpectationMixin, ArsdkExpectati
             # without considering the sub-dict to get rid of the map key they match upon.
             # This case may happen when the user would like to match an event with all
             # the items of the message, and not only the parts that have changed recently.
-            if (
-                self.expected_message.callback_type
-                is not olympe.messaging.arsdk_messages.ArsdkMessageCallbackType.MAP
-            ):
+            from olympe.messaging.arsdk_messages import ArsdkMessageCallbackType
+
+            if self.expected_message.callback_type is not ArsdkMessageCallbackType.MAP:
                 if not _match_mapping(
                     state_args,
                     self.expected_args,
@@ -578,10 +570,9 @@ class ArsdkCheckStateExpectation(
         expectation.set_float_tol(self._float_tol)
         expectation.set_int_tol(self._int_tol)
         expectation._await(scheduler)
-        if (
-            self.expected_message.callback_type
-            is not olympe.messaging.arsdk_messages.ArsdkMessageCallbackType.MAP
-        ):
+        from olympe.messaging.arsdk_messages import ArsdkMessageCallbackType
+
+        if self.expected_message.callback_type is not ArsdkMessageCallbackType.MAP:
             key = None
         else:
             if self.expected_message.key_name not in expectation.expected_args:
@@ -1089,12 +1080,18 @@ class UnknownMessage(Expectation):
 
 
 class UnknownArsdkMessage(UnknownMessage):
+    from .arsdk_events import UnknownArsdkMessageEvent
+
     event_type = UnknownArsdkMessageEvent
 
 
 class UnknownGenericMessage(UnknownMessage):
+    from .arsdk_events import UnknownGenericMessageEvent
+
     event_type = UnknownGenericMessageEvent
 
 
 class UnknownMissionMessage(UnknownMessage):
+    from .arsdk_events import UnknownMissionMessageEvent
+
     event_type = UnknownMissionMessageEvent

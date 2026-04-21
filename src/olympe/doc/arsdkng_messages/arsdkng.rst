@@ -536,6 +536,13 @@ Messages Reference Documentation
     arsdkng_user_storage_v2
 
 .. toctree::
+    :caption: Vehicle feature
+    :maxdepth: 1
+    :titlesonly:
+
+    arsdkng_vehicle
+
+.. toctree::
     :caption: Wifi feature
     :maxdepth: 1
     :titlesonly:

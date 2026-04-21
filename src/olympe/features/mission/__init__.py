@@ -204,11 +204,32 @@ class MissionController(LogMixin):
         self,
         controller: ControllerBase,
         hostname: str,
-        version: int = 1,
         name: Optional[str] = None,
+        version: int = 1,
         session: Optional[Session] = None,
         mission_dir: Optional[Path] = None,
     ):
+        """Initialize the Mission API controller.
+
+        :param controller: parent drone controller, used to access the ARSDK scheduler
+            and shared HTTP session
+        :type controller: ControllerBase
+        :param hostname: hostname of the device to access the REST API, or None if not
+            yet known
+        :type hostname: str, optional
+        :param name: name of the drone controller, used to scope the logger and the proto
+            module root, defaults to None
+        :type name: str, optional
+        :param version: version of the REST API to target, defaults to 1
+        :type version: int, optional
+        :param session: HTTP session shared with other mixins; if None, a dedicated session
+            is created using the mission background loop, defaults to None
+        :type session: Session, optional
+        :param mission_dir: local directory used to cache mission payloads; if None,
+            defaults to the olympe data directory
+        :type mission_dir: Path, optional
+        :raises RuntimeError: if mission_dir is not a writable directory
+        """
         super().__init__(name, None, "missions")
         self._root = "olympe.airsdk"
         if name:
@@ -219,31 +240,56 @@ class MissionController(LogMixin):
         self._scheduler = self._controller._scheduler
         self._version = version
         self.set_hostname(hostname)
-        # In case no session is transmitted through the mixins, MissionController builts
-        # its own with its own loop.
-        if session is None:
-            self._session = Session(self._loop)
-        else:
-            self._session = session
+
         # Use mission_dir setter, to prevent self._mission_dir from being None
         self.mission_dir = mission_dir
 
         self._missions = defaultdict(list)
         self._arsdk_mission = ArsdkMessages.get("olympe").by_feature["mission"]
 
+        # max_workers is set to 1 because upload and version requests must be serialized
         self._loop = Loop(self.logger, max_workers=1)
+
+        # In case no session is transmitted through the mixins, MissionController builds
+        # its own with its own loop
+        if session is None:
+            self._session = Session(self._loop)
+        else:
+            self._session = session
+
+        # Start the loop at the end of the init
         self._loop.start()
 
-    def stop(self):
-        self._loop.stop()
+    def destroy(self) -> bool:
+        """Properly stop the loop of the Mission API background thread
 
-    def set_hostname(self, hostname: str):
+        :return: True if the loop is successfully stopped, False otherwise
+        :rtype: bool
+        """
+        return self._loop.stop()
+
+    def set_hostname(self, hostname: Optional[str]):
+        """Set hostname to access the REST API URLs
+
+        :param hostname: hostname of the device to access. Value to None resets all URLs
+        :type hostname: str, optional
+        """
         self._hostname = hostname
-        self._mission_api_url = (
-            f"http://{self._hostname}/api/v{self._version}/mission/missions"
-        )
+        if self._hostname is not None:
+            self._mission_api_url = (
+                f"http://{self._hostname}/api/v{self._version}/mission/missions"
+            )
+
+        # In case hostname is reset to None, reset the API URLs too
+        else:
+            self._mission_api_url = None
 
     def set_device_name(self, device_name: str):
+        """Set the device name and propagate it to all open missions' loggers
+
+        :param device_name: name of the current device
+        :type device_name: str
+        """
         super().set_device_name(device_name)
         for missions in self._missions.values():
             for mission in missions:
@@ -251,10 +297,23 @@ class MissionController(LogMixin):
 
     @property
     def mission_dir(self) -> Path:
+        """Local directory used to cache mission payloads.
+
+        :rtype: Path
+        """
         return self._mission_dir
 
     @mission_dir.setter
     def mission_dir(self, dir_path: Optional[Path]):
+        """Set the local directory used to cache mission payloads.
+
+        If dir_path is None, defaults to the olympe data directory
+        (~/.local/share/olympe/missions).
+
+        :param dir_path: path to the mission cache directory, or None to use the default
+        :type dir_path: Path, optional
+        :raises RuntimeError: if the resolved directory is not writable
+        """
         if dir_path is None:
             self._mission_dir = olympe_data_dir() / "missions"
             self._mission_dir.mkdir(mode=0o750, exist_ok=True, parents=True)
@@ -268,6 +327,9 @@ class MissionController(LogMixin):
 
     async def alist_remote(self) -> Optional[List[MissionMetadata]]:
         try:
+            assert self._mission_api_url, ValueError(
+                "The current API mission url is not set already"
+            )
             # Get the response to the request 'GET' to self._mission_api_url, that
             # should return the list of the missions installed on the drone
             response = await self._session.get(self._mission_api_url)
@@ -295,7 +357,15 @@ class MissionController(LogMixin):
         missions = [MissionMetadataRemote.from_dict(m) for m in missions]
         return missions
 
-    def list_remote(self):
+    def list_remote(self) -> Optional[List[MissionMetadata]]:
+        """Return the list of missions currently installed on the drone.
+
+        Synchronous wrapper around :meth:`alist_remote`.
+        HTTP GET /api/v<version>/mission/missions
+
+        :return: list of installed mission metadata, or None if the request failed
+        :rtype: Optional[List[MissionMetadata]]
+        """
         return self._loop.run_async(self.alist_remote).result_or_cancel(timeout=3)
 
     def from_path(
@@ -304,9 +374,22 @@ class MissionController(LogMixin):
         feature_name_from_file: bool = False,
         timeout: Optional[float] = None,
     ) -> Mission:
-        """
-        Creates and returns an olympe.Mission object from a local path or an URL to an
-        AirSDK mission archive.
+        """Create and return a :class:`Mission` object from a local path or a URL pointing
+        to an AirSDK mission archive (.tar.gz).
+
+        The returned :class:`Mission` is not yet opened. Call :meth:`Mission.open` or use
+        the mission as a context manager to load, verify and register the mission payload.
+
+        :param url_or_path: local filesystem path or URL to the AirSDK mission archive
+        :type url_or_path: Union[Path, str]
+        :param feature_name_from_file: if True, derive the proto feature name from the
+            archive filename rather than from the mission metadata, defaults to False
+        :type feature_name_from_file: bool, optional
+        :param timeout: timeout in seconds applied when downloading the resource if a URL
+            is provided, defaults to None (no timeout)
+        :type timeout: float, optional
+        :return: a :class:`Mission` object wrapping the given resource, ready to be opened
+        :rtype: Mission
         """
         return Mission(
             self,
@@ -316,14 +399,15 @@ class MissionController(LogMixin):
 
 
 def _data_checked(func):
-    """Decorator to prevent access to a member variable if self._data is None or self._closed is True
+    """Decorator to prevent access to a member variable if self._data is None or
+    self._closed is True
 
     :param func: decorated getter of the member variable
     :type func: Any
     :raises ValueError: if self._data is None
     :raises ValueError: if self._closed is True
     :return: wrapper function that checks self._data and self._closed values
-    :rtype: callable
+    :rtype: property
     """
 
     @functools.wraps(func)
@@ -353,6 +437,19 @@ class Mission:
         resource: Resource,
         feature_name_from_file: bool = False,
     ):
+        """Initialize a Mission object wrapping a mission archive resource.
+
+        The mission is not yet opened. Call :meth:`open` or use the mission as a
+        context manager to load and verify the payload.
+
+        :param mission_controller: parent mission controller
+        :type mission_controller: MissionController
+        :param resource: resource pointing to the AirSDK mission archive
+        :type resource: Resource
+        :param feature_name_from_file: if True, derive the proto feature name from the
+            archive filename rather than from the mission metadata, defaults to False
+        :type feature_name_from_file: bool, optional
+        """
         self.logger: Logger = mission_controller.logger
         self._controller: MissionController = mission_controller
         self._resource: Resource = resource
@@ -378,6 +475,95 @@ class Mission:
     def __bool__(self):
         return self._data is not None and not self._closed
 
+    @property
+    def resource(self) -> Resource:
+        """Resource wrapping the mission archive path or URL."""
+        return self._resource
+
+    @property
+    def filepath(self) -> Path:
+        """Local filesystem path to the mission archive, downloaded if necessary."""
+        filepath_future = self._controller._loop.run_async(self._resource.get)
+        filepath: Path = filepath_future.result_or_cancel(self._resource.timeout)
+        return filepath
+
+    @property
+    def state(self) -> Optional[Any]:
+        """Current mission state as reported by the drone, or None if unknown."""
+        return self._state
+
+    @property
+    def recipient_id(self) -> Optional[int]:
+        """Recipient ID assigned by the drone, or None if the mission is not ready."""
+        return self._recipient_id
+
+    @property
+    def ready(self) -> bool:
+        """True if the mission has received its recipient ID and can communicate."""
+        return self._recipient_id is not None
+
+    @property
+    def messages(self) -> Dict:
+        """Dict of proto message classes keyed by feature name, usable with the Olympe DSL API.
+
+        :raises ValueError: if no messages have been loaded (mission not opened)
+        """
+        if self._messages is None:
+            raise ValueError(
+                "There are no proto mission messages that have successfully been loaded"
+            )
+        return self._messages
+
+    @property
+    def enums(self) -> Optional[Dict]:
+        """Dict of proto enum classes keyed by feature name, or None if none are defined."""
+        return self._enums
+
+    @property
+    def modules(self) -> Optional[Any]:
+        """Raw proto module objects loaded from the mission payload."""
+        return self._modules
+
+    @property
+    def signature(self) -> Optional[MissionSignature]:
+        """Mission signature loaded from the archive, or None if not yet opened."""
+        return self._signature
+
+    @_data_checked
+    def uid(self) -> str:
+        """Unique identifier of the mission."""
+        return self._data.uid
+
+    @_data_checked
+    def name(self) -> str:
+        """Human-readable name of the mission."""
+        return self._data.name
+
+    @_data_checked
+    def desc(self) -> str:
+        """Description of the mission."""
+        return self._data.desc
+
+    @_data_checked
+    def version(self) -> str:
+        """Version string of the mission."""
+        return self._data.version
+
+    @_data_checked
+    def target_model_id(self) -> int:
+        """Target drone model ID."""
+        return self._data.target_model_id
+
+    @_data_checked
+    def target_min_version(self) -> str:
+        """Minimum supported drone firmware version."""
+        return self._data.target_min_version
+
+    @_data_checked
+    def target_max_version(self) -> str:
+        """Maximum supported drone firmware version."""
+        return self._data.target_max_version
+
     def _load_protos(
         self,
         mission_uid: str,
@@ -386,17 +572,23 @@ class Mission:
         raw: bool = False,
     ):
         arsdk_proto = ArsdkProto.get(self._controller._root)
+        # Compile the .proto files from the mission payload and load the resulting
+        # _pb2.py modules. Also registers the new ArsdkProtoFeature descriptors
+        # into arsdk_proto.features.
         modules = arsdk_proto.parse_mission_proto(
             payload_proto_path,
             mission_uid,
             feature_name_from_file=feature_name_from_file,
             raw=raw,
         )
+        # Retrieve the global message and enum registries to inject mission entries.
         messages = ArsdkMessages.get(self._controller._root)
         enums = ArsdkEnums.get(self._controller._root)
         mission_messages = dict()
         mission_enums = dict()
 
+        # In raw mode or if no features were found, return early without generating
+        # Olympe message/enum classes — callers only need the proto modules.
         if not arsdk_proto.features or raw:
             return (
                 arsdk_proto.features,
@@ -405,6 +597,9 @@ class Mission:
                 modules,
             )
 
+        # First pass: register all enum and message descriptors into the global
+        # registries so the dynamic module loader can expose them as importable
+        # olympe.messages.<feature> and olympe.enums.<feature> modules.
         module_loader.reload(self._controller._root)
         for feature_name, feature in arsdk_proto.features.items():
             for service in feature.services:
@@ -414,6 +609,9 @@ class Mission:
                 enums._add_proto_enum(enum_desc)
             for message_desc in feature.messages:
                 messages._add_arsdk_proto_message(feature, message_desc)
+        # Second pass: reload the module loader now that all descriptors are
+        # registered, then retrieve the generated message and enum module objects
+        # keyed by feature name.
         module_loader.reload(self._controller._root)
         for feature_name, feature in arsdk_proto.features.items():
             mission_messages[feature_name] = module_loader.get_messages(
@@ -448,7 +646,7 @@ class Mission:
                 if not path.samefile(mission_dir / self.uid):
                     # Check that the current payload resource is not being deleted,
                     # because it still needed. Empty and delete the others
-                    shutil.rmtree(mission_dir / path)
+                    shutil.rmtree(path)
 
         # Rename the payload with the hexadecimal digest associated to this mission
         # version
@@ -479,8 +677,23 @@ class Mission:
             )
             tar.extractall(path)
 
-    def open(self, raw: bool = False, verify: bool = True, ca_pub_key_der=None):
-        verify = verify or bool(ca_pub_key_der)
+    def open(self, raw: bool = False, verify: bool = True) -> Mission:
+        """Open the mission archive, load its payload and register it with the controller.
+
+        Extracts the archive, loads proto messages and enums, verifies the signature,
+        then subscribes to drone mission events. Can also be called via the context
+        manager protocol.
+
+        :param raw: if True, load proto files without generating Olympe message classes,
+            defaults to False
+        :type raw: bool, optional
+        :param verify: if True, verify the mission signature after loading, defaults to True
+        :type verify: bool, optional
+        :return: self
+        :rtype: Mission
+        :raises ValueError: if the signature file is missing or does not match
+        :raises ValueError: if the mission metadata conflicts with a previously loaded version
+        """
         with tempfile.TemporaryDirectory() as root_tmp_dir:
             with tarfile.open(self.filepath) as f:
                 # A safe extract has to be guaranteed. That has been applied in Python 3.11
@@ -489,6 +702,7 @@ class Mission:
                 # See CVE-2007-4559 vulnerability fix for further details
                 self._safe_extract(tar=f, path=root_tmp_dir)
 
+            # Locate and load the ECDSA signature file embedded in the archive.
             signature = None
             for signature_path in Path(root_tmp_dir).glob("signature.ecdsa*"):
                 signature = MissionSignature.from_file(signature_path)
@@ -497,6 +711,8 @@ class Mission:
                 raise ValueError(
                     f"Mission signature 'signature.ecdsa' not found in {root_tmp_dir}"
                 )
+            # If this mission was already opened before, ensure the signature matches
+            # to prevent inconsistencies when reopening the same archive.
             if self._signature is not None and self._signature != signature:
                 raise ValueError(
                     f"Mission signature mismatch: {self._signature} != {signature}"
@@ -505,6 +721,7 @@ class Mission:
             with open(Path(root_tmp_dir) / "mission.json") as f:
                 mission_json = MissionMetadata.from_dict(json.load(f))
 
+            # Same consistency check for the metadata.
             if self._data is not None and self._data != mission_json:
                 raise ValueError(
                     f"Mission data mismatch: {self._data} != {mission_json}"
@@ -514,6 +731,8 @@ class Mission:
                 payload_proto_path = Path(payload_tmp_dir) / "share" / "protobuf"
                 with tarfile.open(Path(root_tmp_dir) / "payload.tar.gz") as f:
                     self._safe_extract(f, payload_tmp_dir)
+                    # Compile and load the mission's .proto files, then generate
+                    # the corresponding Olympe message and enum classes.
                     features, messages, enums, modules = self._load_protos(
                         mission_json.uid,
                         payload_proto_path,
@@ -521,6 +740,8 @@ class Mission:
                         feature_name_from_file=self._feature_name_from_file,
                     )
 
+        # Warn if the same mission is opened multiple times; this is allowed but
+        # usually indicates a logic error in the caller.
         if mission_json.uid in self._controller._missions:
             for existing_mission in self._controller._missions[mission_json.uid]:
                 if existing_mission._data == mission_json:
@@ -528,6 +749,7 @@ class Mission:
                         f"Opening mission '{mission_json.uid}' multiple times"
                     )
 
+        # Commit all loaded data to the mission state atomically.
         (
             self._data,
             self._messages,
@@ -544,12 +766,20 @@ class Mission:
 
         if verify:
             self.verify()
+        # Subscribe to drone state/capabilities events for this mission.
         self._subscribe()
+        # Register this mission in the controller so it can receive drone events.
         self._controller._missions[self.uid].append(self)
+        # Move the archive into the persistent mission directory for future use.
         _ = self._relocate_in_mission_dir()
         return self
 
     def close(self):
+        """Close the mission and unsubscribe from all drone events.
+
+        Removes the mission from the controller registry and marks it as closed.
+        After this call the mission can no longer send or receive messages.
+        """
         if self._data is not None:
             del self._controller._missions[self.uid]
             # TODO: unload mission messages/enums module
@@ -563,14 +793,13 @@ class Mission:
     async def _ainstall(
         self,
         verify: bool = True,
-        ca_pub_key_der=None,
         allow_downgrade=None,
         is_default=None,
         timeout: Optional[float] = 30,
         **kwds,
     ):
         if self.uid not in self._controller._missions:
-            self.open(verify=verify, ca_pub_key_der=ca_pub_key_der)
+            self.open(verify=verify)
 
         params = kwds
         if allow_downgrade is not None:
@@ -625,20 +854,34 @@ class Mission:
     def install(
         self,
         verify: bool = True,
-        ca_pub_key_der=None,
-        allow_downgrade=None,
-        is_default=None,
+        allow_downgrade: Optional[bool] = None,
+        is_default: Optional[bool] = None,
         timeout: Optional[float] = 30,
         **kwds,
     ):
-        """
-        Install this mission onto the remote drone. The drone must be rebooted
-        before this mission becomes available.
+        """Install this mission onto the remote drone.
+
+        Opens the mission if not already open, then uploads the archive via
+        HTTP PUT /api/v<version>/mission/missions/. The drone must be rebooted
+        before the mission becomes available.
+
+        :param verify: if True, verify the mission signature before installing,
+            defaults to True
+        :type verify: bool, optional
+        :param allow_downgrade: if True, allow installing an older version over a newer
+            one; if None, the drone decides, defaults to None
+        :type allow_downgrade: bool, optional
+        :param is_default: if True, set this mission as the default; if None, the drone
+            decides, defaults to None
+        :type is_default: bool, optional
+        :param timeout: timeout in seconds for the HTTP PUT request, defaults to 30
+        :type timeout: float, optional
+        :return: True if the mission was successfully installed, False otherwise
+        :rtype: bool
         """
         return self._controller._loop.run_async(
             self._ainstall,
             verify=verify,
-            ca_pub_key_der=ca_pub_key_der,
             allow_downgrade=allow_downgrade,
             is_default=is_default,
             timeout=timeout,
@@ -646,11 +889,27 @@ class Mission:
         ).result_or_cancel(timeout=timeout)
 
     def hash(self):
+        """Return the SHA-512 hash of the mission archive files.
+
+        Computed over mission.json and payload.tar.gz. Cached after the first call.
+
+        :return: a copy of the hash object
+        :rtype: hashlib.HASH
+        """
         if self._hash is None:
             self._hash = tarball_hash(self.filepath, self._mission_filenames)
         return self._hash.copy()
 
     def verify(self) -> bool:
+        """Verify the cryptographic integrity of the mission.
+
+        Checks the fips-186-3/SHA-512 signature against the embedded public key.
+        Called automatically by :meth:`open` when verify=True.
+
+        :return: True if the signature is valid, False otherwise
+        :rtype: bool
+        :raises ValueError: if the mission has no signature
+        """
         if self.signature is None:
             raise ValueError(f"Mission '{self}' is not signed")
         pub_key_der = binascii.unhexlify(self.signature.pub_key_der)
@@ -670,90 +929,16 @@ class Mission:
             return False
         return True
 
-    @property
-    def resource(self) -> Resource:
-        return self._resource
-
-    @property
-    def filepath(self) -> Path:
-        filepath_future = self._controller._loop.run_async(self._resource.get)
-        filepath: Path = filepath_future.result_or_cancel(self._resource.timeout)
-        return filepath
-
-    @property
-    def state(self):
-        return self._state
-
-    @property
-    def recipient_id(self) -> Optional[int]:
-        return self._recipient_id
-
-    @property
-    def ready(self) -> bool:
-        return self._recipient_id is not None
-
-    @property
-    def messages(self) -> Dict:
-        """
-        Returns a dictionary of mission (non-protobuf) messages usable with the Olympe DSL API.
-        """
-        if self._messages is None:
-            raise ValueError(
-                "There are no proto mission messages that have successfully been loaded"
-            )
-        return self._messages
-
-    @property
-    def enums(self):
-        """
-        Returns a dictionary of mission enums usable with the Olympe DSL API.
-        """
-        return self._enums
-
-    @property
-    def modules(self):
-        return self._modules
-
-    @property
-    def signature(self) -> Optional[MissionSignature]:
-        return self._signature
-
-    @_data_checked
-    def uid(self) -> str:
-        return self._data.uid
-
-    @_data_checked
-    def name(self) -> str:
-        return self._data.name
-
-    @_data_checked
-    def desc(self) -> str:
-        return self._data.desc
-
-    @_data_checked
-    def version(self) -> str:
-        return self._data.version
-
-    @_data_checked
-    def target_model_id(self) -> int:
-        return self._data.target_model_id
-
-    @_data_checked
-    def target_min_version(self) -> str:
-        return self._data.target_min_version
-
-    @_data_checked
-    def target_max_version(self) -> str:
-        return self._data.target_max_version
-
     def wait_ready(self, timeout: Optional[float] = None) -> bool:
-        """Wait for the mission to become ready to communicate with the drone. Which
-        means wait for the drone to send the mission the recipient ID.
+        """Wait for the mission to become ready to communicate with the drone.
 
-        :param timeout: timeout to wait the mission to be ready for, defaults to None.
-        :type timeout: Optional[float], default to None. If timeout is set to 'None',
-            this means the timeout runs undefinitely
-        :return: True if recipient_id is retrieved, False otherwise
+        Blocks until the drone sends the mission's recipient ID via a capabilities
+        event, or until the timeout expires.
+
+        :param timeout: maximum time to wait in seconds; if None, waits indefinitely,
+            defaults to None
+        :type timeout: float, optional
+        :return: True if the recipient ID was received, False if the timeout expired
         :rtype: bool
         """
         with self._ready_condition:
@@ -773,16 +958,24 @@ class Mission:
         recipient_id: Optional[int] = None,
         quiet: bool = False,
     ) -> Future:
-        """
-        Send an AirSDK mission custom protobuf message to the drone.
+        """Send an AirSDK mission custom protobuf message to the drone.
 
-        :param proto_message: An AirSDK protocol buffer message
-        :param service_name: the associated custom message service
-        :param msg_num: the associated custom message number
-        :param proto_args: an optional mapping of arguments to merge into
-         the protocol buffer message
-        :param recipient_id: specify or override the associated recipient ID
-        :param quiet: optional boolean flag to decrease log verbosity (defaults to False)
+        :param proto_message: AirSDK protocol buffer message instance to send
+        :type proto_message: ArsdkProtoMessage
+        :param service_name: name of the custom message service
+        :type service_name: str
+        :param msg_num: message number within the service
+        :param proto_args: optional field values to merge into the message, defaults to None
+        :type proto_args: dict, optional
+        :param recipient_id: recipient ID to use; if None, uses the mission's own
+            recipient ID, defaults to None
+        :type recipient_id: int, optional
+        :param quiet: if True, reduce log verbosity for this send, defaults to False
+        :type quiet: bool, optional
+        :return: a Future that resolves when the command has been sent
+        :rtype: Future
+        :raises ValueError: if no controller command interface is available
+        :raises ValueError: if no recipient ID is available (mission not ready)
         """
         try:
             ctrl = self._controller._scheduler.context("olympe.controller")
@@ -824,10 +1017,22 @@ class Mission:
         msg_num: Optional[int] = None,
         recipient_id: Optional[int] = None,
     ):
-        """
-        Subscribe a callback function to every event messages associated to this mission.
+        """Subscribe a callback to mission event messages received from the drone.
 
-        See: :py:func:`~olympe.messaging.expectations.Scheduler.subscribe`
+        The callback is invoked for every custom event matching the given filters.
+        See :py:func:`~olympe.messaging.expectations.Scheduler.subscribe` for the
+        callback signature.
+
+        :param callback: function called when a matching event is received
+        :param service_name: filter by service name; if None, matches all services,
+            defaults to None
+        :type service_name: str, optional
+        :param msg_num: filter by message number; if None, matches all messages,
+            defaults to None
+        :type msg_num: int, optional
+        :param recipient_id: filter by recipient ID; if None, uses the mission's own
+            recipient ID, defaults to None
+        :type recipient_id: int, optional
         """
         recipient_id = recipient_id or self.recipient_id
         service_id = ArsdkProto.service_id(service_name) if service_name else None
@@ -859,7 +1064,7 @@ class Mission:
         # indeed necessary to send a 'capabilities' command before opening the mission to
         # that purpose. Without recipient_id, the mission can't be opened. The thing is,
         # the recipient_id won't be taken into account because sent before the mission opening.
-        # This is why when suscribing, the last event (capabilities) has to be retrieved, so that
+        # This is why when subscribing, the last event (capabilities) has to be retrieved, so that
         # the mission type can be updated, as done in _on_capabilities_update
         try:
             last_capabilities_event = self._controller._controller.get_last_event(

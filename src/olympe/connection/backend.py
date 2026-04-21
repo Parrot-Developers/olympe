@@ -181,12 +181,6 @@ class CtrlBackendBase(LogMixin):
 
     def _destroy(self) -> None:
         self._loop.unregister_cleanup(self._destroy, ignore_error=True)
-        if self._loop.stop():
-            self.logger.debug(
-                "Loop has successfully been stopped while destroying controller backend"
-            )
-        else:
-            self.logger.error("Unable to stop loop while destroying controller backend")
 
     @callback_decorator()
     def _device_added_cb(
@@ -549,12 +543,6 @@ class DeviceBackendBase(LogMixin):
 
     def _destroy(self) -> None:
         self._loop.unregister_cleanup(self._destroy, ignore_error=True)
-        if self._loop.stop():
-            self.logger.debug(
-                "Loop has successfully been stopped while destroying device backend"
-            )
-        else:
-            self.logger.error("Unable to stop loop while destroying device backend")
 
     @callback_decorator()
     def _peer_added_cb(

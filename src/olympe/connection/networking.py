@@ -197,7 +197,9 @@ class SocketBase:
             future.set_result(True)
         else:
             future.set_exception(
-                ConnectionError(f"Buffer sending error: {send_status._name_}")
+                ConnectionError(
+                    f"Buffer sending error: {send_status=} {send_status._name_}"
+                )
             )
 
     def _maybe_resume_reading(self):
@@ -209,6 +211,9 @@ class SocketBase:
                 except ValueError:
                     msg = "unknown error ({res})"
                 od.pomp_conn_disconnect(self._conn)
+                # _feed_eof will set _conn to None via pomp callback, but too late
+                # to prevent a second _maybe_resume_reading call — do it now
+                self._conn = None
                 self.logger.error(f"Failed to resume reading connection: {msg}")
 
     def _pop_read_buffer(self):
@@ -346,7 +351,7 @@ class Connection(SocketBase):
         else:
             self._send_futures[buffer] = fut
         if timeout is not None:
-            self._loop.run_delayed(timeout, self._send_timeout_waiter, fut)
+            self._loop.run_async(fut)
         return await fut
 
     async def _send_timeout_waiter(self, fut):
@@ -876,22 +881,37 @@ class TcpClient(SocketContext):
             self._disconnecting = False
             self._disconnection_condition.notify_all()
 
-    async def astop(self) -> bool:
+    def stop(self) -> bool:
         super().stop()
-        if self._ctx is None:
-            return True
-        if not self._disconnecting:
+        # pomp_ctx_stop must be called before pomp_ctx_destroy (see SocketContext._cleanup).
+        # Without this override, _cleanup uses SocketContext.stop() which only sets
+        # _stopped=True without calling pomp_ctx_stop, causing EBUSY on pomp_ctx_destroy.
+        # Guard: skip if already disconnecting (_disconnecting=True means pomp_ctx_stop
+        # was already called and the disconnect is in progress or done).
+        if self._ctx is not None and not self._disconnecting:
             res = od.pomp_ctx_stop(self._ctx)
             if res < 0:
                 self.logger.error(
-                    f"Failed to disconnect client: {self._ctx} {os.strerror(-res)}"
+                    f"Failed to stop tcp client: {self._ctx} {os.strerror(-res)}"
                 )
-                return False
-            self._disconnecting = True
-            if self.connected:
-                self._loop.run_delayed(
-                    DEFAULT_CONNECTION_TIMEOUT, self._disconnection_waiter
-                )
+            else:
+                self._disconnecting = True
+        return True
+
+    async def astop(self) -> bool:
+        # stop() calls pomp_ctx_stop and sets _disconnecting=True if not already done.
+        # If _disconnecting was already True (called before), pomp_ctx_stop is skipped
+        # but we still wait below for the connection to fully close.
+        was_disconnecting = self._disconnecting
+        self.stop()
+        if self._ctx is None:
+            return True
+        if not was_disconnecting and self.connected:
+            # Schedule a timeout waiter only when we are the ones initiating the stop,
+            # not when disconnection was already ongoing (its waiter is already scheduled).
+            self._loop.run_delayed(
+                DEFAULT_CONNECTION_TIMEOUT, self._disconnection_waiter
+            )
         if self.connected:
             async with self._disconnection_condition:
                 await self._disconnection_condition.wait()
@@ -927,7 +947,23 @@ class TcpClient(SocketContext):
                 connection_listener.connected(self._client_connection)
 
     def _on_disconnected_cb(self, conn: PointerType[od.struct_pomp_conn]):
-        assert self._client_connection is not None
+        # _client_connection may legitimately be None here. When libpomp delivers a
+        # POMP_EVENT_CONNECTED followed immediately by a POMP_EVENT_DISCONNECTED (e.g.
+        # the remote closes the connection right after the TCP handshake), both callbacks
+        # fire synchronously within the same libpomp event loop iteration. However,
+        # _on_connected_cb only schedules _aon_connected via run_later — meaning
+        # _client_connection is not assigned until that deferred coroutine runs, which
+        # cannot happen before the current C callback returns. Treating this as a fatal
+        # assertion would cause an unhandled exception to propagate back into libpomp,
+        # leading to a segfault. Instead we silently drop the disconnect event: the
+        # connection was never fully established on the Python side, so there is nothing
+        # to tear down.
+        if self._client_connection is None:
+            self.logger.warning(
+                "Dropping disconnect event: connection was never fully established "
+                "(disconnect received before _aon_connected could run)"
+            )
+            return
         assert od.pomp_conn_get_fd(conn) == self._client_connection.fileno
         self._loop.run_later(self._aon_disconnected, conn)
 
@@ -1075,20 +1111,37 @@ class TlsClient(TcpClient):
         buffer.destroy()
 
     async def _process_data(self):
+        # acquire() comes BEFORE the while check (do-while pattern) to fix a race with
+        # adisconnect(): adisconnect() sets _processing=False then releases this semaphore.
+        # If the while check came first (original pattern), we could pass _processing=True,
+        # block in acquire(), and when adisconnect() releases the sem we would enter the
+        # inner loop without ever re-checking _processing — causing a spurious
+        # "Unexpected TLS connection EOF" from the EOF written to _read_bio by adisconnect().
+        # With acquire() first, _processing is always re-checked after acquire() returns,
+        # so an adisconnect() signal exits the loop cleanly before any TLS read is attempted.
+        await self._data_received_sem.acquire()
         while self._processing:
-            await self._data_received_sem.acquire()
+            # One semaphore release can correspond to several TLS records arriving together
+            # in _read_bio. Process all of them before going back to acquire(), otherwise
+            # they would sit in the buffer indefinitely (the semaphore won't be released
+            # again until new data arrives).
             while True:
                 try:
                     data = await self._process_tls_data()
                 except ssl.SSLZeroReturnError:
+                    # Remote sent a TLS close_notify: clean shutdown.
                     self._loop.logger.info("Connection closed")
                     return
                 except ssl.SSLEOFError:
+                    # Remote closed TCP without sending a TLS close_notify first.
                     self._loop.logger.warning("Unexpected TLS connection EOF")
                     return
                 if not data:
-                    break
+                    break  # _read_bio drained, exit inner loop and wait for next batch
                 await self._process_plain_data(data)
+            # All buffered TLS records have been processed. Block until new data arrives
+            # or until adisconnect() releases the semaphore with _processing=False.
+            await self._data_received_sem.acquire()
 
     async def awrite(self, data):
         while True:

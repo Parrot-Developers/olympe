@@ -209,8 +209,7 @@ Olympe API Reference Documentation
     .. automethod:: set_hostname
     .. automethod:: connect
     .. automethod:: disconnect
-    .. automethod:: shutdown
-    .. automethod:: destroy
+    .. automethod:: stop
     .. automethod:: wait_for_pending_downloads
     .. automethod:: schedule
     .. automethod:: resource_info

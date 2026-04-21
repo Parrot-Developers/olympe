@@ -38,27 +38,35 @@ if TYPE_CHECKING:
 
 class MissionControllerMixin:
     def __init__(self: MixinBase, ip_addr, *args, name=None, **kwds):
-        super().__init__(*args, ip_addr=ip_addr, name=name, **kwds)
+        super().__init__(*args, ip_addr=ip_addr, name=name, **kwds)  # type: ignore[call-arg]
         # MissionController has to use a common session shared between all the mixin
-        # classes built through a ControllerBase. It enables to share a single proxy
-        # between Media and Mission. Since HTTP TCP connections are limited on the drone
+        # classes built through a ControllerBase. It enables to share a single proxy.
+        # Since HTTP TCP connections are limited on the drone,
         # it is welcome to share a common TCP connection pool.
         self._mission = MissionController(
             self, ip_addr, name=name, session=self.http_session
         )
 
+        self.register_proxy_created_hook(self._on_mission_proxy_created)
+        self.register_proxy_destroyed_hook(self._on_mission_proxy_destroyed)
+
     @property
-    def mission(self):
+    def mission(self) -> MissionController:
         return self._mission
 
-    def set_device_name(self: MixinBase, device_name):
-        super().set_device_name(device_name)  # type: ignore [reportGeneralTypeIssue]
+    def set_device_name(self: MixinBase, device_name: str) -> None:
+        super().set_device_name(device_name)
         self._mission.set_device_name(device_name)
 
-    def on_http_proxy_created(self, proxy: "IpProxy"):
-        super().on_http_proxy_created(proxy)
+    def _on_mission_proxy_created(self, proxy: "IpProxy") -> None:
+        # Once the proxy is created, set all Mission API urls
         self._mission.set_hostname(f"{proxy.address}:{proxy.port}")
 
-    def destroy(self):
-        self._mission.stop()
-        super().destroy()  # type: ignore [reportGeneralTypeIssue]
+    def _on_mission_proxy_destroyed(self) -> None:
+        # Once the proxy is destroyed, all Mission API urls are reset
+        self._mission.set_hostname(None)
+
+    def destroy(self: MixinBase) -> None:
+        self._mission.destroy()
+        # Passthrough to let the upper mixins destroy as well
+        super().destroy()

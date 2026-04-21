@@ -75,6 +75,7 @@ from olympe.messages import common
 from olympe.messages import devicemanager
 from olympe.messages import drone_manager
 from olympe.messages import developer
+from olympe.messages import esim
 from olympe.messages import logsync
 from olympe.messages import microhard
 from olympe.messages import mission
@@ -85,6 +86,7 @@ from olympe.messages import skyctrl
 
 TIMEOUT_CONNECTION = 45.0  # in seconds
 TIMEOUT_DISCONNECTION = 30.0  # in seconds
+TIMEOUT_OPTIONAL_CMD = 3.0 # in seconds
 
 # Wait backoff period before attempting to connect again.
 # It doubles after every connection retry
@@ -150,6 +152,7 @@ class ControllerBase(CommandInterfaceBase):
         self._time_function = time_function
 
         self._timeout = TIMEOUT_CONNECTION
+        self._deadline : float
 
         self._connect_sync_event = None
         self._disconnect_sync_event = None
@@ -413,6 +416,13 @@ class ControllerBase(CommandInterfaceBase):
             pointnfly.Command.GetState,
             privacy.Command.GetState,
         ]
+        if self._device_type in (
+            od.ARSDK_DEVICE_TYPE_ANAFI_3_MIL,
+            od.ARSDK_DEVICE_TYPE_ANAFI_3_GOV,
+        ):
+            commands.append(
+                esim.Command.GetState
+            )
         for command in commands:
             self._send_command_raw(command, dict(include_default_capabilities=True))
         self._send_command_raw(camera2.Command.ListCameras, dict())
@@ -853,6 +863,13 @@ class ControllerBase(CommandInterfaceBase):
                     # Olympe, in response to connectivity.Command.ListRadios
                     connectivity.Command.ListRadios(),
                 ]
+                if self._device_type in (
+                    od.ARSDK_DEVICE_TYPE_ANAFI_3_MIL,
+                    od.ARSDK_DEVICE_TYPE_ANAFI_3_GOV,
+                ):
+                    commands.append(
+                        esim.Command.GetState(include_default_capabilities=True),
+                    )
         else:
             all_states_settings_commands = [
                 skyctrl.Common.AllStates(),
@@ -891,14 +908,15 @@ class ControllerBase(CommandInterfaceBase):
 
         # Get specific optional states
         for command in commands:
-            updated_timeout = self._timeout - 0.1
-            if updated_timeout < 0.0:
+            remaining_time = self._deadline-time.time()
+            if remaining_time <= 0.0:
                 # There is no time wait for optional states
                 self._loop.run_async(self._send_states_settings_cmd, command)
                 continue
             try:
                 res = await self._loop.await_for(
-                    updated_timeout, self._send_states_settings_cmd, command
+                    min(remaining_time, TIMEOUT_OPTIONAL_CMD),
+                    self._send_states_settings_cmd, command
                 )
             except FutureTimeoutError:
                 # Protobuf Command.GetState are optional
@@ -974,11 +992,11 @@ class ControllerBase(CommandInterfaceBase):
         # To be doubled after discovery failed, to get more breathing room before the
         # next connection attempt
         backoff = BACKOFF_PERIOD
-        deadline = time.time() + timeout
+        self._deadline = time.time() + timeout
 
         for i in range(retry):
-            if time.time() < deadline:
-                if not await self._async_get_device(deadline):
+            if time.time() < self._deadline:
+                if not await self._async_get_device(self._deadline):
                     self.logger.warning(
                         f"Discovery for device '{self._ip_addr_str}' has failed. Retrying"
                     )
