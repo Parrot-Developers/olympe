@@ -26,13 +26,10 @@
 #  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
-
-
 import faulthandler
 import logging
 import os.path
 import sys
-import olympe_deps
 
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -41,12 +38,24 @@ from importlib.machinery import ModuleSpec
 from textwrap import indent
 from types import ModuleType
 
+from olympe.messaging.arsdk_enums import (
+    ArsdkEnums,
+    ArsdkEnum,
+    ArsdkBitfield,
+    ArsdkProtoEnum,
+)  # noqa
+from olympe.messaging.arsdk_messages import (
+    ArsdkMessages,
+    ArsdkMessageBase,
+    ArsdkProtoMessage,
+)  # noqa
+from .utils import get_mapping  # noqa
+
+
+import olympe_deps
+
 # Preload olympe_deps bundled libprotobuf so that we don't rely on system installed libprotobuf.
 olympe_deps._load_library("libprotobuf.so.30")  # noqa
-
-from .arsdkng.enums import ArsdkEnums, ArsdkEnum, ArsdkBitfield, ArsdkProtoEnum  # noqa
-from .arsdkng.messages import ArsdkMessages, ArsdkMessageBase, ArsdkProtoMessage  # noqa
-from .utils import get_mapping  # noqa
 
 
 logger = logging.getLogger(__name__)

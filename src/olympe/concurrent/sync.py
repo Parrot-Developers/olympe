@@ -19,11 +19,14 @@
 import collections
 import concurrent
 
+from typing import Union
+
 from .future import Future
 from ._loop import _LoopBoundMixin
 
 
 # The following code is adapted to libpomp (Parrot event loop) from asyncio (under Python License).
+
 
 class Lock(_LoopBoundMixin):
     def __init__(self, loop=None):
@@ -142,6 +145,17 @@ class Event(_LoopBoundMixin):
         finally:
             self._waiters.remove(fut)
 
+    @staticmethod
+    def release_event(event: Union["Event", None]):
+        """
+        Release event if it is not none and if it is not released
+
+        :param event: Event object to be release if condition is met
+        :type event: Event
+        """
+        if event is not None and not event.is_set():
+            event.set()
+
 
 class Condition(_LoopBoundMixin):
     def __init__(self, loop=None, lock=None):
@@ -163,7 +177,7 @@ class Condition(_LoopBoundMixin):
     async def __aexit__(self, exc_type, exc, tb):
         self.release()
 
-    async def wait(self):
+    async def wait(self, timeout: float = None):
         if not self.locked():
             raise RuntimeError("cannot wait on un-acquired lock")
 
@@ -172,7 +186,10 @@ class Condition(_LoopBoundMixin):
             fut = Future(self._get_loop())
             self._waiters.append(fut)
             try:
-                await fut
+                if timeout is not None:
+                    await self._get_loop().await_future_for(timeout, fut)
+                else:
+                    await fut
                 return True
             finally:
                 self._waiters.remove(fut)

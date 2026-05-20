@@ -29,6 +29,7 @@
 
 
 import datetime
+
 from collections import OrderedDict, defaultdict
 
 
@@ -91,3 +92,21 @@ class ControllerState:
         self.device_conn_status = DeviceConnStatus()
         self.device_states = DeviceStates()
         self.piloting_command = PilotingCommand()
+
+
+class ConnectionStateObserver:
+    def __init__(self):
+        self.connection_states_log = []
+
+    def notify(self, connection_state):
+        self.connection_states_log.append(connection_state)
+
+    def verify_connection_states_sequence(self, expected_sequence):
+        if len(self.connection_states_log) != len(expected_sequence):
+            return False
+        it = iter(self.connection_states_log)
+        ret = all(
+            any(connection_state == state_logged for state_logged in it)
+            for connection_state in expected_sequence
+        )
+        return ret

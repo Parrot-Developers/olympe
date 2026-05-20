@@ -7,5 +7,5 @@ custom_config:
         olympe_product: "olympe-linux"
         sphinx_doc_url: "https://developer.parrot.com/docs/sphinx"
     extensions:
-        - olympe.sphinx_doc
+        - olympe.doc.sphinx_doc
 

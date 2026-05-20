@@ -1,5 +1,3 @@
-
-
 Olympe Documentation
 ====================
 
@@ -9,7 +7,7 @@ Olympe Documentation
    :hidden:
    :maxdepth: 1
 
-   installation
-   userguide
+   installation_procedures/installation
+   userguide/userguide_preamble
    olympeapi
-   arsdkng
+   arsdkng_messages/arsdkng

@@ -15,10 +15,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import os
 import threading
-import typing
+
+from os import getpid
 from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,14 +43,14 @@ def get_running_loop() -> "Loop":
     return loop
 
 
-def _get_running_loop() -> typing.Optional["Loop"]:
+def _get_running_loop() -> Optional["Loop"]:
     """Return the running event loop or None.
 
     This is a low-level function intended to be used by event loops.
     This function is thread-specific.
     """
     running_loop, pid = _running_loop.loop_pid
-    if running_loop is not None and pid == os.getpid():
+    if running_loop is not None and pid == getpid():
         return running_loop
 
 
@@ -61,12 +60,12 @@ def _set_running_loop(loop: "Loop"):
     This is a low-level function intended to be used by event loops.
     This function is thread-specific.
     """
-    _running_loop.loop_pid = (loop, os.getpid())
+    _running_loop.loop_pid = (loop, getpid())
 
 
 class _LoopBoundMixin:
     def _get_loop(self):
-        loop: typing.Optional["Loop"] = _get_running_loop()
+        loop: Optional["Loop"] = _get_running_loop()
         if self._loop is None:
             self._loop = loop
         elif loop is not None:

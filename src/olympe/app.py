@@ -41,52 +41,42 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--version", action="store_true", help="Displays version")
+
+    parser.add_argument("--ip", help="Drone IP address")
+
     parser.add_argument(
-        '-v', '--version',
-        action="store_true",
-        help='Displays version'
+        "--gendoc", dest="doc_out_directory", help="Generate olympe documentation"
     )
 
     parser.add_argument(
-        '--ip',
-        help="Drone IP address"
-    )
-
-    parser.add_argument(
-        '--gendoc',
-        dest="doc_out_directory",
-        help="Generate olympe documentation"
-    )
-
-    parser.add_argument(
-        '--gendoc_conf',
+        "--gendoc_conf",
         dest="doc_conf",
-        help="Sphinx doc conf.py path (overrides the default one)"
+        help="Sphinx doc conf.py path (overrides the default one)",
     )
 
     parser.add_argument(
-        '--gendoc_version',
+        "--gendoc_version",
         dest="doc_version",
-        help="Override documentation version number"
+        help="Override documentation version number",
     )
 
     parser.add_argument(
-        '--gendoc_release',
+        "--gendoc_release",
         dest="doc_release",
-        help="Override documentation release number"
+        help="Override documentation release number",
     )
 
     parser.add_argument(
-        '--gendoc_context_path',
-        dest="doc_context",
-        help="Documentation context path"
+        "--gendoc_context_path", dest="doc_context", help="Documentation context path"
     )
 
     ns = parser.parse_args(argv)
     args = vars(ns)
 
-    if args['doc_out_directory']:
+    if args["doc_out_directory"]:
         from sphinx.cmd.build import main as sphinx_build
+
         cmd = ["-b", "html"]
         if args["doc_context"]:
             cmd += ["-D", "custom_html_context_path={}".format(args["doc_context"])]
@@ -97,17 +87,18 @@ def main(argv=None):
         if args["doc_release"]:
             cmd += ["-D", f"release={args['doc_release']}"]
         cmd += [f"{os.path.dirname(olympe.__file__)}/doc"]
-        cmd += [args['doc_out_directory']]
+        cmd += [args["doc_out_directory"]]
         sys.exit(sphinx_build(cmd))
 
-    if 'version' in args and args['version']:
+    if "version" in args and args["version"]:
         print(olympe.__version__)
         sys.exit(0)
 
     import IPython
+
     user_ns = dict(olympe=olympe)
     if args["ip"]:
-        user_ns["drone"] = olympe.Drone(args["ip"])
+        user_ns["drone"] = olympe.Drone(args["ip"])  # type: ignore
     IPython.embed(user_ns=user_ns)
 
 

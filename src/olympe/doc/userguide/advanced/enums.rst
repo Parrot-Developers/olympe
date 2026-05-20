@@ -23,5 +23,5 @@ Bitfield example:
     :language: python
     :linenos:
 
-Additional usage examples are available in the unit tests of `olympe.arsdkng.enums`.
+Additional usage examples are available in the unit tests of `olympe.messaging.arsdk_enums`.
 

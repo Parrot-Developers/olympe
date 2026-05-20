@@ -1,5 +1,6 @@
 import logging
 import logness
+import os
 import ulog
 
 
@@ -14,21 +15,46 @@ def _configure_ulog_bridge():
 # backward compatibility
 update_config = logness.update_config
 
-logness.update_config(
-    {
-        "loggers": {
-            "olympe": {
-                "level": "INFO",
-                "handlers": ["console"]
-            },
-            "ulog": {
-                "handlers": ["console"],
-                "level": "ERROR",
+if os.environ.get("ULOG_DEVICE") is None:
+    logness.update_config(
+        {
+            "loggers": {
+                "olympe": {"level": "INFO", "handlers": ["console"]},
+                "ulog": {
+                    "handlers": ["console"],
+                    "level": "ERROR",
+                },
             },
         },
-    },
-    on_update=_configure_ulog_bridge
-)
+        on_update=_configure_ulog_bridge,
+    )
+else:
+    _ulog_level = os.environ.get("ULOG_LEVEL", "I")
+    try:
+        _ulog_level = {
+            "C": "CRITICAL",
+            "2": "CRITICAL",
+            "E": "ERROR",
+            "3": "ERROR",
+            "W": "WARNING",
+            "4": "WARNING",
+            "N": "WARNING",
+            "5": "WARNING",
+            "I": "INFO",
+            "6": "INFO",
+            "D": "DEBUG",
+            "7": "DEBUG",
+        }[_ulog_level]
+    except KeyError:
+        _ulog_level = "INFO"
+
+    logness.update_config(
+        {
+            "loggers": {
+                "olympe": {"level": _ulog_level, "handlers": ["ulog_device"]},
+            }
+        },
+    )
 
 
 class LogMixin:

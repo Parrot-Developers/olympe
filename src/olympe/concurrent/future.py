@@ -31,7 +31,8 @@
 import asyncio
 import concurrent.futures
 import inspect
-import threading
+
+from threading import current_thread
 from typing import (
     Any,
     Callable,
@@ -60,7 +61,6 @@ def _asyncio_loop() -> Optional[asyncio.AbstractEventLoop]:
 
 
 class Future(concurrent.futures.Future, Generic[T]):
-
     """
     A chainable Future class
     """
@@ -156,38 +156,34 @@ class Future(concurrent.futures.Future, Generic[T]):
             self.add_done_callback(lambda _: next_.set_from(self))
 
     def add_done_callback(self, fn: Callable[["Future[T]"], Any]):
-        super().add_done_callback(
-            lambda f: self._loop.run_soon(fn, f)
-        )
+        super().add_done_callback(lambda f: self._loop.run_soon(fn, f))
 
     def _then_callback(self, fn: Callable[[T], X], result: "Future[X]", deferred: bool):
         assert self._loop is not None
-        try:
-            if deferred:
-                temp: Future[X] = self._loop.run_later(fn, self.result())
-                temp.chain(result)
-            elif not threading.current_thread() is self._loop:
-                temp: Future[X] = self._loop.run_async(fn, self.result())
-                temp.chain(result)
+        if self.exception() is not None:
+            param = self.exception()
+        else:
+            param = self.result()
+        if deferred:
+            temp: Future[X] = self._loop.run_later(fn, param)
+            temp.chain(result)
+        elif current_thread() is not self._loop:
+            temp: Future[X] = self._loop.run_async(fn, param)
+            temp.chain(result)
+        else:
+            try:
+                res = fn(param)
+            except concurrent.futures.CancelledError:
+                result.cancel()
+            except Exception as e:
+                result.set_exception(e)
+            except:  # noqa
+                result.cancel()
             else:
-                try:
-                    res = fn(self.result())
-                except concurrent.futures.CancelledError:
-                    result.cancel()
-                except Exception as e:
-                    result.set_exception(e)
-                except:  # noqa
-                    result.cancel()
+                if not isinstance(res, Future):
+                    result.set_result(res)
                 else:
-                    if not isinstance(res, Future):
-                        result.set_result(res)
-                    else:
-                        res.chain(result)
-        except Exception as e:
-            self._loop.logger.exception("Unhandled exception while chaining futures")
-            result.set_exception(e)
-        except:  # noqa
-            result.cancel()
+                    res.chain(result)
 
     def then(self, fn: Callable[[T], X], deferred: bool = False) -> "Future[X]":
         result = Future(self._loop)
@@ -226,3 +222,11 @@ class Future(concurrent.futures.Future, Generic[T]):
             return self.result()
 
     __iter__ = __await__  # make compatible with 'yield from'.
+
+    async def wait(self, timeout=None):
+        if timeout is None:
+            await self
+        else:
+            loop = self._loop
+            assert loop is not None
+            await loop.await_future_for(timeout, self)

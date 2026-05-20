@@ -15,7 +15,7 @@ address network.
 
 
 The full code of each example can be found in the
-`src/olympe/doc/examples/ <https://github.com/Parrot-Developers/olympe/tree/master/src/olympe/doc/examples>`_
+`src/olympe/examples/ <https://github.com/Parrot-Developers/olympe/tree/master/src/olympe/examples>`_
 folder.
 
 .. toctree::

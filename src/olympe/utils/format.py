@@ -28,6 +28,7 @@
 #  SUCH DAMAGE.
 
 
+import logging
 import subprocess
 
 
@@ -81,12 +82,26 @@ def columns(strs, col_nb=None, aligns='<', vsep='', hsep=None):
 
 
 def _term_width(default=200):
-    p = subprocess.Popen('stty size', stdout=subprocess.PIPE, shell=True)
-    p.wait()
-    if p.returncode == 0:
-        return int(p.stdout.read().split()[1])
-    else:
-        return default
+    # Retrieve the terminal width
+    try:
+        p = subprocess.Popen(
+            ["stty", "size"],
+            stdout=subprocess.PIPE,  # catch the out into a pipe that can be read
+            stderr=subprocess.DEVNULL,  # ignore errors
+        )
+        # wait for the stdout and stderr (ignored here), read stdout data and close
+        # its fds (stdout and stderr) properly
+        out, _ = p.communicate()
+        if p.returncode == 0:
+            # if the command "stty size" has run correctly, get the terminal width and
+            # return it
+            return int(out.split()[1])
+    except Exception as e:
+        logger = logging.getLogger("olympe.utils")
+        logger.error(
+            f"Fail to read the terminal width ({e}). Returning default value ({default})"
+        )
+    return default
 
 
 def _columns_param(strs, col_nb, vsep):

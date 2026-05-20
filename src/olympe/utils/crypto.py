@@ -27,20 +27,22 @@
 #  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 
-from aenum import Enum
-from Cryptodome.Hash import SHA256, SHA512
-from Cryptodome.Signature import DSS, pkcs1_15
-from Cryptodome.PublicKey import RSA, DSA, ECC
-from dataclasses import dataclass, InitVar
-from typing import AnyStr, Any, Dict, NewType, Optional, Tuple, Union
-import asn1tools
 import binascii
-import dacite
 import dataclasses
 import tarfile
 
+from enum import Enum
+from Cryptodome.Hash import SHA256, SHA512
+from Cryptodome.Signature import DSS, pkcs1_15
+from Cryptodome.PublicKey import RSA, DSA, ECC
+from Cryptodome.Util.asn1 import DerBitString, DerNull, DerObjectId, DerSequence
+from dataclasses import dataclass
+from typing import AnyStr, Any, Dict, NewType, Optional, Tuple, Union
 
-def _unhexlify_if_necessary(data: AnyStr):
+from . import dataclass_from_dict
+
+
+def _unhexlify_if_necessary(data: AnyStr) -> bytes:
     if isinstance(data, bytes):
         return data
     else:
@@ -70,9 +72,8 @@ _key_signature_scheme_map = {
 }
 
 
-class PublicKeyCodecBase:
-    _CodecDict = asn1tools.parse_string(
-        """
+class DerPublicKeyCodec:
+    """
     -- Simplified public key definition based on IETF/RFC5912
     -- Support RSA, DSA and ECC (**named curve only**) public keys
     SimplifiedPublicKey DEFINITIONS IMPLICIT TAGS ::= BEGIN
@@ -94,23 +95,81 @@ class PublicKeyCodecBase:
     }
     END
     """
-    )
 
     @classmethod
-    def decode(cls, input_: AnyStr) -> AnyStr:
-        return cls._Codec.decode("PublicKey", input_)
+    def decode(cls, input: bytes) -> Dict:
+        public_key = DerSequence().decode(input, nr_elements=2)
+        for i in range(len(public_key)):
+            if public_key[i] is None:
+                raise ValueError("Failed to decode DER public key")
+        algorithm = DerSequence().decode(public_key[0], nr_elements=(1, 2))
+        algorithm_identifier = DerObjectId().decode(algorithm[0])
+        subject_public_key_info = DerBitString().decode(public_key[1]).value
+
+        key_kind = _key_oid_kind_map[algorithm_identifier.value]
+
+        if key_kind is KeyKind.RSA:
+            if len(algorithm) == 2:
+                DerNull().decode(algorithm[1])
+            algorithm_params = None
+        elif key_kind is KeyKind.DSA:
+            assert len(algorithm) == 2
+            dsa_params = DerSequence().decode(algorithm[1], nr_elements=3)
+            algorithm_params = AlgorithmDSAParams(
+                dsa_params[0], dsa_params[1], dsa_params[2]
+            )
+        else:
+            assert len(algorithm) == 2
+            algorithm_params = AlgorithmECCParamsNamedCurve(
+                DerObjectId().decode(algorithm[1]).value
+            )
+
+        return dict(
+            algorithm=dict(
+                algorithmIdentifier=algorithm_identifier.value,
+                algorithmParameters=algorithm_params,
+            ),
+            subjectPublicKeyInfo=subject_public_key_info,
+        )
 
     @classmethod
-    def encode(cls, input_: AnyStr) -> AnyStr:
-        return cls._Codec.encode("PublicKey", input_)
-
-
-class DerPublicKeyCodec(PublicKeyCodecBase):
-    _Codec = asn1tools.compile_dict(PublicKeyCodecBase._CodecDict, codec="der")
-
-
-class JerPublicKeyCodec(PublicKeyCodecBase):
-    _Codec = asn1tools.compile_dict(PublicKeyCodecBase._CodecDict, codec="jer")
+    def encode(cls, input: Dict) -> bytes:
+        if "algorithm" not in input:
+            raise ValueError("Failed to encode public key (no algorithm specified)")
+        if "algorithmIdentifier" not in input["algorithm"]:
+            raise ValueError(
+                "Failed to encode public key (no algorithm identifier specified)"
+            )
+        if "algorithmParameters" not in input["algorithm"]:
+            raise ValueError(
+                "Failed to encode public key (no algorithm parameters specified)"
+            )
+        if "subjectPublicKeyInfo" not in input:
+            raise ValueError(
+                "Failed to encode public key (no subject public key info specified)"
+            )
+        key_kind = _key_oid_kind_map[input["algorithm"]["algorithmIdentifier"]]
+        algorithm_identifier = DerObjectId(
+            input["algorithm"]["algorithmIdentifier"]
+        ).encode()
+        if key_kind is KeyKind.DSA:
+            algorithm_params = DerSequence(
+                input["algorithm"]["algorithmParameters"]
+            ).encode()
+        elif key_kind is KeyKind.ECC:
+            algorithm_params = DerObjectId(
+                input["algorithm"]["algorithmParameters"]
+            ).encode()
+        else:
+            if input["algorithm"]["algorithmParameters"] is not None:
+                raise ValueError(
+                    "Failed to encode public key (RSA parameters is not None)"
+                )
+            algorithm_params = DerNull().encode()
+        algorithm = DerSequence((algorithm_identifier, algorithm_params)).encode()
+        subject_public_key_info = DerBitString(input["subjectPublicKeyInfo"]).encode()
+        public_key = DerSequence((algorithm, subject_public_key_info)).encode()
+        return public_key
 
 
 DerBitStringValueType = NewType("DerBitStringValueType", bytes)
@@ -154,8 +213,6 @@ class PublicKey:
     algorithm: Algorithm
     subjectPublicKeyInfo: DerBitStringType
 
-    pycrypto_key: InitVar[Optional[PyCryptoKeyType]] = dataclasses.field(default=None)
-
     def __eq__(self, other):
         return (
             self.algorithm == other.algorithm
@@ -167,53 +224,39 @@ class PublicKey:
         return _key_oid_kind_map[self.algorithm.algorithmIdentifier]
 
     @classmethod
-    def from_dict(cls, data: Dict):
-        return dacite.from_dict(cls, data, config=_dacite_config)
+    def from_dict(cls, data: Dict) -> "PublicKey":
+        return dataclass_from_dict(
+            cls, data, type_hooks={DerBitStringValueType: _unhexlify_if_necessary}
+        )
 
     @classmethod
-    def from_jer(cls, data: AnyStr):
-        """PublicKey from ASN.1/JER RFC5912 14. SubjectPublicKeyInfo"""
-        if isinstance(data, str):
-            data = data.encode()
-        data = JerPublicKeyCodec.decode(data)
-        return cls.from_dict(data)
-
-    @classmethod
-    def from_der(cls, data: AnyStr):
+    def from_der(cls, data: AnyStr) -> "PublicKey":
         """PublicKey from ASN.1/DER RFC5912 14. SubjectPublicKeyInfo"""
-        data = _unhexlify_if_necessary(data)
-        data = DerPublicKeyCodec.decode(data)
-        return cls.from_dict(data)
+        der_data = _unhexlify_if_necessary(data)
+        decoded_data = DerPublicKeyCodec.decode(der_data)
+        return cls.from_dict(decoded_data)
 
     @classmethod
-    def from_pycrypto(cls, pycrypto_key: PyCryptoKeyType):
+    def from_pycrypto(cls, pycrypto_key: PyCryptoKeyType) -> "PublicKey":
         der_data = pycrypto_key.public_key().export_key(format="DER")
         key = cls.from_der(der_data)
-        key._pycrypto_key = pycrypto_key
         return key
 
     def as_dict(self) -> Dict:
         return dataclasses.asdict(self)
 
-    def as_jer(self) -> str:
-        return JerPublicKeyCodec.encode(self.as_dict()).decode()
-
     def as_der(self) -> bytes:
         return bytes(DerPublicKeyCodec.encode(self.as_dict()))
 
-    def __post_init__(self, pycrypto_key):
-        if pycrypto_key is None:
-            self._pycrypto_key = self._import_key(self.as_der(), key_kind=self.kind)
-        else:
-            assert pycrypto_key.public_key() == self._import_key(self.as_der())
-            self._pycrypto_key = pycrypto_key
+    def __post_init__(self):
+        self._pycrypto_key = self._import_key(self.as_der(), key_kind=self.kind)
 
     @property
-    def __key__(self):
+    def __key__(self) -> PyCryptoKeyType:
         return self._pycrypto_key
 
     @property
-    def __public_key__(self):
+    def __public_key__(self) -> PyCryptoKeyType:
         return self._pycrypto_key.public_key()
 
     @classmethod
@@ -228,6 +271,7 @@ class PublicKey:
                 return key_type.import_key(pub_key_der)
             except (ValueError, IndexError, TypeError) as e:
                 last_e = e
+        assert last_e is not None
         raise last_e
 
     def verify(self, hash_object, signature):
@@ -243,11 +287,6 @@ class PublicKey:
             return True
         except ValueError:
             return False
-
-
-_dacite_config = dacite.Config(
-    type_hooks={DerBitStringValueType: _unhexlify_if_necessary}
-)
 
 
 class HashType(Enum):

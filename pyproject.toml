@@ -4,12 +4,12 @@ version = "0.0.0"  # the actual version is set by the release CI job
 description = "Python controller library for Parrot Drones"
 readme.file = "README.md"
 readme.content-type = "text/markdown"
-requires-python = ">=3.6"
+requires-python = ">=3.9"
 license.text = "BSD 3-Clause Modification"
 license.file = "LICENSE.md"
 keywords = ["uav", "parrot", "drones", "parrot-drones"]
 authors = [
-  {name = "Nicolas Dessart"}
+  {name = "Meryl Claussmann"}, {name = "Nicolas Dessart"}
 ]
 
 classifiers = [
@@ -21,42 +21,30 @@ classifiers = [
   "License :: OSI Approved",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: C",
-  "Programming Language :: Python :: 3.6",
-  "Programming Language :: Python :: 3.7",
-  "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Human Machine Interfaces",
   "Topic :: Scientific/Engineering :: Image Processing",
+  "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
   "Topic :: Scientific/Engineering"
 ]
 
 dependencies = [
-    "aenum",
-    "asn1tools",
-    "black",
-    "boltons",
-    "colorlog",
-    "dacite",
-    "dataclasses; python_version == '3.6'",
-    "future",
-    "geopy",
     "h11",
-    "ipython",
-    "importlib_metadata; python_version < '3.8'",
     "numpy",
-    "typing-protocol; python_version < '3.8'",
     "protobuf==3.19.4",
     "pycryptodomex",
-    "pytz",
-    "PyYAML",
-    "requests",
-    "six",
     "tzlocal<4.0",
     "wsproto"
 ]
 
 [project.optional-dependencies]
+debug = [
+    "black"
+]
+
 rendering = [
     "PyOpenGL",
     "PyOpenGL-accelerate",
@@ -64,6 +52,7 @@ rendering = [
 ]
 
 doc = [
+    "PyYAML",
     "Sphinx",
     "blockdiag",
     "furo",
@@ -78,7 +67,7 @@ tests = [
 
 [project.urls]
 homepage = "https://developer.parrot.com/"
-documentation = "https://developer.parrot.com/docs/olympe/"
+documentation = "https://developer.parrot.com/docs/olympe/index.html"
 repository = "https://github.com/Parrot-Developers/olympe"
 
 [project.scripts]

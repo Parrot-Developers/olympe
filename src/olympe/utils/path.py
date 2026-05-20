@@ -1,20 +1,21 @@
-from pathlib import Path
-from typing import Union
-from . import callonce
-import logging
+from __future__ import annotations
+
 import os
 import os.path
-import requests
+import re
 import shutil
 import tempfile
 import uuid
 import urllib.parse
 
+from pathlib import Path
+from typing import Optional, Union
 
-logger = logging.getLogger(__name__)
+from olympe.connection.http import Session
+
+MAX_NB_CACHE_FILES = 100
 
 
-@callonce()
 def olympe_data_dir():
     XDG_DATA_HOME = Path(
         os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
@@ -24,7 +25,6 @@ def olympe_data_dir():
     return data_dir
 
 
-@callonce()
 def olympe_cache_dir():
     XDG_CACHE_HOME = Path(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
@@ -34,7 +34,6 @@ def olympe_cache_dir():
     return cache_dir
 
 
-@callonce()
 def olympe_tmp_dir():
     XDG_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
     tmp_dir = XDG_RUNTIME_DIR / "parrot" / "olympe"
@@ -54,8 +53,10 @@ def TemporaryFile(*args, **kwds):
     return tempfile.TemporaryFile(*args, **kwds)
 
 
-def directory_is_writable(dir_path: Union[str, Path]):
+def is_directory_writable(dir_path: Union[str, Path]) -> bool:
     try:
+        if not Path(dir_path).is_dir():
+            return False
         write_check = Path(dir_path) / ".write_check"
         if write_check.exists():
             write_check.unlink()
@@ -67,88 +68,131 @@ def directory_is_writable(dir_path: Union[str, Path]):
 
 
 class Resource:
-    def __init__(self, url: Union[str, Path], temporary=False):
-        parsed_url = urllib.parse.urlparse(str(url))
-        self._url = parsed_url.geturl()
-        self._temporary = temporary
-        if not parsed_url.scheme:
+    def __init__(
+        self,
+        url_or_path: Union[str, Path],
+        session: Session,
+        timeout: Optional[float] = None,
+    ):
+        parsed_url_or_path = urllib.parse.urlparse(str(url_or_path))
+        # Retrieve the scheme of the resource given, either it is a path, an url or
+        # something else
+        if not parsed_url_or_path.scheme:
             self._scheme = "file"
         else:
-            self._scheme = parsed_url.scheme
-        if self.scheme not in ("file", "http", "https"):
+            self._scheme = parsed_url_or_path.scheme
+        if self._scheme not in ("file", "http", "https"):
             raise ValueError(f"Unsupported resource scheme '{self._scheme}'")
+        # Retrieve the whole initial url, before getting parsed and split with urllib.parse.urlparse
+        self._url_or_path = parsed_url_or_path.geturl()
+
         self._path = None
+        self._dir_path = olympe_cache_dir() / "resources"
+
+        self._session = session
+        self._timeout = timeout
 
     @property
-    def url(self):
-        return self._url
+    def timeout(self) -> Optional[float]:
+        return self._timeout
 
-    @property
-    def scheme(self):
-        return self._scheme
+    async def exists(self) -> bool:
+        if self._scheme == "file":
+            return Path(self._url_or_path).exists()
+        elif self._scheme in ("http", "https"):
+            r = await self._session.head(self._url_or_path)
+            return r.status_code == 200
+        return False
 
-    @property
-    def temporary(self):
-        return self._temporary
-
-    def exists(self):
-        if self.scheme == "file":
-            return Path(self.url).exists()
-        elif self.scheme in ("http", "https"):
-            r = requests.head(self.url).raise_for_status()
-            return r.status_code == requests.codes.ok
-
-    def get(self, timeout=None):
+    async def get(self) -> Path:
+        # If the resource has already been requested, there is no need to do it all over
+        # again
         if self._path is not None:
             return self._path
-        if self.scheme == "file":
-            if not self.exists():
-                raise RuntimeError(f"Resource '{self.url}' does not exists")
-            self._path = Path(self.url)
-        elif self.scheme in ("http", "https"):
-            r = requests.get(self.url, stream=True, timeout=timeout)
-            if r.status_code != requests.codes.ok:
-                raise RuntimeError(
-                    f"Resource '{self.url}' unexpected HTTP status:"
-                    f" '{r.status_code}'"
-                )
-            r.raw.decode_content = True
-            filename = Path(self.url).stem + Path(self.url).suffix
-            random_uuid = str(uuid.uuid4())
-            self._path = olympe_cache_dir() / "resources" / random_uuid / filename
+
+        # self.scheme is required to be in ("file", "http", "https"), otherwise a
+        # ValueError is raised at initialization
+
+        # If the resource is a file, and if that file exists, then return merely the
+        # filepath of the resource
+        if self._scheme == "file":
+            if not await self.exists():
+                raise RuntimeError(f"Resource '{self._url_or_path}' does not exists")
+            self._path = Path(self._url_or_path)
+        # If the resource is a url, it is recommanded to check first if it already
+        # exists in cache
+        elif self._scheme in ("http", "https"):
+            # HEAD Request to get its ETag and check if the url has already been cached
+            r = await self._session.head(self._url_or_path)
+            r.raise_for_status()
+
+            filename = Path(self._url_or_path).stem + Path(self._url_or_path).suffix
+
+            etag = r.headers.get("etag")
+            # In case the server does not provide an ETag, a random identifier has to be
+            # picked up instead
+            if etag is None:
+                etag = str(uuid.uuid4())
+                self._path = self._dir_path / etag / filename
+            else:
+                # Parse the ETag header provided by the server
+                pattern = rb'(?:W/)?"(?P<etag>[^"]*)"'
+                result = re.search(pattern, etag)
+                if result is None:
+                    raise RuntimeError("The ETag has not been parsed successfully")
+                etag = result.group("etag")
+                # Compare the etag with the others in the cache directory
+                self._path = self._dir_path / str(etag, encoding="utf-8") / filename
+                if self._path.exists():
+                    return self._path
+            self._dir_path.mkdir(mode=0o750, exist_ok=True, parents=True)
+            # Before downloading a new resource, empty the cache folder if too big
+            cache_counter = len(list(self._dir_path.iterdir()))
+            # Threshold is set by MAX_NB_CACHE_FILES
+            if cache_counter >= MAX_NB_CACHE_FILES:
+                for path in self._dir_path.iterdir():
+                    if path.is_dir():
+                        # Empty and delete the others
+                        shutil.rmtree(self._dir_path / path)
+
+            # If no etag matches nor is given, it means that the mission is not in the
+            # cache directory and has to be downloaded with a GET request
+            r = await self._session.get(self._url_or_path)
+            r.raise_for_status()
+            # Get the path of the payload to create a new directory to host the future
+            # payload
             self._path.parent.mkdir(mode=0o750, exist_ok=True, parents=True)
-            with open(self._path, "wb") as f:
-                shutil.copyfileobj(r.raw, f)
-            self._temporary = True
+            # Get the payload from the mission to move into the new self._dir_path/etag
+            # folder
+            with self._path.open("wb") as file:
+                async for chunk in r:
+                    file.write(chunk)
+        assert self._path
         return self._path
 
-    def copy(self, to_path: Union[str, Path]):
-        if self.temporary:
-            return self.move(to_path)
-        return self._do_copy(to_path)
-
-    def move(self, to_path: Union[str, Path]):
-        from_path = self.get()
+    async def copy(self, to_path: Union[str, Path]) -> Resource:
+        from_path = await self.get()
         to_path = Path(to_path)
         if to_path.exists():
             if from_path.samefile(to_path):
                 return self
         else:
             to_path.parent.mkdir(mode=0o750, exist_ok=True, parents=True)
-        from_path.rename(to_path)
-        self._path = to_path
-        self._temporary = False
-        return self
 
-    def _do_copy(self, to_path: Union[str, Path]):
-        from_path = self.get()
-        to_path = Path(to_path)
-        if to_path.exists():
-            if from_path.samefile(to_path):
-                return self
-        else:
-            to_path.parent.mkdir(mode=0o750, exist_ok=True, parents=True)
         with from_path.open("rb") as src:
             with to_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
-        return Resource(to_path)
+        return Resource(to_path, self._session)
+
+    async def move(self, to_path: Union[str, Path]) -> Resource:
+        from_path = await self.get()
+        to_path = Path(to_path)
+        if to_path.exists():
+            if from_path.samefile(to_path):
+                return self
+        else:
+            to_path.parent.mkdir(mode=0o750, exist_ok=True, parents=True)
+
+        from_path.rename(to_path)
+        self._path = to_path
+        return self

@@ -17,10 +17,12 @@
 
 
 import concurrent.futures
-import inspect
+
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
+from inspect import isgenerator
 from typing import List, Optional, TYPE_CHECKING
+
 from .future import Future
 from ._loop import get_running_loop, _get_running_loop
 
@@ -44,7 +46,13 @@ class _Task(Future):
     """
 
     def __init__(
-        self, loop: "Loop", from_sync: bool, corofunc: "CoroutineFunction", /, *args, **kwds
+        self,
+        loop: "Loop",
+        from_sync: bool,
+        corofunc: "CoroutineFunction",
+        /,
+        *args,
+        **kwds,
     ):
         super().__init__(loop)
         self._loop: "Loop"
@@ -136,7 +144,7 @@ class _Task(Future):
             if self._must_cancel:
                 # Task is cancelled right before coro stops.
                 self._must_cancel = False
-                super().cancel()
+                super().set_exception(concurrent.futures.CancelledError())
             elif exc is not None:
                 super().set_exception(exc)
             else:
@@ -166,7 +174,7 @@ class _Task(Future):
                 self._loop._reschedule(self, result.deadline)
             elif type(result) is _WaitReschedule:
                 pass
-            elif inspect.isgenerator(result):
+            elif isgenerator(result):
                 # Yielding a generator is just wrong.
                 new_exc = RuntimeError(
                     "yield was used instead of yield from for "
@@ -194,9 +202,10 @@ class _Task(Future):
         except BaseException as exc:
             self.step(exc)
         else:
-            # Don't pass the value of `future.result()` explicitly,
-            # as `Future.__await__` doesn't need it.
-            self.step()
+            if not self.done():
+                # Don't pass the value of `future.result()` explicitly,
+                # as `Future.__await__` doesn't need it.
+                self.step()
         self = None  # Needed to break cycles when an exception occurs.
 
 

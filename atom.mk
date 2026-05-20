@@ -6,6 +6,7 @@ LOCAL_MODULE := olympe-base
 LOCAL_CATEGORY_PATH := libs
 LOCAL_DESCRIPTION := Olympe pure python module
 LOCAL_DEPENDS_MODULES := python arsdkparser parrot-protobuf-extensions-proto protobuf-base
+LOCAL_DEPENDS_HOST_MODULES := host.protobuf
 LOCAL_LIBRARIES := arsdkparser parrot-protobuf-extensions-proto protobuf-base
 
 PRIVATE_OLYMPE_OUT_DIR=$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})
@@ -35,6 +36,13 @@ LOCAL_COPY_FROM := \
     protobuf-base:$(PRIVATE_OLYMPE_PROTOBUF_SHARE_DIR):$(PRIVATE_OLYMPE_PROTOBUF_DST_DIR):%.proto \
     parrot-protobuf-extensions-proto:$(PRIVATE_OLYMPE_PROTOBUF_SHARE_DIR):$(PRIVATE_OLYMPE_PROTOBUF_DST_DIR):%.proto
 
+define LOCAL_CMD_POST_INSTALL
+	$(Q) $(HOST_OUT_STAGING)/usr/bin/protoc \
+		--python_out=$(PRIVATE_OLYMPE_PROTOBUF_DST_DIR) \
+		--proto_path=$(PRIVATE_OLYMPE_PROTOBUF_DST_DIR) \
+		$$(find $(PRIVATE_OLYMPE_PROTOBUF_DST_DIR) -name "*.proto")
+endef
+
 include $(BUILD_CUSTOM)
 
 include $(CLEAR_VARS)
@@ -48,6 +56,51 @@ include $(BUILD_CUSTOM)
 
 include $(CLEAR_VARS)
 
+LOCAL_MODULE := olympe-internal
+LOCAL_CATEGORY_PATH := libs
+LOCAL_DESCRIPTION := Drone controller python library based on ctypes bindings of libpdraw and arsdk-ng
+LOCAL_DEPENDS_MODULES := olympe-base logness python-tzlocal python-pycryptodomex python-h11 python-wsproto
+
+LOCAL_EXPAND_CUSTOM_VARIABLES := 1
+
+OLYMPE_DEPS_LIBS_NAME := $\
+	libpomp:libarsdk:libarsdkctrl:libmux
+
+OLYMPE_DEPS_HEADERS := $\
+	LIBPOMP_HEADERS:$\
+	LIBARSDK_HEADERS:$\
+	LIBARSDKCTRL_HEADERS:$\
+	LIBMUX_HEADERS
+
+OLYMPE_DEPS_LIBS_DIR := \
+	$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})/lib/
+OLYMPE_DEPS_BIN_DIR := \
+	$(TARGET_OUT_STAGING)$(shell echo $${TARGET_DEPLOY_ROOT:-/usr})/bin/
+
+OLYMPE_DEPS_LIBS_PATH := $\
+	$(OLYMPE_DEPS_LIBS_DIR)libpomp$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libarsdk$(TARGET_SHARED_LIB_SUFFIX):$\
+	$(OLYMPE_DEPS_LIBS_DIR)libarsdkctrl$(TARGET_SHARED_LIB_SUFFIX):$\
+        $(OLYMPE_DEPS_LIBS_DIR)libmux$(TARGET_SHARED_LIB_SUFFIX)
+
+LOCAL_CUSTOM_MACROS := $\
+	pybinding-macro:olympe_deps,$\
+	$(OLYMPE_DEPS_LIBS_NAME),$\
+	$(OLYMPE_DEPS_HEADERS),$\
+	$(OLYMPE_DEPS_LIBS_PATH)
+
+LOCAL_DESTDIR := usr/lib/python/site-packages
+LOCAL_LIBRARIES += libpomp libarsdk libarsdkctrl protobuf libmux
+
+LOCAL_PREREQUISITES := protobuf
+
+include $(BUILD_CUSTOM)
+
+# Only define the following modules when the version of alchemy in use
+# does support their types
+ifneq ("$(BUILD_PYTHON_WHEEL)","")
+include $(CLEAR_VARS)
+
 LOCAL_MODULE := olympe-wheel
 LOCAL_CATEGORY_PATH := libs
 LOCAL_DESCRIPTION := olympe wheel package builder
@@ -57,6 +110,9 @@ LOCAL_MODULE_FILENAME := parrot-olympe.whl
 
 include $(BUILD_PYTHON_WHEEL)
 
+endif
+
+ifneq ("$(BUILD_BUNDLE)","")
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := olympe-deps
@@ -74,7 +130,6 @@ OLYMPE_DEPS_LIBS_NAME := $\
 	libmedia-buffers-memory-generic:libmp4:libmux
 
 OLYMPE_DEPS_HEADERS := $\
-	/usr/include/stdint.h:$\
 	LIBPOMP_HEADERS:$\
 	LIBPDRAW_HEADERS:$\
 	LIBPDRAW_GLES2HUD_HEADERS:$\
@@ -133,3 +188,5 @@ LOCAL_BUNDLE_SYSTEM_DEPS := 1
 LOCAL_BUNDLE_SYSTEM_ALLOW_LIST := $(TARGET_PYTHON_WHEEL_ALLOW_LIST)
 
 include $(BUILD_BUNDLE)
+
+endif

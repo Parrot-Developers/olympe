@@ -21,54 +21,64 @@ Connect to a physical drone
     SUCH DAMAGE.
 
 
-Direct connection to a physical drone over Wi-Fi
-""""""""""""""""""""""""""""""""""""""""""""""""
+Direct connection to a physical Anafi (Anafi, USA or enabled Ai) drone over Wi-Fi
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 .. note::
 
-    The direct connection to a drone over Wi-Fi (without a SkyController inbetween), is
-    supported for ANAFI and ANAFI USA drones. For ANAFI Ai, the direct connection to the drone
+    The direct connection to a drone over Wi-Fi (without a SkyController in between), is
+    supported for Anafi and Anafi USA drones. For Anafi Ai, the direct connection to the drone
     is disabled by default and must first be activated from FreeFlight 7 as explained
     `here <https://developer.parrot.com/docs/airsdk/general/developer_settings.html#developer-settings>`_.
 
-To connect olympe to a physical drone, you first need to connect your Linux computer to a
-drone Wi-Fi access point. Once you are connected to your drone over Wi-Fi, you just
-need to specify the drone IP address on its Wi-Fi interface ("192.168.42.1").
+To connect `Olympe` to a physical drone, you first need to connect your Linux computer
+to a drone Wi-Fi access point. Once you are connected to your drone over Wi-Fi, you just
+need to specify the drone IP address of its Wi-Fi interface ``"192.168.42.1"``.
 
-.. literalinclude:: ../../examples/physical_drone.py
+.. literalinclude:: ../../examples/physical_anafi_ai_wifi_connection.py
     :language: python
     :linenos:
-    :emphasize-lines: 4,8
+    :emphasize-lines: 5,9
 
 
 Connect to a drone through a SkyController
 """"""""""""""""""""""""""""""""""""""""""
 
-To connect Olympe to a SkyController, you first need to connect your Linux
-computer to the SkyController USB-C port. Then you should be able to connect to your
-SkyController with its RNDIS IP address ("192.168.53.1") using the
+.. note::
+
+    This has to be the way to connect to an Anafi UKR.
+
+To connect `Olympe` to a SkyController, you first need to connect your Linux computer
+to the SkyController ethernet port. You should then be able to connect to your
+SkyController with its RNDIS IP address ``"192.168.53.1"`` using the
 :py:class:`olympe.SkyController` class instead of the :py:class:`olympe.Drone` class
 that we've been using until now.
 
-.. literalinclude:: ../../examples/physical_skyctrl.py
+.. note::
+
+    To connect to an Anafi Ai, rather use :py:class:`olympe.SkyController4`, and
+    :py:class:`olympe.SkyControllerUKR` for an Anafi UKR
+
+.. literalinclude:: ../../examples/physical_skyctrl_ethernet_connection.py
     :language: python
     :linenos:
-    :emphasize-lines: 2,5,7
+    :emphasize-lines: 7,10
+
 
 .. _skyctrl-wifi-pairing:
 
 Wi-Fi pairing of a SkyController and a drone
 """"""""""""""""""""""""""""""""""""""""""""
 
-Wi-Fi pairing a SkyController and a drone means giving the SkyController access to the
-drone Wi-Fi access point.
+Wi-Fi pairing between a SkyController and a drone means giving the SkyController access
+to the drone Wi-Fi access point.
 
-A SkyController keeps an internal list of "known" (previously apaired) drones. When a
+A SkyController keeps an internal list of "known" (previously paired) drones. When a
 SkyController boots, it scans the visible Wi-Fi SSIDs and identifies known drones
-Wi-Fi access points. It then tries to connect to a every known drones that are visible
+Wi-Fi access points. It then tries to connect to every known drones that are visible
 until it successfully connects to a drone.
 
-When a SkyController 4 is connected to a drone its frontal LED displays as solid blue.
+When a SkyController is connected to a drone its frontal LED displays as solid blue.
 
 .. note::
 
@@ -88,9 +98,8 @@ There are three ways to pair a SkyController and a drone:
 
 .. _skyctrl-wifi-pairing-example:
 
-In the following example, provided a SkyController and at least one (Wi-Fi) visible
-drone, we demonstrate how to make the SkyController return its known and visible
-drones list and how to add one drone to its known drones list (i.e. pairing it).
+In the following example, we demonstrate how to make the SkyController return its known
+and visible drones list and how to add one drone to its known drones list (i.e. pairing it).
 
 First we must connect to the SkyController 4 using its IP address (192.168.53.1).
 
@@ -166,7 +175,7 @@ Cellular (4G) pairing of a SkyController and a drone
 .. note::
 
    Cellular pairing is only available for 4G capable drones. This currently includes
-   ANAFI Ai.
+   Anafi Ai.
 
 Like for Wi-Fi pairing, cellular pairing a SkyController 4 and a drone means giving the
 SkyController access to the drone cellular modem interface. From the point of view of the
@@ -175,13 +184,13 @@ as a multi-path passthrough proxy to the drone (Wi-Fi + cellular).
 
 .. note::
 
-    While ANAFI Ai has a cellular modem, the SkyController 4 does not have one and the
+    While Anafi Ai has a cellular modem, the SkyController 4 does not have one and the
     controller (the Olympe host) is used as an Internet gateway to reach the drone
     cellular interface.
 
 
 Cellular pairing is only possible once the :ref:`Wi-Fi pairing <skyctrl-wifi-pairing>`
-has previously been performed and when the SkyController 4 is connected to the ANAFI Ai
+has previously been performed and when the SkyController 4 is connected to the Anafi Ai
 over Wi-Fi.
 
 .. literalinclude:: ../../examples/cellular.py
@@ -212,7 +221,7 @@ To start the cellular pairing process, just call `skyctrl.cellular.pair()`:
     :dedent:
     :linenos:
     :lineno-match:
-    :start-at: # Pair the SkyController and the Drone in cellular with a new anonymous user APC token
+    :start-at: # Pair the SkyController and the Drone
     :end-at: token = skyctrl.cellular.pair()
 
 A newly created APC pairing token is returned by this function.
@@ -233,7 +242,7 @@ With your APC pairing token in your possession, you can now configure your SkyCo
     :dedent:
     :linenos:
     :lineno-match:
-    :start-at: print("- Connect cellular using the new user APC token")
+    :start-at: print("Connect cellular using the new user APC token")
     :end-at: skyctrl.cellular.configure(token)
 
 .. note::
@@ -242,7 +251,7 @@ With your APC pairing token in your possession, you can now configure your SkyCo
    your SkyController.
 
 
-Once the SkyController has been configured with a token it will automatically try to connect to your ANAFI Ai using
+Once the SkyController has been configured with a token it will automatically try to connect to your Anafi Ai using
 the cellular link. We can now wait for the 'RUNNING' cellular link status.
 
 .. literalinclude:: ../../examples/cellular.py
@@ -268,7 +277,7 @@ send manual piloting commands you should tell the SkyController that the "Contro
 :py:func:`olympe.messages.skyctrl.CoPiloting.setPilotingSource` command message
 
 
-.. literalinclude:: ../../examples/physical_skyctrl.py
+.. literalinclude:: ../../examples/physical_skyctrl_ethernet_connection.py
     :language: python
     :dedent:
     :linenos:

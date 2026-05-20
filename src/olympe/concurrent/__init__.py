@@ -39,6 +39,7 @@ import time
 import types
 
 from concurrent.futures import CancelledError, TimeoutError
+from enum import IntFlag
 from queue import PriorityQueue
 from typing import (
     Any,
@@ -55,11 +56,9 @@ from typing import (
 )
 
 import olympe_deps as od
-from aenum import IntFlag
 
-from olympe.types import PointerType
 from olympe.utils import callback_decorator
-from olympe.utils.path import TemporaryFile
+from olympe.utils.types import PointerType
 
 from ._loop import _set_running_loop, get_running_loop
 from ._task import _Reschedule, _Task, _TaskQueueItem, _WaitReschedule, current_tasks
@@ -178,6 +177,9 @@ class Loop(threading.Thread):
         self.running = True
         super().start()
 
+    def stop_later(self):
+        self.running = False
+
     def stop(self):
         """
         Stop thread to manage commands send to the drone
@@ -185,7 +187,10 @@ class Loop(threading.Thread):
         if not self.running:
             return False
         self.running = False
-        if self.is_alive() and threading.current_thread().ident != self._executing_thread:
+        if (
+            self.is_alive()
+            and threading.current_thread().ident != self._executing_thread
+        ):
             self._wake_up()
             self.join()
         return True
@@ -271,8 +276,8 @@ class Loop(threading.Thread):
 
     def run_async(self, func: Runnable[T], *args, **kwds) -> Future[T]:
         """
-        Fills in a list with the function to be executed in the pomp thread
-        and wakes up the pomp thread.
+        Fills in a list with the function to be executed in the loop thread
+        and wakes up the loop thread.
         """
         future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
 
@@ -304,7 +309,7 @@ class Loop(threading.Thread):
 
     def run_later(self, func: Runnable[T], *args, **kwds) -> Future[T]:
         """
-        Submit a function to be executed later in the pomp thread
+        Submit a function to be executed later in the loop thread
         """
         future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
         if self.self_executed():
@@ -314,8 +319,8 @@ class Loop(threading.Thread):
 
     def run_soon(self, func, *args, **kwds):
         """
-        Submit a function to be executed in the pomp thread
-        and wakes up the pomp thread.
+        Submit a function to be executed in the loop thread
+        and wakes up the loop thread.
         """
         future, func, args, kwds = self._ensure_from_sync_future(func, *args, **kwds)
 
@@ -323,6 +328,17 @@ class Loop(threading.Thread):
 
         if not self.self_executed():
             self._wake_up()
+
+    def run_until_complete(self, func: Runnable[T], *args, **kwds) -> Future[T]:
+        """
+        Submit a function to be executed in the loop thread and returns its future.
+        Stop the loop when the function completes.
+        """
+        f = self.run_async(func, *args, **kwds)
+        f.then(lambda _: self.stop_later())
+        if not self.is_alive():
+            self.run()
+        return f
 
     def _run_delayed_wrapper(
         self, delay: float, func: Runnable[T]
@@ -401,18 +417,24 @@ class Loop(threading.Thread):
     async def await_for(self, timeout: float, func: Runnable[T], *args, **kwds) -> T:
         fut, func, args, kwds = self._ensure_future(func, *args, **kwds)
 
-        if timeout is None:
-            return await fut
-
         if timeout <= 0:
             if fut.done():
                 return fut.result()
             return await self._cancel_and_wait(fut)
         self.deferred_pomp_task.append((fut, func, args, kwds))
+        return await self._await_future_for(timeout, fut)
 
+    async def await_future_for(self, timeout: float, fut: Future):
+        if timeout <= 0:
+            if fut.done():
+                return fut.result()
+            return await self._cancel_and_wait(fut)
+        return await self._await_future_for(timeout, fut)
+
+    async def _await_future_for(self, timeout: float, fut: Future):
         waiter = Future(self)
 
-        self.run_delayed(timeout, self._release_waiter, waiter, fut)
+        delayed = self.run_delayed(timeout, self._release_waiter, waiter, fut)
         fut.chain(waiter)
         try:
             await waiter
@@ -422,6 +444,9 @@ class Loop(threading.Thread):
             else:
                 await self._cancel_and_wait(fut)
                 raise
+        finally:
+            if not delayed.done():
+                delayed.cancel()
 
         if fut.done():
             return fut.result()
@@ -431,7 +456,9 @@ class Loop(threading.Thread):
             except concurrent.futures.CancelledError as exc:
                 raise concurrent.futures.TimeoutError() from exc
 
-    def _wake_up_event_cb(self, _: PointerType[od.struct_pomp_evt], __: "ctypes.c_void_p"):
+    def _wake_up_event_cb(
+        self, _: PointerType[od.struct_pomp_evt], __: "ctypes.c_void_p"
+    ):
         """
         Called when a wakeup pomp_evt is triggered.
         """
@@ -623,7 +650,9 @@ class Loop(threading.Thread):
             pomp_evt, self.pomp_loop, self.pomp_event_callbacks[evt_id], userdata
         )
         if res != 0:
-            raise RuntimeError("Cannot add eventfd to pomp loop")
+            raise RuntimeError(
+                f"Cannot add eventfd to pomp loop: {os.strerror(-res)} ({res}"
+            )
 
     def remove_event_from_loop(self, *args, **kwds):
         """
@@ -649,7 +678,6 @@ class Loop(threading.Thread):
             self._remove_fd_from_loop(fd)
 
     def _create_pomp_loop(self):
-
         self.logger.info("Creating pomp loop")
         self.pomp_loop = od.pomp_loop_new()
 
@@ -657,6 +685,8 @@ class Loop(threading.Thread):
             raise RuntimeError("Cannot create pomp loop")
 
     def _dump_traceback(self):
+        from olympe.utils.path import TemporaryFile
+
         with TemporaryFile() as f:
             faulthandler.dump_traceback(file=f)
             f.seek(0)
@@ -718,7 +748,9 @@ class Loop(threading.Thread):
         self.pomp_timer_callbacks[id(pomp_timer)] = pomp_callback
         return pomp_timer
 
-    def set_timer(self, pomp_timer: PointerType[od.struct_pomp_timer], delay: int, period: int):
+    def set_timer(
+        self, pomp_timer: PointerType[od.struct_pomp_timer], delay: int, period: int
+    ):
         res = od.pomp_timer_set_periodic(pomp_timer, delay, period)
 
         return res == 0

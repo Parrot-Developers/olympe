@@ -32,7 +32,7 @@ These lines are used to activate the piloting HUD:
     :emphasize-lines: 3
 
 The full code of this example can be found in
-`src/olympe/doc/examples/piloting_hud.py <https://github.com/Parrot-Developers/olympe/blob/master/src/olympe/doc/examples/piloting_hud.py>`_.
+`src/olympe/examples/piloting_hud.py <https://github.com/Parrot-Developers/olympe/blob/master/src/olympe/examples/piloting_hud.py>`_.
 
 .. _imaging_hud:
 

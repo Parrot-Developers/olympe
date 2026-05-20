@@ -28,27 +28,59 @@
 #  SUCH DAMAGE.
 
 
+import warnings
+
 import olympe_deps as od
-from .arsdkng import DRONE_DEVICE_TYPE_LIST, SKYCTRL_DEVICE_TYPE_LIST
-from .arsdkng.cmd_itf import Connect, Disconnect, Connected, Disconnected  # noqa
-from .arsdkng.controller import ControllerBase as Controller
-from .arsdkng.backend import BackendType
-from .mixins.streaming import StreamingControllerMixin
-from .mixins.media import MediaControllerMixin
-from .mixins.mission import MissionControllerMixin
-from .mixins.ipproxy import IpProxyMixin
-from .mixins.cellular import CellularPairerMixin
-from .utils import callback_decorator
+
+from olympe.connection import DRONE_DEVICE_TYPE_LIST, SKYCTRL_DEVICE_TYPE_LIST
+from olympe.connection.backend import BackendType
+from olympe.controllers.cmd_itf import Connected, Disconnected  # noqa
+from olympe.controllers.controller import ControllerBase as Controller
+
+try:
+    from olympe.controllers.mixins.streaming import StreamingControllerMixin
+except ImportError:
+    StreamingControllerMixin = None
+from olympe.controllers.mixins.cellular import CellularPairerMixin
+from olympe.controllers.mixins.flightplan import FlightplanControllerMixin
+from olympe.controllers.mixins.http import HttpControllerMixin
+from olympe.controllers.mixins.ipproxy import IpProxyMixin
+from olympe.controllers.mixins.mission import MissionControllerMixin
+from olympe.controllers.mixins.media import MediaControllerMixin
+from olympe.controllers.mixins.update import UpdateControllerMixin
 
 
-class ControllerBase(
-    IpProxyMixin,
-    StreamingControllerMixin,
-    MissionControllerMixin,
-    MediaControllerMixin,
-    Controller,
-):
-    pass
+# ControllerBase is built with mixin classes that enable to construct the drone and
+# skycontroller devices below, used in Olympe scripts. Each mixin is responsible for a
+# functionality of the device. Thanks to the fact they inherit from each other, once
+# the first one is called, all its parents are as well, ending with the greatest parent
+# Controller class of arsdk-ng
+if StreamingControllerMixin is not None:
+    # Controller with video streaming support
+    class ControllerBase(
+        IpProxyMixin,
+        StreamingControllerMixin,
+        MissionControllerMixin,
+        MediaControllerMixin,
+        FlightplanControllerMixin,
+        UpdateControllerMixin,
+        HttpControllerMixin,
+        Controller,
+    ):
+        pass
+
+else:
+    # Controller without video streaming support
+    class ControllerBase(
+        IpProxyMixin,
+        MissionControllerMixin,
+        MediaControllerMixin,
+        FlightplanControllerMixin,
+        UpdateControllerMixin,
+        HttpControllerMixin,
+        Controller,
+    ):
+        pass
 
 
 class Drone(ControllerBase):
@@ -64,6 +96,26 @@ class Drone(ControllerBase):
     See :py:class:`~olympe.AnafiAi` and :py:class:`~olympe.SkyController4` for more
     information.
     """
+
+    DEVICE_TYPES = DRONE_DEVICE_TYPE_LIST
+
+
+class LocalController(ControllerBase):
+    """
+    Generic Parrot drone local controller class
+
+    This class is to be used to connect to the local controller interface onboard a
+    drone (e.g. from an Air SDK mission).
+    """
+
+    def __init__(self, *, name=None, backend=BackendType.Net, discovery_port=44447):
+        super().__init__(
+            "127.0.0.1",
+            name=name,
+            backend=backend,
+            discovery_port=discovery_port,
+        )
+
     DEVICE_TYPES = DRONE_DEVICE_TYPE_LIST
 
 
@@ -77,6 +129,7 @@ class Anafi(Drone):
     When connecting Olympe to an ANAFI through a SkyController 3. You must use
     the :py:class:`~olympe.SkyController3` class instead.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_ANAFI4K]
 
 
@@ -91,6 +144,7 @@ class AnafiUSA(Drone):
     SkyController 4 Black. You must use the :py:class:`~olympe.SkyControllerUSA`
     or :py:class:`~olympe.SkyController4Black` classes respectively.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_ANAFI_USA]
 
 
@@ -104,28 +158,49 @@ class AnafiAi(Drone):
     When connecting Olympe to an ANAFI Ai through a SkyController 4. You must use
     the :py:class:`~olympe.SkyController4` class instead.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_ANAFI_2]
+
+
+class AnafiUKR(Drone):
+    """
+    ANAFI UKR controller class.
+
+    This class cannot be used to connect directly to an ANAFI UKR without a SkyController.
+    The MARS radio transceiver provided by a SkyController UKR is the only mean
+    to connect to an ANAFI UKR.
+
+    When connecting Olympe to an ANAFI UKR through a SkyController UKR. You must use
+    the :py:class:`~olympe.SkyControllerUKR` class instead.
+    """
+
+    DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_ANAFI_3_MIL]
+
+    def __init__(self, *args, **kwds):
+        warnings.warn(
+            "olympe.AnafiUKR cannot be used to connect directly to an ANAFI UKR drone. "
+            "You should probably use the olympe.SkyControllerUKR class instead. "
+            "The MARS radio transceiver provided by a SkyController UKR is the only mean "
+            "to connect to an ANAFI UKR.\n"
+            "When connecting Olympe to an ANAFI UKR through a SkyController UKR. You must use "
+            "the ~olympe.SkyControllerUKR class instead."
+        )
+        super().__init__(*args, **kwds)
+
+
+class Chuck(Drone):
+    """
+    Chuck controller class.
+
+    This class should only be used to connect to a Chuck.
+    """
+
+    DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_CHUCK_3]
 
 
 class SkyControllerBase(ControllerBase):
     def __init__(self, *args, **kwds):
         super().__init__(*args, is_skyctrl=True, **kwds)
-
-    @callback_decorator()
-    def _link_status_cb(self, _arsdk_device, _arsdk_device_info, status, _user_data):
-        """
-        Notify link status. At connection completion, it is assumed to be
-        initially OK. If called with KO, user is responsible to take action.
-        It can either wait for link to become OK again or disconnect
-        immediately. In this case, call arsdk_device_disconnect and the
-        'disconnected' callback will be called.
-        """
-        self.logger.info(f"Link status: {status}")
-        if status == od.ARSDK_LINK_STATUS_KO:
-            # FIXME: Link status KO seems to be an unrecoverable
-            # random error with a SkyController when `drone_manager.forget`
-            # is sent to the SkyController
-            self.logger.error("Link status KO")
 
 
 class SkyControllerNet(SkyControllerBase):
@@ -142,6 +217,18 @@ class SkyControllerMuxCellular(CellularPairerMixin, SkyControllerMux):
     pass
 
 
+class SkyController(SkyControllerMuxCellular):
+    """
+    Generic SkyController controller class
+
+    This class can be used to connect to any SkyController SDK API
+    but should be avoided to access other APIs (media, streaming
+    and cellular pairing APIs).
+    """
+
+    DEVICE_TYPES = SKYCTRL_DEVICE_TYPE_LIST
+
+
 class SkyController3(SkyControllerNet):
     """
     SkyController 3 controller class
@@ -150,6 +237,7 @@ class SkyController3(SkyControllerNet):
     Use the :py:class:`~olympe.Anafi` class instead when connecting to a drone
     directly.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_3]
 
 
@@ -161,6 +249,7 @@ class SkyControllerUSA(SkyControllerNet):
     Use the :py:class:`~olympe.AnafiUSA` class instead when connecting to a drone
     directly.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_UA]
 
 
@@ -172,6 +261,7 @@ class SkyController4Black(SkyControllerMux):
     Use the :py:class:`~olympe.AnafiUSA` class instead when connecting to a drone
     directly.
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_4_BLACK]
 
 
@@ -184,15 +274,26 @@ class SkyController4(SkyControllerMuxCellular):
     directly (the `Direct connection` mode should have been enabled on the drone in this
     case).
     """
+
     DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_4]
 
 
-class SkyController(SkyControllerMuxCellular):
+class SkyControllerUKR(SkyControllerMux):
     """
-    Generic SkyController controller class
+    SkyController UKR controller class
 
-    This class can be used to connect to any SkyController SDK API
-    but should be avoided to access other APIs (media, streaming
-    and cellular pairing APIs).
+    This class should be used to connect to ANAFI UKR drones through a SkyController UKR.
     """
-    DEVICE_TYPES = SKYCTRL_DEVICE_TYPE_LIST
+
+    DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_UA_2]
+
+
+class SkyControllerUKR5G(SkyControllerMuxCellular):
+    """
+    SkyController UKR controller class
+
+    This class should be used to connect to ANAFI UKR drones with 5G, through a
+    SkyController UKR.
+    """
+
+    DEVICE_TYPES = [od.ARSDK_DEVICE_TYPE_SKYCTRL_UA_2]

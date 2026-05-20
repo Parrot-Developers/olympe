@@ -29,15 +29,17 @@
 
 
 import ctypes
+import dataclasses
+import errno
 import functools
 import typing
 
-import errno
 from collections import namedtuple, OrderedDict
 from collections.abc import Mapping
 from datetime import datetime
 from logging import getLogger
 from math import isclose
+from typing import Dict, Optional, Type, TypeVar, Union
 
 
 def py_object_cast(c_pointer):
@@ -118,7 +120,6 @@ class callback_decorator(decorator):
 
 
 class callonce(decorator):
-
     undefined = object()
 
     def __init__(self, *args, **kwds):
@@ -138,19 +139,19 @@ def string_from_arsdkxml(_input):
     """
     if not _input:
         # Handles empty string and None (we don't actually handle boolean type)
-        return ''
-    errors = 'strict'
+        return ""
+    errors = "strict"
     if isinstance(_input, bytes):
         # str input must be decoded to unicode first
-        output = _input.decode('utf-8', errors=errors)
+        output = _input.decode("utf-8", errors=errors)
     elif isinstance(_input, str):
         output = _input
     elif callable(_input):
         output = _input()
     else:
         # try to serialize the object to unicode
-        output = bytes(_input).decode('utf-8', errors=errors)
-    output = output.replace(r'\n', '\n')
+        output = bytes(_input).decode("utf-8", errors=errors)
+    output = output.replace(r"\n", "\n")
     # Finally return a unicode 'string_escaped' string
     return output
 
@@ -207,7 +208,9 @@ def remove_from_collection(collection, predicate):
     if isinstance(collection, Mapping):
         return remove_from_mapping(collection, predicate)
     elif isinstance(collection, (list, tuple)):
-        return type(collection)(remove_from_collection(e, predicate) for e in collection)
+        return type(collection)(
+            remove_from_collection(e, predicate) for e in collection
+        )
     elif not predicate(collection):
         return collection
 
@@ -229,14 +232,14 @@ def mapping_as_attributes(name, mapping):
             entry = OrderedDict()
             v = entry
             for k in keys[1:-1]:
-                k = k.translate(str.maketrans('/-', '__'))
+                k = k.translate(str.maketrans("/-", "__"))
                 v[k] = OrderedDict()
                 v = v[k]
             v[keys[-1]] = value
             key = keys[0]
         else:
             entry = value
-        key = key.translate(str.maketrans('/-', '__'))
+        key = key.translate(str.maketrans("/-", "__"))
         if isinstance(entry, Mapping):
             ret[key] = mapping_as_attributes(f"{name}_{key}", entry)
         else:
@@ -244,14 +247,65 @@ def mapping_as_attributes(name, mapping):
     return namedtuple(name, ret)(**ret)
 
 
+def type_is_optional(t: Type):
+    origin = typing.get_origin(t)
+    if origin is Optional:
+        return True
+    if origin is not typing.Union:
+        return False
+    args = typing.get_args(t)
+    if len(args) == 2 and type(None) in args:
+        return True
+    return False
+
+
+T = TypeVar("T")
+
+
+def dataclass_from_dict(
+    cls: Type[T], mapping: Dict, type_hooks: Optional[Dict] = None, strict: bool = False
+) -> Union[T, Dict]:
+    if not dataclasses.is_dataclass(cls):
+        return mapping
+    if type_hooks is None:
+        hooks = {}
+    else:
+        hooks = type_hooks
+    field_types = {field.name: field.type for field in dataclasses.fields(cls)}
+    field_hook = {
+        field.name: lambda m: m if field.type not in hooks else hooks[field.type]
+        for field in dataclasses.fields(cls)
+    }
+    optional_fields = {
+        field.name: None
+        for field in dataclasses.fields(cls)
+        if field.name not in mapping and type_is_optional(field.type)
+    }
+    return cls(
+        **{
+            **{
+                field_name: dataclass_from_dict(
+                    field_types[field_name],
+                    field_hook[field_name](mapping[field_name]),
+                    type_hooks=type_hooks,
+                    strict=strict,
+                )
+                for field_name in mapping if field_name in field_types or strict
+            },
+            **optional_fields,
+        }
+    )
+
+
 def timestamp_now():
     return (datetime.now() - datetime(1970, 1, 1)).total_seconds()
 
 
 DEFAULT_FLOAT_TOL = (1e-7, 1e-9)
+DEFAULT_INT_TOL = 0
 
 
-def equals(a, b, float_tol=DEFAULT_FLOAT_TOL):
+def equals_float(a, b, float_tol=DEFAULT_FLOAT_TOL):
     """
     Olympe own definition of equality between two values a and b.
     For floats, just returns the result isclose(a, b, rel_tol=1e-7, abs_tol=1e-9).
@@ -266,8 +320,18 @@ def equals(a, b, float_tol=DEFAULT_FLOAT_TOL):
     else:
         return a == b
 
+def equals_int(a, b, int_tol=DEFAULT_INT_TOL):
+    """
+    Olympe own definition of equality between two values a and b.
+    For ints, returns if abs(a-b) is in range int_tol
+    For everything else, returns a == b.
+    """
+    if isinstance(a, int) and isinstance(b, int):
+        return abs(a - b) <= int_tol
+    else:
+        return a == b
+
 
 class hashabledict(dict):
-
     def __hash__(self):
         return hash(tuple(self.items()))

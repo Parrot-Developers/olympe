@@ -30,9 +30,11 @@
 
 # Parrot internal version number
 try:
+    # module standard importlib.metadata, from Python3.8
     from importlib.metadata import version as get_version
     from importlib.metadata import PackageNotFoundError
 except ImportError:
+    # for Python<3.8
     from importlib_metadata import version as get_version
     from importlib_metadata import PackageNotFoundError
 
